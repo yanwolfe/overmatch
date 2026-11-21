@@ -1,39 +1,33 @@
 # Devlog clip store
 
-A running record of how the game looked at each visible milestone, kept for the development
-video (#406) and any later devlog. The record is the recipe; the pixels are a preview. Media
-lives outside git at `/Users/Yan/Movies/overmatch-devlog/` (the repo carries no image or video);
-`INDEX.md` here holds one row per moment.
+A curated record of how the game looked at its visible milestones, kept for the development
+video (#406) and any later devlog. Nothing enters the store without the owner's approval:
+it holds few shots, each one chosen. The record is the recipe; a file is a rendering of it.
+Media lives outside git at `/Users/Yan/Movies/overmatch-devlog/` (the repo carries no image or
+video); `INDEX.md` here holds one row per approved shot.
 
-## When a moment is recorded
+## Proposing
 
-A moment is a change another player could see. The orchestrator adds a **candidate** row,
-unasked, at each of these, in the same turn as the landing:
+A moment is a change another player could see: a lane lands whose clip the owner judged, an
+epic closes, a checkpoint changes state, a new asset or effect ships, a failure worth showing
+is replaced by its fix. At such a moment the orchestrator proposes, it does not add: one line
+at the end of its next report naming the moment and its recommendation (shoot, or skip and
+why). A preview the work already produced may sit in the media folder's `proposed/` until
+the owner answers; a declined one is deleted. The orchestrator curates before it proposes:
+one shot per moment, none that an approved shot already covers.
 
-- a lane lands whose clip or still the owner judged (the judged clip is the candidate);
-- an epic closes or a checkpoint on the playtest board changes state;
-- a new asset, map feature, vehicle or effect appears in the shipped game;
-- a failure worth showing (a tank stopped dead by a wall, a house that bursts) is replaced
-  by its fix: keep the before.
+## Shooting
 
-A candidate costs one row: date, commit, what it shows, the recipe, the preview's file name.
-No capture work is done for a candidate beyond copying a clip the work already produced.
-
-## The owner judges the capture
-
-A candidate is not a recording. When candidates exist, the orchestrator's next report to the
-owner ends with one line naming them and asking which to record. For each yes, the owner says
-what the shot should show (framing, the action, the length); the orchestrator captures it at
-publication quality, shows it, and marks the row `recorded` once the owner accepts it. The
-owner's "I want this recorded" at any time makes a row and goes straight to that step.
-A candidate the owner passes on stays a candidate: its commit and recipe keep it recoverable.
+For each yes the owner says what the shot should show. Any camera serves: the capture plans'
+fixed pose, orbit, follow and player views (`src/dev_capture/plan.rs`), the ordinary client's
+own view, or a cinematic move; a camera the tooling lacks is asked for, not approximated.
+The orchestrator shoots at publication quality, shows it, and reshoots on the owner's notes.
+The shot enters the store, and its row the index, when the owner accepts it.
 
 ## A row
 
-`date | commit | state | shows | recipe | file`
+`date | commit | shows | camera | recipe | file`
 
-- **state**: `candidate`, `recorded` (owner accepted a publication-quality capture) or
-  `dropped` (the owner said no).
-- **recipe**: the command and capture plan that reproduce the shot from that commit, or
-  `none` with what would be needed.
-- **file**: the name under the media folder; previews keep the instrument's quality.
+- **recipe**: the command and capture plan that reproduce the shot from that commit, so it
+  can be rendered again at another size or length.
+- **file**: the name in the media folder.
