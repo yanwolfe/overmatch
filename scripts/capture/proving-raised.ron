@@ -1,6 +1,6 @@
 // A capture plan (`dev_capture::plan::CapturePlan`) for the proving ground (game state only;
-// `scripts/perf/collapse.md`): the whole strip from a fixed raised camera, for
-// `collapse.sh --ram --clip` on any pass through one of its walls.
+// `scripts/perf/collapse.md`): the row of six walls from a fixed raised camera, for
+// `collapse.sh --ram --clip` on any pass through one of them. The long wall stands behind it.
 (
     frames: (
         // The run folder's frames/raised-<time>s.png.
@@ -22,9 +22,9 @@
         ui: false,
         gizmos: false,
         // Taste: clip framing, world metres: 45 m over the ground north-east of the row, looking
-        // down its length, so the six walls at z = -50 and the long wall at (165, 10) all stand in
-        // frame with their northern approaches. The ground there is about 33 m (MEASURED from the
-        // heightmap at the instances' origins).
+        // down its length, so the six walls at z = -50 stand in frame with 40 m of approach on
+        // either side. The ground there is about 33 m (MEASURED from the heightmap at the
+        // instances' origins).
         camera: Pose(eye: (150.0, 78.0, 45.0), look: (70.0, 33.0, -45.0)),
         // Taste: the first frame shows the hull a second and a half short of the wall.
         lead_s: 1.5,

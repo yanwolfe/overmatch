@@ -1,6 +1,6 @@
 {
   "instance": "wall_brick_fine_0001",
-  "heading_deg": 0.0,
+  "heading_deg": 180.0,
   "lateral_m": 0.0,
   "contacts": {
     "rest": {"Rest": {"gap_m": 0.02, "at_most_m_s": 0.5}},

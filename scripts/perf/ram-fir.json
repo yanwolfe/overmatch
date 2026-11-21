@@ -1,9 +1,9 @@
 {
   "instance": "fir_a_0144",
   "heading_deg": 180.0,
-  "lateral_m": 0.0,
+  "lateral_m": -1.035,
   "contacts": {
-    "rest": {"Rest": {"gap_m": 0.02, "at_most_m_s": 0.5}},
+    "rest": {"Rest": {"gap_m": 0.02, "at_most_m_s": 1.0}},
     "10kmh": {"Held": {"speed_m_s": 2.8, "within_m_s": 0.5, "runup_margin": 6.0}},
     "20kmh": {"Held": {"speed_m_s": 5.6, "within_m_s": 0.5, "runup_margin": 3.0}},
     "governed": {"Governed": {"minimum_fraction": 0.95, "runup_margin": 2.0}}
