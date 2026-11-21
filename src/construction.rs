@@ -349,6 +349,110 @@ pub(crate) mod tests {
         column_construction_from(0.0)
     }
 
+    /// Fixture: one upright wall of `material`, `size` m (length along X, height, thickness along
+    /// Z) about the origin on grade, cut into `cells` equal cuboid cells per axis, every shared
+    /// face a seam and the bottom course anchored. Cells count along X, then up, then through
+    /// the thickness: cell `(i, j, k)` is `i + cells[0] * (j + cells[1] * k)`.
+    pub(crate) fn wall_construction(
+        size: Vec3,
+        cells: [usize; 3],
+        material: &str,
+    ) -> Arc<ConstructionKind> {
+        let registry = crate::substances::SubstanceRegistry::shipped_static();
+        let density = fracture::Material::of(registry, material)
+            .unwrap()
+            .unwrap()
+            .density;
+        let [nx, ny, nz] = cells;
+        let step = size / Vec3::new(nx as f32, ny as f32, nz as f32);
+        let low = Vec3::new(-size.x / 2.0, 0.0, -size.z / 2.0);
+        let hull = |lo: Vec3, hi: Vec3| -> Vec<[f32; 3]> {
+            (0..8)
+                .map(|k| {
+                    Vec3::select(BVec3::new(k & 1 > 0, k & 2 > 0, k & 4 > 0), hi, lo).to_array()
+                })
+                .collect()
+        };
+        let index = |i: usize, j: usize, k: usize| (i + nx * (j + ny * k)) as u32;
+        let corner =
+            |i: usize, j: usize, k: usize| low + step * Vec3::new(i as f32, j as f32, k as f32);
+        let mut chunks = Vec::new();
+        let mut joints = Vec::new();
+        let mut anchors = Vec::new();
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let (lo, hi) = (corner(i, j, k), corner(i + 1, j + 1, k + 1));
+                    let centre = (lo + hi) / 2.0;
+                    let volume = step.x * step.y * step.z;
+                    chunks.push(schema::Chunk {
+                        element: 0,
+                        material: 0,
+                        hull: hull(lo, hi),
+                        volume_m3: volume,
+                        mass_kg: density * volume,
+                        centroid: centre.to_array(),
+                    });
+                    let faces = [
+                        (i + 1 < nx, [i + 1, j, k], Vec3::X, step.y * step.z),
+                        (j + 1 < ny, [i, j + 1, k], Vec3::Y, step.x * step.z),
+                        (k + 1 < nz, [i, j, k + 1], Vec3::Z, step.x * step.y),
+                    ];
+                    for (inside, [bi, bj, bk], normal, area) in faces {
+                        if inside {
+                            joints.push(schema::Joint {
+                                a: index(i, j, k),
+                                b: index(bi, bj, bk),
+                                area_m2: area,
+                                centroid: (centre + normal * step / 2.0).to_array(),
+                                normal: normal.to_array(),
+                                bond: schema::Bond::Seam,
+                            });
+                        }
+                    }
+                    if j == 0 {
+                        anchors.push(schema::Anchor {
+                            chunk: index(i, j, k),
+                            attachment: 0,
+                            area_m2: step.x * step.z,
+                            centroid: [centre.x, 0.0, centre.z],
+                        });
+                    }
+                }
+            }
+        }
+        joints.sort_by_key(|joint| (joint.a, joint.b));
+        let asset = ConstructionAsset {
+            id: "wall_fixture".into(),
+            format: schema::FORMAT,
+            foundation_y_m: 0.0,
+            materials: vec![material.into()],
+            attachments: vec!["mortared".into()],
+            components: vec!["wall".into()],
+            elements: vec![schema::Element {
+                name: "wall".into(),
+                part: "pier".into(),
+                component: 0,
+                material: 0,
+                surface_frame: schema::SurfaceFrame::Upright,
+                hull: hull(low, low + size),
+                chunks: [0, (nx * ny * nz) as u32],
+            }],
+            chunks,
+            joints,
+            anchors,
+        };
+        Arc::new(
+            ConstructionKind::resolve(
+                &asset.id,
+                &ron::ser::to_string(&asset).unwrap(),
+                registry,
+                Attachments::shipped_static(),
+            )
+            .unwrap(),
+        )
+    }
+
     /// [`column_construction`] with its base at height `base` in its frame, m.
     pub(crate) fn column_construction_from(base: f32) -> Arc<ConstructionKind> {
         let registry = crate::substances::SubstanceRegistry::shipped_static();

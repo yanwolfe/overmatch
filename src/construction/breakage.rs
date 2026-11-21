@@ -2305,16 +2305,6 @@ pub(crate) const LOOSE_GAP_M: f32 = 1e-3;
 /// [`fracture::ON_PLANE`].
 const CORNER_TOLERANCE_M: f64 = 1e-6;
 
-/// The face of `block` that `joint` lies on, if any: its plane through the joint's centroid,
-/// with the joint's normal.
-pub(crate) fn joint_face(block: &Block, joint: &Joint) -> Option<usize> {
-    block.planes.iter().position(|&(normal, offset)| {
-        // Resolution: a joint's unit normal is its face's, within the bake's f32 rounding.
-        normal.dot(joint.normal).abs() >= 1.0 - 1e-4
-            && (normal.dot(joint.centroid) - offset).abs() <= fracture::ON_PLANE
-    })
-}
-
 /// Which faces of `block` carry one of its `joints` (each with its index): where another body's
 /// coplanar face can meet it, a neighbour's once the two ride different bodies, or the anchor
 /// plane's. `Err` names a chunk-to-chunk joint on none of the faces: freed, its chunk would meet
@@ -2326,7 +2316,7 @@ pub(crate) fn joint_faces<'a>(
 ) -> Result<Vec<bool>, usize> {
     let mut faces = vec![false; block.planes.len()];
     for (j, joint) in joints {
-        match (joint_face(block, joint), joint.b) {
+        match (fracture::joint_face(block, joint), joint.b) {
             (Some(face), _) => faces[face] = true,
             (None, Side::Ground) => {}
             (None, Side::Chunk(_)) => return Err(j),

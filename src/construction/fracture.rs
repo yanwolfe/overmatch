@@ -10,6 +10,7 @@
 //! The construction design's "Parts decide what stands" and "Standoff blast" own the derivations.
 
 pub(crate) mod bondsolve;
+pub(crate) mod bound;
 pub(crate) mod parts;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -107,9 +108,10 @@ pub(crate) struct Compaction {
     /// plateau: the law supplies no per-pulse strain rate; applicability is a validation limit
     /// recorded in the construction design's material-data section.
     pub strength: f32,
-    /// The slowest compaction front's speed `u_c = √(σ_c,d ε_v / ρ)`, m/s, `ε_v = 1 − ρ / ρ_s` the
-    /// volumetric strain to lock-up at the row's fully dense density `ρ_s` (DERIVED: the locking
-    /// idealization compacts the pores shut and no further).
+    /// The volumetric strain to lock-up, `ε_v = 1 − ρ / ρ_s`, at the row's fully dense density
+    /// `ρ_s` (DERIVED: the locking idealization compacts the pores shut and no further).
+    pub lock_up: f32,
+    /// The slowest compaction front's speed `u_c = √(σ_c,d ε_v / ρ)`, m/s.
     pub front_speed: f32,
     /// The volume the fractured zone about a crushed volume spans, per volume crushed
     /// ([`BlastFacts::fractured_zone`]). StandIn: the static elastic estimate stands in for a
@@ -154,6 +156,7 @@ impl Compaction {
         let lock_up = 1.0 - density / facts.solid_density;
         Self {
             strength: strength as f32,
+            lock_up: lock_up as f32,
             front_speed: (strength * lock_up / density).sqrt() as f32,
             zone: facts.fractured_zone(tensile, across) as f32,
         }
@@ -635,6 +638,16 @@ impl Block {
             })
             .collect()
     }
+}
+
+/// The face of `block` that `joint` lies on, if any: its plane through the joint's centroid,
+/// with the joint's normal.
+pub(crate) fn joint_face(block: &Block, joint: &Joint) -> Option<usize> {
+    block.planes.iter().position(|&(normal, offset)| {
+        // Resolution: a joint's unit normal is its face's, within the bake's f32 rounding.
+        normal.dot(joint.normal).abs() >= 1.0 - 1e-4
+            && (normal.dot(joint.centroid) - offset).abs() <= ON_PLANE
+    })
 }
 
 /// The area a convex shape of faces `faces` ([`Block::face_areas`]) shows a ray along unit `dir`:
