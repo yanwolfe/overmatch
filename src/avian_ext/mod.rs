@@ -11,6 +11,7 @@ pub mod compliance;
 pub mod contact_match;
 pub mod contact_reduction;
 pub mod island_wake;
+pub mod reaction_bound;
 pub mod required_state;
 pub mod rest_test;
 pub mod solver_cost;
@@ -34,6 +35,7 @@ pub fn plugin(app: &mut App) {
     contact_reduction::plugin(app);
     island_wake::plugin(app);
     compliance::plugin(app);
+    reaction_bound::plugin(app);
     solver_cost::plugin(app);
     surface_motion::register();
 }

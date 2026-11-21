@@ -38,6 +38,10 @@ pub struct ContactNormalPart {
     /// OVERMATCH PATCH: the spring law's soft-constraint coefficients at this point's mass, read
     /// when [`Self::compliant`] is set. A writer sets both after constraint preparation.
     pub spring: SoftnessCoefficients,
+
+    /// OVERMATCH PATCH: the largest accumulated impulse the point holds, so the most one substep
+    /// applies along the normal. Infinite on a new part: Avian's rigid contact.
+    pub max_impulse: f32,
 }
 
 impl ContactNormalPart {
@@ -117,6 +121,7 @@ impl ContactNormalPart {
             softness,
             compliant: false, // OVERMATCH PATCH
             spring: softness, // OVERMATCH PATCH
+            max_impulse: f32::INFINITY, // OVERMATCH PATCH
         }
     }
 
@@ -176,7 +181,8 @@ impl ContactNormalPart {
         };
 
         // Clamp the accumulated impulse.
-        let new_impulse = (self.impulse + impulse).max(0.0);
+        // OVERMATCH PATCH: the upper clamp, `max_impulse`.
+        let new_impulse = (self.impulse + impulse).max(0.0).min(self.max_impulse);
         impulse = new_impulse - self.impulse;
         self.impulse = new_impulse;
         self.total_impulse += new_impulse;

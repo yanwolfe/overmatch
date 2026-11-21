@@ -23,7 +23,7 @@ Each patch takes one form, named in its section:
 - **dropped**: upstream 0.8.0 does it; the old witness runs against unpatched code.
 
 Patched sites in upstream files are tagged `OVERMATCH PATCH`. Fork lines are counted by `diff --minimal -ruN`
-of `src/` against the published crate: 979 in all (MEASURED), 901 in upstream files and 78 in the
+of `src/` against the published crate: 992 in all (MEASURED), 914 in upstream files and 78 in the
 fork-only `src/collision/narrow_phase/stationary_miss.rs`.
 
 Guards run as the game's own tests, each named in its patch's section.
@@ -620,6 +620,28 @@ not subtracted (the resting test); a free point's warm start kept, the spring ar
 speculative arm removed, or the law tested on overlap in place of the spring (the free-point test;
 the spring arm also the resting test); the zero law given the formula's coefficients (the zero-law
 test). Record: `upstream/avian-compliant-contact.md`.
+
+## Bounded contact (`src/dynamics/solver/contact/normal_part.rs`, `src/dynamics/solver/contact/mod.rs`): hook
+
+Subject: the game's building model (a body against a standing cell), game state only.
+
+Form: **hook**, for a game divergence: upstream's contact is rigid by design, so no draft goes to
+`upstream/`. `ContactNormalPart` gains `max_impulse: f32`, infinite on a new part, and the
+accumulated-impulse clamp in `solve_impulse` and in `apply_restitution` gains its upper side. A
+point's accumulated impulse is what one substep applies, so a finite `max_impulse` is the most the
+point returns per substep; an infinite one is Avian's contact bit for bit.
+
+The bound and its writers are the game's (`avian_ext::reaction_bound`): a writer sets each point
+of a manifold its largest normal impulse over the step in the `Bounds` resource, keyed by contact
+and manifold, after the narrow phase; the store is cleared at the start of every step. After
+`SolverSystems::PrepareContactConstraints` the game gives each bounded point its bound over the
+substep and clamps its warm start to it; after the last solve it reads which points ended the step
+at their bound. Friction needs no patch: the tangent solve clamps to the normal impulse.
+
+Not game-side: the clamp sits inside the solve's inner loop, and no public field or schedule slot
+caps an impulse between two solves. 13 fork lines (MEASURED).
+
+Guard: `src/tests/avian_reaction_bound.rs`.
 
 ## Body-pair contact reduction: game-side
 
