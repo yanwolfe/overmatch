@@ -8,11 +8,6 @@
 //! Pure functions of one structure's state ([`Standing`]); `breakage::bounded` hands the
 //! result to the solver's contacts and frees what gave.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the law's wiring lands in the next change")
-)]
-
 use bevy::math::{DVec3, Vec3};
 
 use super::bondsolve::{joint_normal, pair_friction};
@@ -162,6 +157,37 @@ impl Standing<'_> {
     fn toward(&self, joint: &Joint, c: usize) -> DVec3 {
         let toward_a = joint_normal(self.structure, joint);
         if joint.a == c { toward_a } else { -toward_a }
+    }
+
+    /// `cells` split into the ordered sets its touching joints connect: each is pressed as one
+    /// block.
+    pub(crate) fn connected(&self, cells: &[usize]) -> Vec<Vec<usize>> {
+        let mut left: std::collections::BTreeSet<usize> = cells.iter().copied().collect();
+        let mut blocks = Vec::new();
+        while let Some(first) = left.pop_first() {
+            let mut block = vec![first];
+            let mut open = vec![first];
+            while let Some(c) = open.pop() {
+                for &j in &self.state.topology.incident[c] {
+                    let joint = &self.structure.joints[j];
+                    let other = if joint.a == c {
+                        chunk(joint.b)
+                    } else {
+                        Some(joint.a)
+                    };
+                    if let Some(other) = other
+                        && self.touching(j, joint)
+                        && left.remove(&other)
+                    {
+                        block.push(other);
+                        open.push(other);
+                    }
+                }
+            }
+            block.sort_unstable();
+            blocks.push(block);
+        }
+        blocks
     }
 
     /// The matter a push `along` on `pressed` moves: joints between cells pressed together carry
@@ -318,9 +344,46 @@ impl Standing<'_> {
         })
     }
 
-    /// How `pressed` (ordered) give to a body pushing them each of `pushes`' ways, `spent` of
-    /// their give crossed already: the way and direction that return the body least this step.
-    /// `None` when no push moves them (every lean is nil or away).
+    /// How `pressed` (ordered) give to a body pushing them along `push`, `spent` of their give
+    /// crossed already: the way that returns the body least this step. `None` when no way is
+    /// open along it.
+    pub(crate) fn give_along(
+        &self,
+        pressed: &[usize],
+        push: Push,
+        spent: f64,
+        dt: f64,
+    ) -> Option<Yield> {
+        let plug = self.plug(pressed, push.along);
+        let ways = [
+            (Way::ShearOut, self.shear_out(&plug, push.along)),
+            (Way::Crush, self.crush(pressed, &plug, push.along)),
+        ];
+        let mut least: Option<Yield> = None;
+        for (way, price) in ways {
+            let Some(price) = price else {
+                continue; // The way is closed this direction.
+            };
+            let impulse = reaction(price, spent, push.closing, dt);
+            if least.as_ref().is_none_or(|least| impulse < least.impulse) {
+                let leaves = match way {
+                    Way::ShearOut => plug.cells.clone(),
+                    Way::Crush => pressed.to_vec(),
+                };
+                least = Some(Yield {
+                    way,
+                    push,
+                    price,
+                    impulse,
+                    leaves,
+                });
+            }
+        }
+        least
+    }
+
+    /// [`Self::give_along`] the push of `pushes` that returns the body's contact least: the
+    /// cheapest way and direction. `None` when no push moves them (every lean is nil or away).
     pub(crate) fn give(
         &self,
         pressed: &[usize],
@@ -328,41 +391,10 @@ impl Standing<'_> {
         spent: f64,
         dt: f64,
     ) -> Option<Yield> {
-        let mut least: Option<(f64, Yield)> = None;
-        for &push in pushes {
-            if push.lean <= 0.0 {
-                continue;
-            }
-            let plug = self.plug(pressed, push.along);
-            let ways = [
-                (Way::ShearOut, self.shear_out(&plug, push.along)),
-                (Way::Crush, self.crush(pressed, &plug, push.along)),
-            ];
-            for (way, price) in ways {
-                let Some(price) = price else {
-                    continue; // The way is closed this direction.
-                };
-                let impulse = reaction(price, spent, push.closing, dt);
-                let normal = impulse / push.lean;
-                if least.as_ref().is_none_or(|(least, _)| normal < *least) {
-                    let leaves = match way {
-                        Way::ShearOut => plug.cells.clone(),
-                        Way::Crush => pressed.to_vec(),
-                    };
-                    least = Some((
-                        normal,
-                        Yield {
-                            way,
-                            push,
-                            price,
-                            impulse,
-                            leaves,
-                        },
-                    ));
-                }
-            }
-        }
-        least.map(|(_, given)| given)
+        (pushes.iter())
+            .filter(|push| push.lean > 0.0)
+            .filter_map(|&push| self.give_along(pressed, push, spent, dt))
+            .min_by(|a, b| (a.impulse / a.push.lean).total_cmp(&(b.impulse / b.push.lean)))
     }
 }
 

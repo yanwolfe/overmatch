@@ -827,7 +827,7 @@ struct Resolution {
 /// A released plug committed to its owner's topology before the exchange ([`cut_fragments`]):
 /// the plug, the fragments it and its unsupported remainder leave as, and their ledger entries.
 pub(super) struct Cut {
-    plug: Vec<usize>,
+    pub(super) plug: Vec<usize>,
     fragments: Vec<Vec<usize>>,
     entries: Vec<Entry>,
 }

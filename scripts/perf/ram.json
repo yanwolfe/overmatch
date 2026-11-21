@@ -1,6 +1,8 @@
 {
   "instance": "house_0001",
   "heading_deg": -3.917,
+  "lateral_m": 0.0,
+  "speed_fraction": 1.0,
   "runup_margin": 2.0,
   "minimum_speed_fraction": 0.95,
   "approach_s": 30,

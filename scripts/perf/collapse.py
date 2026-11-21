@@ -505,14 +505,14 @@ def ram_recipe(path):
     """Operator route choices; the server derives speed and run-up from its admitted tank data, and
     admits the structure reading's labelled in_place_m (src/net/ram.rs, Recipe)."""
     value = json.loads(path.read_text())
-    keys = {"instance", "heading_deg", "runup_margin", "minimum_speed_fraction", "approach_s", "deadline_s", "settle_s", "in_place_m"}
+    keys = {"instance", "heading_deg", "lateral_m", "speed_fraction", "runup_margin", "minimum_speed_fraction", "approach_s", "deadline_s", "settle_s", "in_place_m"}
     if not isinstance(value, dict) or set(value) != keys or not isinstance(value["instance"], str) or not value["instance"]:
         raise ValueError(f"{path}: expected ram recipe fields {sorted(keys)} and a nonempty instance")
     for key in keys - {"instance", "in_place_m"}:
         v = value[key]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
             raise ValueError(f"{path}: {key} must be finite")
-    if value["runup_margin"] < 1 or not 0 < value["minimum_speed_fraction"] <= 1 or any(value[k] <= 0 for k in ("approach_s", "deadline_s", "settle_s")) or value["settle_s"] >= value["deadline_s"]:
+    if value["runup_margin"] < 1 or not 0 < value["speed_fraction"] <= 1 or not 0 < value["minimum_speed_fraction"] <= 1 or any(value[k] <= 0 for k in ("approach_s", "deadline_s", "settle_s")) or value["settle_s"] >= value["deadline_s"]:
         raise ValueError(f"{path}: invalid ram margin, speed fraction or timing domain")
     return value
 

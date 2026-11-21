@@ -19,7 +19,8 @@ use crate::{
     command::ParsedTankCommand,
     construction::{
         Body, ConstructionKind,
-        breakage::{Breakage, GRADE_M, Piece, SweepAccount},
+        breakage::{Breakage, GRADE_M, Piece, SweepAccount, bounded::BoundAccount},
+        fracture::bound::Way,
     },
     contact_transfer::ContactTransfers,
     cost::{
@@ -33,7 +34,7 @@ use crate::{
     spec::TankSpec,
     tank::{Tank, TankTemplate},
     terrain_grid::{HeightGrid, Stance, spawn_pos},
-    track::sim::TrackDrive,
+    track::{sim::TrackDrive, transmission::RPM_TO_RAD},
 };
 
 mod structure;
@@ -45,6 +46,10 @@ const LEVER: &str = "OVERMATCH_RAM";
 pub(super) struct Recipe {
     instance: String,
     heading_deg: f64,
+    /// The first-contact speed the pass aims at, as a share of the tank's governed speed.
+    speed_fraction: f64,
+    /// The approach line's offset to the heading's right of the instance's origin, m.
+    lateral_m: f64,
     /// Operator margin on the ideal constant-top-gear-force acceleration distance.
     runup_margin: f64,
     minimum_speed_fraction: f64,
@@ -63,13 +68,15 @@ impl Recipe {
             LeverError::invalid(
                 LEVER,
                 text,
-                "JSON ram recipe: nonempty instance, finite heading_deg, runup_margin >= 1, minimum_speed_fraction in (0,1], positive approach_s/deadline_s/settle_s with settle_s < deadline_s, in_place_m as [metres > 0, {\"Unit\": \"why this scale\"}]",
+                "JSON ram recipe: nonempty instance, finite heading_deg and lateral_m, speed_fraction and minimum_speed_fraction in (0,1], runup_margin >= 1, positive approach_s/deadline_s/settle_s with settle_s < deadline_s, in_place_m as [metres > 0, {\"Unit\": \"why this scale\"}]",
             )
         };
         let recipe: Self =
             with_shipped_policy(|| serde_json::from_str(text)).map_err(|_| invalid())?;
         if recipe.instance.is_empty()
             || !recipe.heading_deg.is_finite()
+            || !(0.0 < recipe.speed_fraction && recipe.speed_fraction <= 1.0)
+            || !recipe.lateral_m.is_finite()
             || !recipe.runup_margin.is_finite()
             || recipe.runup_margin < 1.0
             || !recipe.minimum_speed_fraction.is_finite()
@@ -121,6 +128,8 @@ struct Plan {
     rotation: [f32; 4],
     runup_m: f32,
     governed_m_s: f32,
+    /// The speed the run-up aims at, and the least first-contact speed that admits the run.
+    aimed_m_s: f32,
     minimum_m_s: f64,
     /// DERIVED: where the hull's root has carried its rear past the construction, along the
     /// heading from the map origin, m: the construction's far bound plus the tank's stance reach.
@@ -187,10 +196,30 @@ pub(super) struct HullRow {
     /// Belt surface speeds, left and right.
     belt_m_s: [f32; 2],
     solver_ns: Channels,
-    /// The sweep's exchange into the hull along its forward, N s.
-    sweep_ns: f32,
-    /// The sweep's verdict on each cut the hull met, `[demand, capacity]`, N.
-    verdicts_n: Vec<[f32; 2]>,
+    /// Every block of standing cells the step bounded (`construction::breakage::bounded`).
+    blocks: Vec<BlockReadout>,
+    /// Cells the step's over-pushed blocks freed.
+    freed: usize,
+}
+
+/// One bounded block of standing cells over one step.
+#[derive(Serialize)]
+struct BlockReadout {
+    /// The ram's tank presses it; a loose piece otherwise.
+    hull: bool,
+    cells: usize,
+    /// The way it gives soonest at the speed it was crossed.
+    way: &'static str,
+    force_n: f32,
+    work_j: f32,
+    /// The pressing body's speed along the push after the step.
+    closing_m_s: f32,
+    /// The most it returned along the push over the step, N s.
+    bound_ns: f32,
+    /// A point ended the step at its bound.
+    yielded: bool,
+    /// The share of its give crossed; one frees it.
+    spent: f32,
 }
 
 /// Solver momentum into the hull along its forward over one step, N s, by the other body.
@@ -210,7 +239,7 @@ impl HullRow {
     /// The solver and the sweep keep every state finite; a reading that is not is a bug.
     fn assert_finite(&self, tick: u64) {
         let s = self.solver_ns;
-        let fields: [(&str, &[f32]); 9] = [
+        let fields: [(&str, &[f32]); 8] = [
             ("position_m", &self.position_m),
             ("velocity_m_s", &self.velocity_m_s),
             ("forward_m_s", &[self.forward_m_s]),
@@ -219,10 +248,8 @@ impl HullRow {
             ("drive", &self.drive),
             ("belt_m_s", &self.belt_m_s),
             ("solver_ns", &[s.standing, s.piece, s.other, s.retired]),
-            ("sweep_ns", &[self.sweep_ns]),
         ];
-        let verdicts = self.verdicts_n.iter().map(|v| ("verdicts_n", v.as_slice()));
-        for (field, values) in fields.into_iter().chain(verdicts) {
+        for (field, values) in fields {
             assert!(
                 values.iter().all(|v| v.is_finite()),
                 "ram row {tick}: hull.{field} is not finite: {values:?}"
@@ -276,22 +303,38 @@ fn install_recipe(app: &mut App, recipe: Recipe) {
     app.add_systems(PostStartup, prepare);
 }
 
-/// DERIVED ideal run-up: d = v²/(2a), a = T_peak * top_reduction / (r * mass).
-/// It excludes terrain and rolling losses; the recipe's margin buys distance, and measured
+/// Resolution: the midpoint steps of [`runup`]'s integral. The pull is piecewise smooth in speed
+/// with one break per gear, so a step of 1/256 of the aim places each within 0.4 % of it.
+const RUNUP_STEPS: usize = 256;
+
+/// DERIVED ideal run-up to `fraction` of the governed speed, with that speed: ∫ m v dv / P(v),
+/// `P` the pull of the best gear whose engine speed at `v` stays under the governor (below idle
+/// the clutch slips at idle torque), `T(rpm) * reduction / r`. It excludes terrain and rolling
+/// losses and the time a shift takes; the recipe's margin buys distance, and measured
 /// first-contact speed is the admission gate. It never substitutes an estimated impact speed.
-fn runup(spec: &TankSpec, margin: f32) -> (f32, f32) {
+fn runup(spec: &TankSpec, margin: f32, fraction: f32) -> (f32, f32) {
     let drive = spec
         .track
         .nominal_transmission_params(&spec.roadwheels, spec.mass)
         .expect("spawn uses an admitted tank transmission");
     let speed = drive.governed_speed(false);
-    let top = drive
-        .gears_fwd
-        .last()
-        .expect("transmission admission requires forward gears");
-    let acceleration =
-        drive.torque_at(drive.peak_torque_rpm) * top / drive.sprocket_radius / spec.mass;
-    (margin * speed * speed / (2.0 * acceleration), speed)
+    let step = fraction * speed / RUNUP_STEPS as f32;
+    let ideal: f32 = (0..RUNUP_STEPS)
+        .map(|k| {
+            let v = (k as f32 + 0.5) * step;
+            let pull = (drive.gears_fwd.iter())
+                .filter_map(|&gear| {
+                    let rpm = v * gear / drive.sprocket_radius / RPM_TO_RAD;
+                    (rpm <= drive.engine.governed_rpm).then(|| {
+                        drive.torque_at(rpm.max(drive.engine.idle_rpm)) * gear
+                            / drive.sprocket_radius
+                    })
+                })
+                .fold(0.0_f32, f32::max);
+            spec.mass * v * step / pull
+        })
+        .sum();
+    (margin * ideal, speed)
 }
 
 impl Recipe {
@@ -306,30 +349,37 @@ impl Recipe {
     ) -> Result<Plan, LeverError> {
         let invalid = |why| LeverError::invalid(LEVER, &self.instance, why);
         let (instance, kind) = self.construction(manifest)?;
-        let (runup_m, governed_m_s) = runup(spec, self.runup_margin as f32);
+        let (runup_m, governed_m_s) =
+            runup(spec, self.runup_margin as f32, self.speed_fraction as f32);
         let rotation = self.rotation();
         let direction = rotation * Vec3::NEG_Z;
-        let xz = instance.pose.xz() - direction.xz() * runup_m;
+        let points = points(rotation);
+        let stance = Stance::enclosing(points.iter().copied());
+        let pose = Transform::from_isometry(instance.pose.at_height(0.0));
+        let (min, max) = kind.bounds();
+        let (near, far) = (0..8)
+            .map(|k| Vec3::select(BVec3::new(k & 1 > 0, k & 2 > 0, k & 4 > 0), max, min))
+            .map(|corner| pose.transform_point(corner).dot(direction))
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(near, far), at| {
+                (near.min(at), far.max(at))
+            });
+        // The run-up ends where the tank's front reaches the construction's near bound.
+        let back = pose.translation.dot(direction) - (near - stance.reach_m - runup_m);
+        let aside = rotation * Vec3::X * self.lateral_m as f32;
+        let xz = instance.pose.xz() - direction.xz() * back + aside.xz();
         let limit = super::spawn_map::spawn_limit(manifest.extent.half_extent());
         if !runup_m.is_finite() || xz.abs().max_element() > limit {
             return Err(invalid(
                 "derived run-up is outside spawn bounds; choose another approach or instance",
             ));
         }
-        let points = points(rotation);
-        let stance = Stance::enclosing(points.iter().copied());
         let spawn = spawn_pos(height, xz, stance);
-        let pose = Transform::from_isometry(instance.pose.at_height(0.0));
-        let (min, max) = kind.bounds();
-        let far = (0..8)
-            .map(|k| Vec3::select(BVec3::new(k & 1 > 0, k & 2 > 0, k & 4 > 0), max, min))
-            .map(|corner| pose.transform_point(corner).dot(direction))
-            .fold(f32::NEG_INFINITY, f32::max);
         // Each point of the tank approaching, in the construction's frame, its root standing at
         // its stance over its own ground.
         let turn = pose.rotation.inverse();
         let lift = Vec3::Y * (GRADE_M + stance.depth_m);
-        let origins = (points.iter()).map(|&point| turn * (point - direction * runup_m) + lift);
+        let origins =
+            (points.iter()).map(|&point| turn * (point - direction * back + aside) + lift);
         let panel = structure::Panel::met(kind, origins, turn * direction).map_err(|why| {
             let value = format!(
                 "instance {} heading_deg {}",
@@ -342,7 +392,10 @@ impl Recipe {
             rotation: rotation.to_array(),
             runup_m,
             governed_m_s,
-            minimum_m_s: f64::from(governed_m_s) * self.minimum_speed_fraction,
+            aimed_m_s: governed_m_s * self.speed_fraction as f32,
+            minimum_m_s: f64::from(governed_m_s)
+                * self.speed_fraction
+                * self.minimum_speed_fraction,
             clear_m: far + stance.reach_m,
             panel,
         })
@@ -427,6 +480,7 @@ pub(super) struct Hull<'w, 's> {
     >,
     kinds: Query<'w, 's, (Has<Body>, Has<DebrisPiece>)>,
     contacts: Res<'w, ContactTransfers>,
+    bound: Res<'w, BoundAccount>,
     sweep: Res<'w, SweepAccount>,
 }
 
@@ -466,15 +520,23 @@ impl Hull<'_, '_> {
             drive: [drive.throttle, drive.steer],
             belt_m_s: belts.sides.map(|side| side.speed),
             solver_ns,
-            // The sweep hands the hull the opposite of the impulse it exchanges.
-            sweep_ns: (self.sweep.exchanges.iter())
-                .filter(|(body, ..)| *body == tank)
-                .map(|(_, impulse, _)| -impulse.dot(forward))
-                .sum(),
-            verdicts_n: (self.sweep.samples.iter())
-                .filter(|(body, ..)| *body == tank)
-                .map(|(_, _, _, (demand, capacity, ..))| [*demand, *capacity])
+            blocks: (self.bound.blocks.iter())
+                .map(|block| BlockReadout {
+                    hull: block.body == tank,
+                    cells: block.cells,
+                    way: match block.way {
+                        Way::ShearOut => "shear_out",
+                        Way::Crush => "crush",
+                    },
+                    force_n: block.price[0] as f32,
+                    work_j: block.price[1] as f32,
+                    closing_m_s: block.closing as f32,
+                    bound_ns: block.bound as f32,
+                    yielded: block.yielded,
+                    spent: block.spent as f32,
+                })
                 .collect(),
+            freed: self.bound.freed.len(),
         }
     }
 }
@@ -1037,6 +1099,7 @@ mod tests {
             rotation: [0.0, 0.0, 0.0, 1.0],
             runup_m: 1.0,
             governed_m_s: 1.0,
+            aimed_m_s: 1.0,
             minimum_m_s: 1.0,
             clear_m: 1.0,
             panel: structure::tests::column_panel(),
@@ -1150,13 +1213,19 @@ mod tests {
             "../../assets/tiger_1/tiger_1.tank.ron"
         ))
         .unwrap();
-        let (distance, speed) = runup(&spec, 1.0); // Fixture: ideal margin.
+        let (distance, speed) = runup(&spec, 1.0, 1.0); // Fixture: ideal margin, full speed.
         spec.mass *= 2.0; // Fixture: otherwise identical heavier vehicle.
-        let (heavier, same_speed) = runup(&spec, 1.0);
+        let (heavier, same_speed) = runup(&spec, 1.0, 1.0);
         assert_eq!(same_speed, speed);
-        assert_eq!(heavier, 2.0 * distance);
-        // Resolution: allow roundoff across the multiplication and divisions in the distance.
-        assert!((runup(&spec, 3.0).0 - 3.0 * heavier).abs() <= 4.0 * f32::EPSILON * heavier);
+        // Resolution: allow roundoff across the integral's sum and the margin's product.
+        let close = |a: f32, b: f32| (a - b).abs() <= 1e-4 * b;
+        assert!(close(heavier, 2.0 * distance));
+        assert!(close(runup(&spec, 3.0, 1.0).0, 3.0 * heavier));
+        let slow = runup(&spec, 1.0, 0.25).0;
+        assert!(
+            slow < heavier / 16.0,
+            "a quarter of the speed in the lower gears takes under a sixteenth of the distance"
+        );
     }
     /// The game's environment destruction: the shipped tracked recipe accounts for the hull's
     /// sweep exchange and whole-step momentum. A cast body's solver look-ahead against exposed
@@ -1446,7 +1515,6 @@ mod tests {
                 ("standing", s.standing, self.target),
                 ("pieces", s.piece + s.retired, self.rubble),
                 ("other", s.other, self.ground),
-                ("sweep", row.sweep_ns, self.sweep),
             ] {
                 assert!(
                     (read - owned.dot(forward)).abs() <= 1e-4 * scale,

@@ -32,6 +32,9 @@ labelled!(Stage, NAMES, COUNT {
     Publish = "publish_us",
     Contacts = "contacts_us",
     Sweep = "sweep_us",
+    // The contact law: pricing pressed cells inside the step, and freeing what gave after it.
+    Bound = "bound_us",
+    Release = "release_us",
     SweepCensus = "sweep_census_us",
     ContactCensus = "contact_census_us",
     Crumble = "crumble_us",

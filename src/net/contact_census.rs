@@ -452,7 +452,7 @@ pub(super) fn install(app: &mut App) {
     );
     app.add_systems(
         FixedPostUpdate,
-        activate.before(crate::construction::breakage::SweepSet),
+        activate.before(crate::construction::breakage::BeltSet),
     );
 }
 

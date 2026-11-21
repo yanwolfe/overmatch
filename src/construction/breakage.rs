@@ -859,6 +859,7 @@ type Colliders<'w, 's> = Query<
     Or<(With<Element>, With<ChunkCollider>)>,
 >;
 
+pub(crate) mod bounded;
 pub(crate) mod felling;
 mod sweep_intake;
 #[cfg(test)]
@@ -3233,7 +3234,7 @@ pub(crate) struct LawSet;
 
 /// Hull sweep and its reconciliation, before physics consumes the changed colliders.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct SweepSet;
+pub(crate) struct BeltSet;
 
 /// Carrier splits after the laws, flushed before publication reads the resulting groups.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -3257,17 +3258,10 @@ fn sweep(intake: sweep_intake::Intake, stages: Option<Res<Stages>>) {
 
 pub(crate) fn sim_plugin(app: &mut App) {
     crate::collider_rehome::plugin(app);
+    bounded::plugin(app);
     app.init_resource::<SweepAccount>()
         .init_resource::<SweepCast>()
         .add_message::<crate::debris::crumble::Shed>()
-        .add_systems(
-            FixedPostUpdate,
-            (sweep, reconcile.run_if(sweep_intake::changed))
-                .chain()
-                .in_set(SweepSet)
-                .before(avian3d::prelude::PhysicsSystems::Prepare)
-                .run_if(not(resource_exists::<ClientReplica>)),
-        )
         .init_resource::<Queue>()
         .init_resource::<Record>()
         .add_observer(read_shell)

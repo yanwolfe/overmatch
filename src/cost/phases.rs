@@ -13,7 +13,7 @@ use super::{
     clock::Edge,
     stages::{NamedTimes, Stages},
 };
-use crate::construction::breakage::{LawSet, SplitSet, SweepSet};
+use crate::construction::breakage::{BeltSet, LawSet, SplitSet};
 use crate::state::SimPhase;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, ScheduleLabel)]
@@ -170,7 +170,7 @@ pub(crate) fn install(app: &mut App) {
         FixedPostUpdate,
         (
             boundary(Phase::PhysicsPrepare)
-                .after(SweepSet)
+                .after(BeltSet)
                 .before(PhysicsSystems::Prepare),
             boundary(Phase::PhysicsMass)
                 .after(avian3d::physics_transform::PhysicsTransformSystems::TransformToPosition)
@@ -278,7 +278,7 @@ mod tests {
         app.configure_sets(
             FixedPostUpdate,
             (
-                SweepSet,
+                BeltSet,
                 PhysicsSystems::Prepare,
                 PhysicsSystems::StepSimulation,
                 PhysicsSystems::Writeback,
@@ -361,7 +361,7 @@ mod tests {
             .add_systems(FixedFirst, commands_in(Phase::FixedFirst))
             .add_systems(
                 FixedPostUpdate,
-                commands_in(Phase::SweepEcs).in_set(SweepSet),
+                commands_in(Phase::SweepEcs).in_set(BeltSet),
             )
             .add_systems(
                 FixedPostUpdate,

@@ -1,12 +1,15 @@
 //! Bounded contact: a contact point's normal reaction over a physics step is at most an impulse
-//! its writer names, in place of Avian's rigid contact, which returns whatever impulse stops the
-//! approach. A writer sets a manifold's bounds in [`Bounds`] after the narrow phase and before
-//! Avian prepares the step's contact constraints (`SolverSystems::PrepareContactConstraints`).
-//! The store is cleared at the start of every physics step, so a bound never outlives its step;
+//! its writer names, and does at most a work its writer names on the bodies closing through it,
+//! in place of Avian's rigid contact, which returns whatever impulse stops the approach. A
+//! writer sets a manifold's bounds in [`Bounds`] after the narrow phase and before Avian
+//! prepares the step's contact constraints (`SolverSystems::PrepareContactConstraints`). The
+//! store is cleared at the start of every physics step, so a bound never outlives its step;
 //! what the step did with it ([`Bounds::held`]) reads until the next step starts.
 //!
-//! [`apply_bounds`] hands each prepared point the fork's `ContactNormalPart::max_impulse` (the
-//! fork's `OVERMATCH_PATCH.md`, "Bounded contact"): its bound over one substep. A point's
+//! [`apply_bounds`] hands each prepared point the fork's `ContactNormalPart::max_impulse` and
+//! `max_work` (the fork's `OVERMATCH_PATCH.md`, "Bounded contact"): its bounds over one substep.
+//! The solve holds the point to `max_work / v` at the closing speed `v` it finds there, so a
+//! body a third one drives inside the step is met at the speed it really has. A point's
 //! accumulated impulse is what one substep applies (the warm start reapplies the whole of it,
 //! `SolverConfig::warm_start_coefficient` 1), so the point returns at most its bound over the
 //! step along its normal, and Coulomb friction, which the solve clamps to the normal impulse, at
@@ -24,11 +27,26 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::tasks::{ComputeTaskPool, ParallelSlice, ParallelSliceMut};
 
-/// One manifold's points, in manifold order: each point's bound over the step (N·s; infinite for
-/// a point left rigid), and whether the step ended with the point at it.
+/// The most a point returns over a step: an impulse, N·s, and the work it does on the bodies
+/// closing through it, J. Infinite parts leave that side rigid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bound {
+    pub impulse: f32,
+    pub work: f32,
+}
+
+impl Bound {
+    pub const RIGID: Self = Self {
+        impulse: f32::INFINITY,
+        work: f32::INFINITY,
+    };
+}
+
+/// One manifold's points, in manifold order: each point's bound, and whether the step ended
+/// with the point at it.
 #[derive(Debug)]
 struct Points {
-    impulse: Vec<f32>,
+    bounds: Vec<Bound>,
     held: Vec<bool>,
 }
 
@@ -36,28 +54,18 @@ struct Points {
 #[derive(Resource, Default, Debug)]
 pub struct Bounds(HashMap<(u32, usize), Points>);
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the game's writer lands with the law's wiring")
-)]
 impl Bounds {
-    /// Bounds each point of manifold `manifold` of pair `contact` at its entry of `impulses`
-    /// (N·s over the step, in manifold order; infinite leaves a point rigid), replacing any set
-    /// before.
-    pub fn set(&mut self, contact: ContactId, manifold: usize, impulses: Vec<f32>) {
+    /// Bounds each point of manifold `manifold` of pair `contact` at its entry of `bounds` (in
+    /// manifold order), replacing any set before.
+    pub fn set(&mut self, contact: ContactId, manifold: usize, bounds: Vec<Bound>) {
         assert!(
-            impulses.iter().all(|&impulse| impulse >= 0.0),
-            "a contact's reaction bounds {impulses:?} N·s hold a negative or NaN: a point pushes \
-             or bears nothing"
+            (bounds.iter()).all(|bound| bound.impulse >= 0.0 && bound.work >= 0.0),
+            "a contact's reaction bounds {bounds:?} hold a negative or NaN: a point pushes or \
+             bears nothing"
         );
-        let held = vec![false; impulses.len()];
-        self.0.insert(
-            (contact.0, manifold),
-            Points {
-                impulse: impulses,
-                held,
-            },
-        );
+        let held = vec![false; bounds.len()];
+        self.0
+            .insert((contact.0, manifold), Points { bounds, held });
     }
 
     /// Per point of a bounded manifold, whether the last step ended with the point returning all
@@ -114,12 +122,13 @@ pub(crate) fn apply_bounds(
                 };
                 assert_eq!(
                     constraint.points.len(),
-                    points.impulse.len(),
+                    points.bounds.len(),
                     "a writer bounds a manifold point for point"
                 );
-                for (point, impulse) in constraint.points.iter_mut().zip(&points.impulse) {
-                    let most = impulse * share;
+                for (point, bound) in constraint.points.iter_mut().zip(&points.bounds) {
+                    let most = bound.impulse * share;
                     point.normal_part.max_impulse = most;
+                    point.normal_part.max_work = bound.work * share;
                     // The warm start is last step's impulse, which this step's bound never saw.
                     point.normal_part.impulse = point.normal_part.impulse.min(most);
                 }
@@ -127,8 +136,7 @@ pub(crate) fn apply_bounds(
         });
 }
 
-/// After the step's last solve: which bounded points ended it at their bound. The clamp stores
-/// the bound itself, so equality is exact.
+/// After the step's last solve: which bounded points it left at their bound.
 fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
     if bounds.0.is_empty() {
         return;
@@ -139,7 +147,7 @@ fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
             let key = (constraint.contact_id.0, constraint.manifold_index);
             if bounds.0.contains_key(&key) {
                 let held = (constraint.points.iter())
-                    .map(|point| point.normal_part.impulse >= point.normal_part.max_impulse)
+                    .map(|point| point.normal_part.clamped)
                     .collect::<Vec<_>>();
                 found.push((key, held));
             }
