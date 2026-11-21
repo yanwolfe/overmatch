@@ -649,6 +649,47 @@ fn a_planar_cut_runs_through_the_depth_and_leaves_no_sliver() {
     }
 }
 
+/// A WALL RUN IS THE BOX ITS NUMBERS STATE, CUT THROUGH ITS THICKNESS WHEREVER IT POINTS: its
+/// length along the plan line, its thickness across it, and every chunk reaching both faces. The
+/// laws read a wall's cells as through-thickness (a breach opens the whole leaf), and a spec's
+/// author relies on a run askew in plan standing where it is drawn. Mutants: a cut along the run
+/// or the world's axes, a thickness laid along the line, and a run of a part the wall never
+/// states passing as some other part's matter.
+#[test]
+fn a_wall_run_is_cut_through_its_thickness_wherever_it_points() {
+    // FIXTURE DATA: a 5 m run on a 3-4-5 line, 0.25 m thick, 2 m high.
+    let text = |part: &str| {
+        format!(
+            "Wall(id: \"fixture\", foundation_y_m: 0.0, foundation_attachment: \"mortared\", \
+             parts: {{\"leaf\": (material: \"Brick\", surface_frame: Upright, cut: Planar((\
+             pitch_m: (0.3, Fixture(\"fixture\")), keep_share: (1.0, Fixture(\"fixture\")))))}}, \
+             runs: [(name: \"leaf\", part: \"{part}\", component: \"leaf\", from: (1.0, 2.0), \
+             to: (4.0, 6.0), thickness_m: 0.25, y_m: (0.0, 2.0))], joins: [])"
+        )
+    };
+    let built = wall::Wall::from_ron(&text("leaf")).unwrap();
+    let piece = &built.pieces[0];
+    let (along, across) = (DVec3::new(0.6, 0.0, 0.8), DVec3::new(0.8, 0.0, -0.6));
+    let span = |solid: &Polyhedron, axis: DVec3| {
+        let (lo, hi) = solid.extent(axis);
+        hi - lo
+    };
+    assert!((span(&piece.solid, along) - 5.0).abs() < 1e-9);
+    assert!((span(&piece.solid, across) - 0.25).abs() < 1e-9);
+    assert_eq!(
+        piece.solid.extent(along).0,
+        along.dot(DVec3::new(1.0, 0.0, 2.0))
+    );
+    let cut = fracture::chunks(piece, "fixture").unwrap();
+    assert!(cut.len() > 1, "the fixture is cut");
+    for (k, chunk) in cut.iter().enumerate() {
+        let through = span(chunk, across);
+        assert!((through - 0.25).abs() < 1e-9, "chunk {k} spans {through}");
+    }
+    let err = wall::Wall::from_ron(&text("pier")).unwrap_err();
+    assert!(err.contains("runs[0]") && err.contains("pier"), "{err}");
+}
+
 /// THE GRAIN AXIS IS THE SURFACE FRAME'S: an authored grain is its own unit direction, and an
 /// upright frame's axis is the construction's up. The cutter and the view read one grain fact.
 #[test]
