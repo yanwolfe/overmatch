@@ -124,7 +124,7 @@ pub(crate) struct SweepAccount {
     #[cfg(test)]
     pub(crate) source_impulses: Vec<SourceImpulse>,
     #[cfg(test)]
-    pub(crate) cancelled_belts: Vec<crate::contact_transfer::AppliedContact>,
+    pub(crate) cancelled_belts: Vec<crate::contact_transfer::StagedForce>,
     /// Per source body, the force it drives into a cut with (N, world).
     #[cfg(test)]
     pub(crate) drives: Vec<(Entity, Vec3)>,
@@ -366,7 +366,6 @@ pub(super) struct Intake<'w, 's> {
     spatial: SpatialQuery<'w, 's>,
     aabbs: Query<'w, 's, &'static ColliderAabb>,
     transfers: ResMut<'w, ContactTransfers>,
-    swapped: ResMut<'w, SwappedBelts>,
     fixed: Res<'w, Time<Fixed>>,
     cast: ResMut<'w, SweepCast>,
     gravity: Res<'w, avian3d::prelude::Gravity>,
@@ -529,83 +528,54 @@ fn resolve_round(
     cuts
 }
 
-/// The staged belt reactions on elements this tick's cuts swapped to chunks, whose chunk at the
-/// reaction's point stands: (index among the staged contacts the sweep kept, owner, chunk).
-/// [`super::reconcile`] hands each to that chunk's new collider in the same tick, before
-/// integration; the sweep's own cuts are the only swaps, so reconciliation runs whenever it holds
-/// any.
-#[derive(Resource, Default, Debug)]
-pub(crate) struct SwappedBelts(pub(super) Vec<(usize, Entity, usize)>);
-
-/// What this tick's cuts leave a staged belt reaction.
-enum Belt {
-    Stands,
-    /// Its matter left: a chunk collider's chunk, or the chunk at its point of a swapped element.
-    Departed,
-    /// Its element swapped to chunks and the chunk at its point stands: (owner, chunk).
-    Moves(Entity, usize),
-}
-
-/// Cancel each belt reaction staged against matter this tick's cuts took away, and record where
-/// one on a swapped element's standing chunk moves ([`SwappedBelts`]). Each reaction reads only
-/// its owner's pose and state, so they classify in batches; cancellation applies in staging order.
+/// Cancel each belt force staged against matter this tick's cuts took away: a chunk collider's
+/// chunk, or the chunk at its point of an element the cuts swapped to chunks. Each force reads
+/// only its owner's pose and state, so they classify in batches; cancellation applies in staging
+/// order.
 fn cancel_retired_belts(p: &mut Intake, changed: BTreeSet<Entity>) {
     let (colliders, constructions) = (&p.colliders, &p.constructions);
-    let classify = |contact: &crate::contact_transfer::AppliedContact| {
-        if !changed.contains(&contact.structure) {
-            return Belt::Stands; // No cut this tick changed its owner.
+    let departed = |staged: &crate::contact_transfer::StagedForce| {
+        if !changed.contains(&staged.structure) {
+            return false; // No cut this tick changed its owner.
         }
         let (_, _, owner, _, _, element, chunk, _) = colliders
-            .get(contact.structure_collider)
-            .expect("a staged belt reaction names a contact collider of its owner");
+            .get(staged.structure_collider)
+            .expect("a staged belt force names a contact collider of its owner");
         let (_, position, rotation, breakage) = constructions
             .get(owner.body)
             .expect("a swept owner's collider belongs to it");
-        let (chunk, swapped) = match (chunk, element) {
-            (Some(chunk), _) => (usize::from(chunk.0), false),
+        let chunk = match (chunk, element) {
+            (Some(chunk), _) => usize::from(chunk.0),
             (None, Some(element)) if breakage.live.swapped[usize::from(element.0)] => {
                 let pose = breakage.physics_frame((position, rotation));
-                let chunk = super::nearest_chunk(
+                super::nearest_chunk(
                     &breakage.kind.layout,
                     usize::from(element.0),
-                    pose.rotation.inverse() * (contact.point - pose.translation),
+                    pose.rotation.inverse() * (staged.point - pose.translation),
                 )
-                .expect("an element a cut swapped has chunks");
-                (chunk, true)
+                .expect("an element a cut swapped has chunks")
             }
-            (None, Some(_)) => return Belt::Stands, // An element no cut swapped keeps its collider.
+            (None, Some(_)) => return false, // An element no cut swapped keeps its collider.
             (None, None) => panic!("a standing owner's colliders are elements and chunks"),
         };
-        match (breakage.live.state.standing(chunk), swapped) {
-            (false, _) => Belt::Departed,
-            (true, false) => Belt::Stands,
-            (true, true) => Belt::Moves(owner.body, chunk),
-        }
+        !breakage.live.state.standing(chunk)
     };
-    let belts: Vec<_> = p
+    let departed: Vec<_> = p
         .transfers
         .staged()
         .par_splat_map(ComputeTaskPool::get(), None, |_, batch| {
-            batch.iter().map(classify).collect::<Vec<_>>()
+            batch.iter().map(departed).collect::<Vec<_>>()
         })
         .into_iter()
         .flatten()
         .collect();
-    let departed: Vec<_> = belts.iter().map(|b| matches!(b, Belt::Departed)).collect();
-    let kept = belts.iter().filter(|b| !matches!(b, Belt::Departed));
-    p.swapped.0 = (kept.enumerate())
-        .filter_map(|(index, belt)| match *belt {
-            Belt::Moves(owner, chunk) => Some((index, owner, chunk)),
-            Belt::Stands | Belt::Departed => None,
-        })
-        .collect();
-    for cancelled in p.transfers.cancel_implicit(&departed) {
+    for cancelled in p.transfers.cancel_staged(&departed) {
         #[cfg(test)]
         p.account.cancelled_belts.push(cancelled);
         let (mut source, ..) = p
             .bodies
             .get_mut(cancelled.body)
-            .expect("implicit source survives its same-tick sweep");
+            .expect("a belt's body survives its same-tick sweep");
         source.apply_force_at_point(-cancelled.force, cancelled.point);
     }
 }
@@ -1923,7 +1893,7 @@ mod tests {
             reference: structure,
             reference_collider: structure,
             other: body,
-            other_collider: Some(body),
+            other_collider: body,
             point: Vec3::ZERO,
             normal: Vec3::Y,
             impulse,

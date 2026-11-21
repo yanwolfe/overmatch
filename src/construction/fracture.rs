@@ -15,7 +15,6 @@ pub(crate) mod parts;
 use std::collections::{BTreeMap, BTreeSet};
 use std::{f32::consts::PI, sync::Arc};
 
-use bevy::ecs::entity::Entity;
 use bevy::math::{DMat3, DVec3, Vec3};
 
 use crate::construction::schema::SurfaceFrame;
@@ -858,8 +857,8 @@ pub(crate) fn wear(structure: &Structure, state: &mut State, chunk: usize, volum
 
 /// One source at one point in the game's environment destruction model (game state only).
 /// Crushed volume consumes the pool, cavity energy enters [`crack`], and impulse and press enter
-/// [`parts::Assessment`]. Field loads never press; physics contacts supply their resolved
-/// blow and press without cavity energy. The construction design owns their derivations.
+/// [`parts::Assessment`]. Field loads never press; a moving group's landing supplies its press
+/// without cavity energy. The construction design owns their derivations.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Load {
     /// The chunk it enters.
@@ -867,7 +866,7 @@ pub(crate) struct Load {
     /// Where, in the structure's frame, m.
     pub at: Vec3,
     /// Kinetic cavity energy, J: a line's or fragment's source for [`crack`]. Zero for a blast,
-    /// whose pressure and impulse act through the blast laws, and for a body contact.
+    /// whose pressure and impulse act through the blast laws, and for a landing.
     pub energy: f32,
     /// The volume it crushes, m³: a line's or a fragment's energy over its chunk's crush energy
     /// ([`Material::crush`]); a blast's, its rays' Law 1 volumes ([`Material::crushed_by`]), which
@@ -881,22 +880,18 @@ pub(crate) struct Load {
     /// overpressure over the patches its rays load, into the faces ([`Blast::peak`]), its rays
     /// summed as if they arrive together (ASSUMED: one chunk's rays do). `None` where the source
     /// states none: a round's line (its blow is over before a section moves, ASSUMED), a fragment's
-    /// stop (an impulsive blow) and a body's contact (its force is its press). The force solve caps its one-tick average force by this peak.
+    /// stop (an impulsive blow) and a landing (its force is its press). The force solve caps its
+    /// one-tick average force by this peak.
     pub peak: Option<Vec3>,
     pub origin: Origin,
 }
 
-/// Whether a load supplies a field impulse or a contact force already integrated by physics.
+/// Whether a load supplies a field impulse or a landing force already integrated by physics.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Origin {
     /// A field (a round's line, a fragment, a blast): its blow is its own law's, and it has no
     /// mass to share with what it frees.
     Field,
-    /// A body's held contact on a placed construction at this tick: its press only. The body's
-    /// sweep exchanged its blow before physics (`construction::sweep`), so it never undergoes
-    /// another plastic exchange. Joint geometry supplies bearing directions; contacts supply
-    /// applied loads.
-    Contact { other: Entity, step: f32 },
     /// A moving group's own landing: the force its contact put on one of its chunks. Only the
     /// landing's part solve reads it, and a landing launches nothing.
     Landing,

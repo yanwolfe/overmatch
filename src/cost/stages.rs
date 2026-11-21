@@ -85,13 +85,10 @@ labelled!(
         KernelOfChunks = "kernel_of_chunks",
         RehomedColliders = "rehomed_colliders",
         ContactPoints = "contact_points",
-        RestingStaticPoints = "resting_static_points",
-        RestingMovingPoints = "resting_moving_points",
         ContactRecords = "contact_records",
-        ContactReadRoots = "contact_read_roots",
         CollidersAdded = "colliders_added",
         CollidersRemoved = "colliders_removed",
-        // Belt footprint work, independent of the construction contact reader.
+        // Belt footprint work.
         BeltNearColliders = "belt_near_colliders",
         BeltCandidates = "belt_candidates",
         BeltSlabChecks = "belt_slab_checks",

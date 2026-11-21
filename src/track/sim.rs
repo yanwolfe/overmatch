@@ -2801,7 +2801,7 @@ mod tests {
                     reference: root,
                     reference_collider: root,
                     other,
-                    other_collider: Some(other),
+                    other_collider: other,
                     point: Vec3::Y * 99.0,
                     normal: Vec3::NEG_Y,
                     impulse: Vec3::Z * impulse - Vec3::Y * (impulse / mu),

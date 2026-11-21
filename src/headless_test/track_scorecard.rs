@@ -703,9 +703,7 @@ impl Bed {
             if point.reference == self.tank && point.other == body {
                 out.push(self.role(point.reference_collider));
             } else if point.other == self.tank && point.reference == body {
-                let collider = point
-                    .other_collider
-                    .expect("a solver contact names both of its colliders");
+                let collider = point.other_collider;
                 out.push(self.role(collider));
             }
         }
@@ -2945,7 +2943,7 @@ fn bears_in_band(bed: &Bed, hull: &Hull, slices: &[Entity]) -> bool {
     slices.iter().any(|&slice| {
         let face = world.get::<BeltFace>(slice).expect("a side slice's face");
         points.iter().any(|(point, force)| {
-            let on = point.reference_collider == slice || point.other_collider == Some(slice);
+            let on = point.reference_collider == slice || point.other_collider == slice;
             let local = hull.rotation.inverse() * (point.point - hull.position);
             on && force.dot(point.normal) != 0.0 && !face.stands_at(band, local)
         })

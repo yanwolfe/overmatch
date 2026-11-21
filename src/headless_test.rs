@@ -739,20 +739,6 @@ fn hull_motion(world: &World, tank: Entity) -> Vec3 {
         .0
 }
 
-/// Every press the structure reading holds after a step, as the destruction laws take it
-/// (`construction::breakage::read_contacts`): the step's transfers and the rests of the bodies
-/// asleep against a structure.
-fn structure_presses(
-    transfers: &crate::contact_transfer::ContactTransfers,
-) -> impl Iterator<Item = (crate::contact_transfer::ContactTransfer, Vec3)> + '_ {
-    transfers.presses().chain(
-        transfers
-            .resting()
-            .iter()
-            .map(|rest| (rest.transfer, rest.press())),
-    )
-}
-
 /// Body-frame yaw rate (rad/s): world angular velocity projected on the hull's up axis
 /// (world `av.y` lies on slopes — the harness's own rule).
 fn yaw_rate(app: &mut App, tank: Entity) -> f32 {
@@ -2040,9 +2026,8 @@ fn lowest_bump_stop_y(app: &mut App, tank: Entity) -> f32 {
         .fold(f32::INFINITY, f32::min)
 }
 
-/// A tank whose springs are too soft to hold it bottoms on its bump stops: it comes to rest on
-/// them, pressing the ground through them every tick of its last second, and their contacts
-/// reach the contact reader as any collider's do, asleep as awake ([`structure_presses`]). On
+/// A tank whose springs are too soft to hold it bottoms on its bump stops: the solver carries it
+/// on them until it comes to rest there. On
 /// its own springs the same tank at rest touches nothing with them: the stop must never stand in
 /// for the belt. FIXTURE DATA: the support springs at 2 % of the tank's own, far softer than its
 /// stop's clearance can hold. How deep the stops rest is the solver's and is printed only.
@@ -2124,25 +2109,31 @@ fn a_tank_too_soft_for_its_springs_rests_on_its_bump_stops() {
     let mut pressed_ticks = 0;
     for tick in 0..ticks {
         drive_tick(&mut app, tank, 0.0, 0.0);
-        if tick < ticks - FIXED_TICKS_PER_SECOND {
-            continue;
-        }
-        lowest_late = lowest_late.min(lowest_bump_stop_y(&mut app, tank));
         let world = app.world();
-        fastest_late = fastest_late.max(hull_motion(world, tank).length());
-        let press: f32 = structure_presses(world.resource::<ContactTransfers>())
-            .filter(|(point, _)| {
-                point.other == tank
-                    && point
-                        .other_collider
-                        .is_some_and(|collider| world.get::<BumpStop>(collider).is_some())
+        let transfers = world.resource::<ContactTransfers>();
+        // `impulse` is what the solver moved into `other`; `reference` took its opposite.
+        let press: f32 = (transfers.solver_groups().flatten())
+            .filter_map(|point| {
+                let stop = |collider| world.get::<BumpStop>(collider).is_some();
+                if point.other == tank && stop(point.other_collider) {
+                    Some(point.impulse.y)
+                } else if point.reference == tank && stop(point.reference_collider) {
+                    Some(-point.impulse.y)
+                } else {
+                    None
+                }
             })
-            .map(|(_, press)| -press.y)
-            .sum();
+            .sum::<f32>()
+            / transfers.dt();
         if press > 0.0 {
             pressed_ticks += 1;
             press_up += press;
         }
+        if tick < ticks - FIXED_TICKS_PER_SECOND {
+            continue;
+        }
+        lowest_late = lowest_late.min(lowest_bump_stop_y(&mut app, tank));
+        fastest_late = fastest_late.max(hull_motion(app.world(), tank).length());
     }
     let weight = app
         .world()
@@ -2152,203 +2143,19 @@ fn a_tank_too_soft_for_its_springs_rests_on_its_bump_stops() {
         * crate::track::derive::G;
     println!(
         "bump stop: rest clearance {rest_clearance:.4} m; soft springs: lowest vertex \
-         {lowest_late:.4} m, fastest {fastest_late:.4} m/s over the last second; the structure \
-         read a press on the stops in {pressed_ticks}/{FIXED_TICKS_PER_SECOND} ticks, mean \
-         {:.0} N ({:.3} of the weight)",
-        press_up / FIXED_TICKS_PER_SECOND as f32,
-        press_up / FIXED_TICKS_PER_SECOND as f32 / weight,
+         {lowest_late:.4} m, fastest {fastest_late:.4} m/s over the last second; the solver \
+         carried it on the stops in {pressed_ticks}/{ticks} ticks, mean {:.0} N ({:.3} of the \
+         weight) over them",
+        press_up / pressed_ticks.max(1) as f32,
+        press_up / pressed_ticks.max(1) as f32 / weight,
     );
     assert!(
         app.world().get::<Sleeping>(tank).is_some(),
         "the tank must come to rest on its stops (fastest {fastest_late:.4} m/s in its last second)"
     );
-    assert_eq!(
-        pressed_ticks, FIXED_TICKS_PER_SECOND,
-        "the contact reader must read the stops' press on the structure every tick at rest"
-    );
-}
-
-/// Standing structural construction slid under a parked tank. FIXTURE DATA: a 30 m slab of
-/// Terrain membership (which keeps the side plates off it, as on ordinary ground), its top 5 cm
-/// above the flat ground. A new static body is no disturbance Avian wakes a sleeping body for,
-/// so the fixture wakes the tank it puts the slab under. Returns the slab.
-fn slab_under(app: &mut App, tank: Entity) -> Entity {
-    use crate::contact_transfer::StructureBody;
-    use avian3d::prelude::{Collider, CollisionLayers, LayerMask, Position, RigidBody, Sleeping};
-
-    let at = app
-        .world()
-        .get::<Position>(tank)
-        .expect("tank has a position")
-        .0;
-    let slab = app
-        .world_mut()
-        .spawn((
-            Transform::from_xyz(at.x, -0.45, at.z),
-            RigidBody::Static,
-            StructureBody,
-        ))
-        .id();
-    app.world_mut().spawn((
-        ChildOf(slab),
-        Transform::IDENTITY,
-        Collider::cuboid(30.0, 1.0, 30.0),
-        CollisionLayers::new([crate::Layer::Terrain], LayerMask::ALL),
-    ));
-    app.world_mut().entity_mut(tank).remove::<Sleeping>();
-    slab
-}
-
-/// THE GAME'S DRIVING ADAPTER LOADS FIXED STRUCTURE THROUGH THE BELT. A tank parked on standing
-/// structural construction bears on it through its belt alone, and the reaction staged by
-/// `track::sim::apply_track_forces` reaches the structure reading that wall and trunk laws judge.
-/// Dropping the adapter's staging, or a structure taking no share of the hull's weight, fails it.
-/// The observed vertical momentum change closes the gravity/reaction budget; a settling time does
-/// not imply zero acceleration. FIXTURE: [`slab_under`]; the closure needs every tick's staged
-/// reaction integrated, so the tank's island stays awake (Avian's `SleepingDisabled`): a resting
-/// tank's press is [`a_resting_tank_keeps_its_belt_press_on_fixed_structure`]'s.
-#[test]
-fn a_parked_tank_loads_fixed_structure_through_its_belt() {
-    use crate::contact_transfer::ContactTransfers;
-    use avian3d::prelude::{Mass, SleepingDisabled};
-
-    let (mut app, tank) = booted_offline_sim();
-    let slab = slab_under(&mut app, tank);
-    app.world_mut().entity_mut(tank).insert(SleepingDisabled);
-    let ticks = 3 * FIXED_TICKS_PER_SECOND;
-    let (mut lift, mut elapsed, mut read_ticks) = (0.0_f64, 0.0_f64, 0);
-    let mass = app.world().get::<Mass>(tank).expect("tank has mass").0;
-    let gravity = app.world().resource::<avian3d::prelude::Gravity>().0.y;
-    let mut initial_velocity = None;
-    for tick in 0..ticks {
-        if tick == ticks - FIXED_TICKS_PER_SECOND {
-            initial_velocity = Some(
-                app.world()
-                    .get::<avian3d::prelude::LinearVelocity>(tank)
-                    .unwrap()
-                    .0
-                    .y,
-            );
-        }
-        drive_tick(&mut app, tank, 0.0, 0.0);
-        if tick < ticks - FIXED_TICKS_PER_SECOND {
-            continue;
-        }
-        let transfers = app.world().resource::<ContactTransfers>();
-        let dt = transfers.dt();
-        let mut tick_lift = 0.0;
-        for (point, press) in transfers.presses() {
-            if point.other == tank && point.other_collider.is_none() {
-                assert_eq!(point.reference, slab, "the belt bears on the slab alone");
-                tick_lift -= press.y;
-            }
-        }
-        if tick_lift > 0.0 {
-            read_ticks += 1;
-        }
-        lift += f64::from(tick_lift) * f64::from(dt);
-        elapsed += f64::from(dt);
-    }
-    let weight_impulse = -f64::from(mass) * f64::from(gravity) * elapsed;
-    let final_velocity = app
-        .world()
-        .get::<avian3d::prelude::LinearVelocity>(tank)
-        .unwrap()
-        .0
-        .y;
-    let momentum_change = f64::from(mass)
-        * f64::from(
-            final_velocity
-                - initial_velocity.expect("the observation window starts inside the scripted run"),
-        );
-    let share = lift / weight_impulse;
-    println!(
-        "parked on structure: the slab read the belt's reaction in {read_ticks}/\
-         {FIXED_TICKS_PER_SECOND} ticks, mean {share:.4} of the weight"
-    );
-    assert_eq!(
-        read_ticks, FIXED_TICKS_PER_SECOND,
-        "the structure must read the belt's reaction every tick"
-    );
-    // Resolution: f32 force assembly and substep integration, one part in ten thousand of
-    // the accumulated gravity impulse; this bounds numerical closure, not a settling outcome.
     assert!(
-        (lift - weight_impulse - momentum_change).abs() <= 1e-4 * weight_impulse,
-        "vertical momentum must close: reaction={lift}, gravity={weight_impulse}, delta_p={momentum_change}"
-    );
-}
-
-/// A TANK AT REST KEEPS ITS WEIGHT ON FIXED STRUCTURE. A resting tank runs no belt pass, so the
-/// belt's reaction from the last step it moved stands on the structure, unchanged, every tick it
-/// rests, and the wall and trunk laws keep its load. Drive demand wakes it within the tick, whose
-/// belt pass stages afresh while the rest drops, so the load is never read twice. Losing the rest,
-/// keeping it past the wake, or reading it beside a staged reaction fails it. FIXTURE:
-/// [`slab_under`]; an 8 s watchdog to come to rest; the held window is DERIVED as twice Avian's own
-/// sleep duration.
-#[test]
-fn a_resting_tank_keeps_its_belt_press_on_fixed_structure() {
-    use crate::contact_transfer::{ContactTransfer, ContactTransfers};
-    use avian3d::prelude::{Sleeping, TimeToSleep};
-
-    let (mut app, tank) = booted_offline_sim();
-    slab_under(&mut app, tank);
-    let staged = |app: &App| -> Vec<ContactTransfer> {
-        app.world()
-            .resource::<ContactTransfers>()
-            .groups()
-            .flatten()
-            .filter(|point| point.other == tank && point.other_collider.is_none())
-            .collect()
-    };
-    let rests = |app: &App| -> Vec<ContactTransfer> {
-        app.world()
-            .resource::<ContactTransfers>()
-            .resting()
-            .iter()
-            .map(|rest| rest.transfer)
-            .filter(|point| point.other == tank && point.other_collider.is_none())
-            .collect()
-    };
-    let resting = |app: &App| app.world().get::<Sleeping>(tank).is_some();
-    let mut last = Vec::new();
-    let mut ticks = 0;
-    let budget = rest_tick_budget(&app, tank);
-    while !resting(&app) {
-        assert!(
-            ticks < budget,
-            "a tank parked on fixed structure must come to rest"
-        );
-        drive_tick(&mut app, tank, 0.0, 0.0);
-        last = staged(&app);
-        ticks += 1;
-    }
-    assert!(
-        !last.is_empty(),
-        "the belt bears on the slab as it comes to rest"
-    );
-    let window = (2.0 * app.world().resource::<TimeToSleep>().0 * FIXED_TICKS_PER_SECOND as f32)
-        .ceil() as usize;
-    for tick in 0..window {
-        drive_tick(&mut app, tank, 0.0, 0.0);
-        assert!(resting(&app), "the parked tank rests (tick {tick})");
-        assert!(
-            staged(&app).is_empty(),
-            "a resting tank stages no reaction (tick {tick})"
-        );
-        assert_eq!(
-            rests(&app),
-            last,
-            "the reaction of the last step it moved stands on the structure (tick {tick})"
-        );
-    }
-    drive_tick(&mut app, tank, 1.0, 0.0);
-    assert!(
-        !resting(&app),
-        "drive demand wakes a resting tank within the tick"
-    );
-    assert!(
-        !staged(&app).is_empty() && rests(&app).is_empty(),
-        "the woken belt stages its reaction and its rest drops"
+        pressed_ticks > 0,
+        "the stops, never the belt, carried the tank the springs could not hold"
     );
 }
 
@@ -2430,7 +2237,7 @@ fn a_driving_tank_rides_onto_loose_pieces_through_its_belt_support() {
             .solver_groups()
             .flatten()
             .filter_map(|point| {
-                let other = point.other_collider?;
+                let other = point.other_collider;
                 let sign = if pieces.contains(&other) {
                     world.get::<SoftRun>(point.reference_collider)?;
                     1.0 // The run is the reference: the piece took `impulse`.
@@ -4015,7 +3822,6 @@ fn a_shipped_data_hull_push_reports_environment_release_groups() {
         LinearVelocity(Vec3::X * 1.2),
         AngularVelocity::ZERO,
     ));
-    let intake = crate::construction::breakage::watch_contact_intake(&mut app, 60000, tank);
     for _ in 0..512 {
         drive_tick(&mut app, tank, 1.0, 0.0);
     }
@@ -4026,10 +3832,6 @@ fn a_shipped_data_hull_push_reports_environment_release_groups() {
         .filter(|piece| piece.construction == 60000)
         .map(|piece| piece.chunks.len())
         .collect();
-    assert!(
-        intake.load(std::sync::atomic::Ordering::Relaxed),
-        "the driving fixture must deliver a queued production contact to the wall"
-    );
     println!(
         "MEASURED shipped-data hull push: {} chunks freed in {} groups, sizes {:?}",
         groups.iter().sum::<usize>(),

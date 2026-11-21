@@ -823,9 +823,7 @@ impl ContactCensus<'_, '_> {
             }
         }
         for point in self.transfers.solver_groups().flatten() {
-            let other = point
-                .other_collider
-                .expect("a solver transfer has two colliders");
+            let other = point.other_collider;
             let key = (
                 point.reference_collider.min(other),
                 point.reference_collider.max(other),
@@ -1355,7 +1353,7 @@ mod tests {
                     reference: slab,
                     reference_collider: slab,
                     other: cube,
-                    other_collider: Some(cube),
+                    other_collider: cube,
                     point: Vec3::ZERO,
                     normal: Vec3::Y,
                     impulse: Vec3::Y * impulse,
@@ -1421,7 +1419,7 @@ mod tests {
             reference,
             reference_collider,
             other,
-            other_collider: Some(other_collider),
+            other_collider,
             point: Vec3::ZERO,
             normal: impulse.normalize(),
             impulse,
@@ -1572,7 +1570,7 @@ mod tests {
                     reference: lower,
                     reference_collider: lower,
                     other: upper,
-                    other_collider: Some(upper),
+                    other_collider: upper,
                     point: Vec3::Y * 10.5,
                     normal: Vec3::Y,
                     impulse: Vec3::Y,

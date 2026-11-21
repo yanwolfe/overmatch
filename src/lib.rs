@@ -49,9 +49,8 @@ pub mod construction;
 /// View-only brick/timber surfaces mapped in metres on every face through a shared `ExtendedMaterial`.
 /// See the module doc.
 mod construction_surface;
-/// What the physics solver moved through each contact between a standing structure and a dynamic
-/// body, per step (the game's environment destruction): the reading a body's contact load comes
-/// from. Mounted by `SimPlugin`.
+/// What the physics solver moved through each contact, per step (the game's environment
+/// destruction): the reading landings and the sweep take. Mounted by `SimPlugin`.
 mod contact_law;
 mod contact_transfer;
 /// Fixed-tick wall clock/server stats and `SPIKE_COST_TRACE=<path>` JSONL recorder:

@@ -12,9 +12,9 @@
 //!   Avian resolves the equal and opposite reaction and whatever holds the piece. The sampled
 //!   support never reads it ([`RubbleQuery::near`]): the ground under it keeps its own support.
 //! - **Every other solid** (standing construction, map blocks, another tank's hull; terrain is the
-//!   field): the sampled support carries the belt and the solid takes the whole opposite reaction,
-//!   fixed construction into its structural load reading
-//!   ([`RubbleBodies::record_static_contacts`]), a dynamic body as an impulse ([`reactions`]). The
+//!   field): the sampled support carries the belt. A dynamic body takes the whole opposite reaction
+//!   as an impulse ([`reactions`]); fixed construction's structure check reads no contact, and
+//!   its force is only staged for the sweep ([`RubbleBodies::record_static_contacts`]). The
 //!   dynamic bodies here are the hulls and a launched turret, on `Layer::Vehicle`. The explicit
 //!   spring is stable for a body while `dt² k / m + 2 dt c / m` stays under 4 (the shipped margin:
 //!   `.agents/docs/design/track-model/track-contact.md`, "The boundary, one rule").
@@ -61,7 +61,7 @@ use bevy::prelude::*;
 use bevy::tasks::{ComputeTaskPool, ParallelSlice, TaskPool};
 
 use super::terrain::FieldSurface;
-use crate::contact_transfer::{AppliedContact, ContactTransfers, StructureBody};
+use crate::contact_transfer::{ContactTransfers, StagedForce, StructureBody};
 use crate::cost::stages::{Stage, Stages, Work};
 
 use super::forces::BeltContact;
@@ -475,9 +475,9 @@ impl RubbleBodies<'_> {
             .map_or(0.0, |motion| motion.tangent_mobility(point, normal))
     }
 
-    /// Stage the equal-and-opposite reaction on fixed structural construction. The field has no
-    /// collider contact, dynamic bodies take [`reactions`], and permanent surfaces have no
-    /// structural law. Every remaining contact joins the physics step's shared load reading.
+    /// Stage the force each contact takes from fixed structural construction, which ceases if
+    /// this tick's sweep frees that matter (`construction::breakage`). The field has no collider
+    /// contact, dynamic bodies take [`reactions`], and permanent surfaces never leave.
     pub(crate) fn record_static_contacts(
         &self,
         body: Entity,
@@ -499,14 +499,12 @@ impl RubbleBodies<'_> {
                 surface.motion.is_none(),
                 "standing structural construction is fixed, never kinematic"
             );
-            transfers.stage(AppliedContact {
+            transfers.stage(StagedForce {
                 structure,
                 structure_collider: collider,
                 body,
                 point: contact.point,
-                normal: contact.normal,
                 force: source_force(contact),
-                closing_speed: -contact.belt_velocity.dot(contact.normal),
             });
         }
     }
@@ -1102,9 +1100,9 @@ mod tests {
             .unwrap();
     }
 
-    /// Fixed support delivers exactly the opposite of the applied belt force into the shared
-    /// structure reading, with no solver contact standing in for the belt. Walls and trunks rely
-    /// on this reading to judge the load; subdividing the contact must not multiply its blow.
+    /// Fixed construction supports the belt, and what the belt takes from it is staged whole: the
+    /// sweep cancels a staged force when it frees that matter, so a share staged short would leave
+    /// the tank standing on matter that left. Subdividing the footprint must not multiply it.
     /// FIXTURE DATA: a surface topped at 0.6 m and a small source body clear above it.
     fn fixed_surface_reaction(shape: Collider, closing: f32) {
         let mut app = physics();
@@ -1157,50 +1155,42 @@ mod tests {
                     for app in report.apps {
                         forces.apply_force_at_point(app.force, app.point);
                     }
+                    let staged = transfers.staged();
+                    assert!(staged.len() > 1, "the footprint stages each of its patches");
+                    for force in staged {
+                        assert_eq!(
+                            (force.structure, force.structure_collider, force.body),
+                            (root, collider, source)
+                        );
+                    }
+                    let sum: Vec3 = staged.iter().map(|force| force.force).sum();
+                    assert!((sum - expected).length() < 1e-4 * expected.length());
                     (expected, before, mass.value())
                 },
             )
             .unwrap();
         app.update();
         let transfers = app.world().resource::<ContactTransfers>();
-        let mut reaction = Vec3::ZERO;
-        let mut seen = 0;
-        for (point, press) in transfers
-            .presses()
-            .filter(|(point, ..)| point.other == source)
-        {
-            assert_eq!(point.reference, root);
-            assert_eq!(point.reference_collider, collider);
-            assert_eq!(point.other_collider, None);
-            reaction += press * transfers.dt();
-            seen += 1;
-        }
-        assert!(seen > 1, "the reading must include the footprint's patches");
-        let impulse = expected * transfers.dt();
-        assert!((reaction + impulse).length() < 1e-4 * impulse.length());
-        let after = app.world().get::<LinearVelocity>(source).unwrap().0;
-        assert!(((after - before) * mass + reaction).length() < 1e-4 * impulse.length());
-        app.update();
         assert!(
-            !app.world()
-                .resource::<ContactTransfers>()
-                .presses()
-                .any(|(point, ..)| point.other == source),
-            "an implicit contact must be refreshed each tick, never retained as a sleeping pair"
+            transfers.staged().is_empty(),
+            "a staged force lasts its tick: the belt stages it again or it is gone"
         );
+        let impulse = expected * transfers.dt();
+        let after = app.world().get::<LinearVelocity>(source).unwrap().0;
+        assert!(((after - before) * mass - impulse).length() < 1e-4 * impulse.length());
     }
 
     #[test]
-    fn a_belt_pressing_a_wall_delivers_its_reaction_to_the_walls_reading() {
+    fn a_belt_on_a_wall_stages_the_force_it_takes() {
         for closing in [0.0, 1.0] {
             fixed_surface_reaction(Collider::cuboid(2.0, 0.6, 2.0), closing);
         }
     }
 
-    /// A convex frustum supports the belt and receives its reaction, independently of boxes.
+    /// A convex frustum supports the belt as a box does.
     /// Fixture: two twelve-point rings, radii 0.4/0.35 m, separated by 0.6 m.
     #[test]
-    fn a_convex_frustum_carries_the_belt_and_is_loaded_by_it() {
+    fn a_convex_frustum_carries_the_belt() {
         let ring = |radius: f32, y: f32| {
             (0..12).map(move |k| {
                 let angle = k as f32 * std::f32::consts::TAU / 12.0;

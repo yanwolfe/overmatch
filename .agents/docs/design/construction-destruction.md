@@ -477,9 +477,8 @@ in the witness test: 1.265 m/s at 0.632 s, where the cast's time reads 0.8 m/s a
 `F > C`, break the minimum cut and
 remove its whole plug `S*` from the standing construction. Otherwise the sweep does nothing to
 the hull: **Avian owns the stop** (owner decision, 2026-11-07). Its contact solver, speculative
-points included, stops the hull at matter whose cut holds as it stops a hull at any obstacle, and
-the structure check reads that contact as its mean force like every other; the peak force decides
-only the cut. Its reach stops at the cut's, through the collision hook the boundary paragraph
+points included, stops the hull at matter whose cut holds as it stops a hull at any obstacle; the
+structure check hears none of it (below). Its reach stops at the cut's, through the collision hook the boundary paragraph
 below states (`sweep_intake::SweepContacts`). Without it Avian's linearised look-ahead
 braked and lifted the hull at standing matter no cut judged: MEASURED on the tracked ram
 (`tracked_ram_sweep_opens_within_two_ticks_and_accounts_for_momentum`, the 57 t hull at
@@ -526,9 +525,7 @@ at the same presentation tick. Dust-only hull departures are rejected: they remo
 the tank's path.
 A belt reaction staged on matter a cut took away (a chunk that left, or the chunk at its point of
 an element that swapped to chunks) is cancelled on its source before integration. One staged on
-matter that stands keeps its support: the sweep finds the chunk at its point once
-(`sweep_intake::SwappedBelts`), and an element collider that retires for its chunks hands it to
-the collider reconciliation builds for that chunk (`breakage::reconcile`). A
+matter that stands keeps its support. A
 sweep never enters the structural pulse/work calculation. Why the cancellation: the track law
 stages a belt's reaction against the surface it read before the sweep runs, and a reaction from
 matter the sweep removed has no surface to come from. Staging belts after the sweep instead would
@@ -539,9 +536,15 @@ keeps the belt reactions staged against its own owner: the floor's traction driv
 wall of the same house, so taking out the owner's whole staged set would drop a real press, and
 the plug that would bound the subtraction to the matter cut is what the cut itself decides.
 
-Every remaining structural solver transfer enters the structure check as its whole mean force `J_solver/dt`.
-Physics already changed those bodies' momenta; contact intake supplies no second blow, source
-mass share, delayed cap or give-back. Sleeping contact forces persist until their contact ends.
+**A standing construction's structure check hears no contact.** It reads its own weight and the
+field impulses of rounds and bursts; no solver transfer from any body, awake or asleep, enters it
+(`a_standing_structure_hears_no_contact`). What a body does to standing matter is the sweep's to
+judge, cell by cell; matter the sweep holds stops the body in the solver and stands. Why: the
+contact reading fed the check a solver reaction, whose size is the solver's stop of the body and
+not a load the body brings, a law stage late; a hull held against a wall felled the building
+behind it through that reading while the sweep held every cell it touched. The price, accepted: a
+body's weight resting on a floor does not load the floor's supports, so a floor fails under its
+own weight or a field, never under what stands on it.
 
 Exact sweep membership and Avian's speculative contact envelope differ. The sweep casts admitted
 hulls with the motion Avian integrates before its solve; Avian constrains separated hulls
@@ -594,8 +597,7 @@ forces. Per-batch folds run on the compute pool; only their per-body sums merge 
 (DERIVED: two per-body map updates per contact point, then one per batch body entry on merge).
 
 The band is the default for a push's first step, a decision and not a judgement: matter a pushed body is driven into gives way, the
-body overlaps it by at most `Δv dt` for one tick (DERIVED: 3 cm for a 2 m/s shove at 64 Hz), the
-structure check reads no load from it, and the next tick's sweep judges it from inside (MEASURED:
+body overlaps it by at most `Δv dt` for one tick (DERIVED: 3 cm for a 2 m/s shove at 64 Hz), and the next tick's sweep judges it from inside (MEASURED:
 the narrow form left a departure the hull pushed taking about 97 kN·s at one tick from standing
 colliders its own cast never reached). Overlapping points keep the solver's contact on any chunk,
 so "every solver contact against standing matter was judged by a cut" holds by construction only

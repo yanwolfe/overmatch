@@ -366,14 +366,14 @@ impl Shed {
 }
 
 /// One patch of a landing: the blow (N·s) one of a group's colliders took from one other collider
-/// (`None`, a track belt) over the step, summed over every point the narrow phase sampled it with,
+/// over the step, summed over every point the narrow phase sampled it with,
 /// at their blow-weighted centre and closing at their blow-weighted speed (m/s), so its force law
 /// sees one blow however many points sampled it. `struck` is the momentum its points struck with
 /// (N·s), and `shared` says whether the other side is a moving group crumbling from the same
 /// collision.
 struct Patch {
     collider: Entity,
-    other: Option<Entity>,
+    other: Entity,
     at: Vec3,
     blow: Vec3,
     struck: f32,
@@ -470,7 +470,7 @@ fn landings(
 /// `landing`'s touches on its group's chunks (`chunk` of each of its colliders), in the
 /// construction frame `frame`, and the energy its blows dissipated that the group may spend (J):
 /// `½ J v` per patch, the whole of it against a side that spends none (the ground, a hull, a
-/// placed construction, whose contact loads carry no energy), and against a moving group
+/// placed construction), and against a moving group
 /// crumbling from the same collision its own compliance's share (DERIVED from Hertz: under one
 /// force each side's approach, and so the work done on it, is in proportion to its compliance;
 /// K. L. Johnson, *Contact Mechanics*, §4.2), so the two spend one collision's energy between
@@ -480,7 +480,7 @@ fn touches(
     frame: Transform,
     landing: &Landing,
     chunk: impl Fn(Entity) -> usize,
-    other: impl Fn(Option<Entity>) -> Contactor,
+    other: impl Fn(Entity) -> Contactor,
 ) -> (Vec<Touch>, f32) {
     let local = |chunk: usize, at: Vec3, force: Vec3| Touch {
         chunk,
@@ -566,12 +566,8 @@ struct Contacts<'w, 's> {
 }
 
 impl Contacts<'_, '_> {
-    /// What a landing's patch meets through `collider` ([`meets`]); a track belt, with no
-    /// collider, is a hull's, [`Contactor::RIGID`].
-    fn other(&self, collider: Option<Entity>, moving: &Query<Moving>) -> Contactor {
-        let Some(collider) = collider else {
-            return Contactor::RIGID; // A track belt: a hull's.
-        };
+    /// What a landing's patch meets through `collider` ([`meets`]).
+    fn other(&self, collider: Entity, moving: &Query<Moving>) -> Contactor {
         let (chunk, element, layers, parent) = self
             .colliders
             .get(collider)

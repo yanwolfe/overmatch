@@ -148,8 +148,6 @@ fn prepare(
     for cancelled in &sweep.cancelled_belts {
         if cancelled.body == account.body {
             let si = side(rotation.0, cancelled.point - position.0);
-            let load = -cancelled.force.dot(cancelled.normal);
-            let normal = cancelled.normal * load;
             let original = belt.0[si]
                 .iter()
                 .find(|contact| {
@@ -157,6 +155,8 @@ fn prepare(
                         && contact.point == cancelled.point
                 })
                 .expect("a cancelled belt force retains its emitted contact telemetry");
+            let load = -cancelled.force.dot(original.normal);
+            let normal = original.normal * load;
             account.sides[si][1].add(
                 load,
                 normal,

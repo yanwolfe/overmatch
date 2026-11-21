@@ -1259,12 +1259,10 @@ mod tests {
                 counts.2 += account.work.joints;
                 counts.3 += account.work.queries;
                 per_tick.push((tick, account.work));
-                let wall_impulse: Vec3 = app
-                    .world()
-                    .resource::<crate::contact_transfer::ContactTransfers>()
-                    .presses()
-                    .filter(|(point, _)| point.other == tank && point.reference == target)
-                    .map(|(point, _)| point.impulse)
+                let transfers = app.world().resource::<ContactTransfers>();
+                let wall_impulse: Vec3 = (transfers.groups().flatten())
+                    .filter(|point| point.other == tank && point.reference == target)
+                    .map(|point| point.impulse)
                     .sum();
                 solver_contacts.push((
                     tick,
@@ -1513,7 +1511,7 @@ mod tests {
                 let Ok((breakage, position, rotation)) = standing.get(point.reference) else {
                     return false; // A moving group's contacts are rubble's, not standing matter's.
                 };
-                if point.other_collider.is_none() || point.impulse == Vec3::ZERO {
+                if point.impulse == Vec3::ZERO {
                     return false;
                 }
                 let pose = breakage.physics_frame((position, rotation));
@@ -1550,12 +1548,7 @@ mod tests {
                     return true; // No cast leaves Avian responsible for this body's contacts.
                 }
                 let (_, pair) = contacts
-                    .get(
-                        point.reference_collider,
-                        point
-                            .other_collider
-                            .expect("only solver contacts reach this filter"),
-                    )
+                    .get(point.reference_collider, point.other_collider)
                     .expect("a solver transfer retains its contact pair through writeback");
                 let contact = pair
                     .manifolds
@@ -1620,12 +1613,7 @@ mod tests {
             .sum();
         // The push enters only the sweep's drive; this step's solver contacts move it.
         let belts = (drive - push - cancelled) * dt - gravity;
-        let solver = || {
-            transfers
-                .groups()
-                .flatten()
-                .filter(|point| point.other_collider.is_some())
-        };
+        let solver = || transfers.groups().flatten();
         let on_tank = |structure: bool| -> Vec3 {
             solver()
                 .filter(|point| point.other == tank && (point.reference == target) == structure)

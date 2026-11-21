@@ -307,12 +307,7 @@ pub(crate) fn by_owner(
     for point in transfers.solver_groups().flatten() {
         for (collider, sign) in [
             (point.reference_collider, -1.0),
-            (
-                point
-                    .other_collider
-                    .expect("a solver constraint joins two colliders"),
-                1.0,
-            ),
+            (point.other_collider, 1.0),
         ] {
             let Ok((_, of)) = faces.get(collider) else {
                 continue; // The contact is on another material surface.
@@ -866,7 +861,7 @@ mod tests {
                 reference: body,
                 reference_collider: shoe,
                 other,
-                other_collider: Some(other),
+                other_collider: other,
                 point: -Vec3::Y,
                 normal: -Vec3::Y,
                 impulse: Vec3::new(0.0, -10.0, 3.0), // Fixture N s into the other body.
@@ -879,7 +874,7 @@ mod tests {
                     reference: other,
                     reference_collider: other,
                     other: body,
-                    other_collider: Some(shoe),
+                    other_collider: shoe,
                     normal: -point.normal,
                     impulse: -point.impulse,
                     ..point
