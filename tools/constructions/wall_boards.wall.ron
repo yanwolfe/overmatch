@@ -1,0 +1,84 @@
+// The wall generator's input for `wall_boards`, the proving ground's timber wall: 8 m of horizontal
+// boards on posts. `bake-constructions` turns it into
+// `assets/constructions/wall_boards/wall_boards.construction.ron`. Frame and units as
+// `wall_brick.wall.ron`.
+//
+// ASSUMED construction, every timber section Unknown (settled by a period fence or shed-wall
+// detail): a brick plinth, the village house's wall from its 0.45 m foundation depth to two
+// courses above the ground point; a 100 x 125 mm sill bedded on it; five 100 x 100 mm posts at
+// about 2 m centres standing on the sill; twelve 25 x 200 mm boards on the posts' north face, the
+// lowest standing on the sill. The plinth and sill are here because the attachment list holds no
+// kind for a post set in soil (`assets/materials/attachments.ron`): a mortar bed is the one kind
+// that holds timber to the ground side.
+Wall(
+    id: "wall_boards",
+    foundation_y_m: -0.45,
+    foundation_attachment: "mortared",
+    parts: {
+        "plinth": (
+            material: "Brick",
+            surface_frame: Upright,
+            cut: Planar((
+                pitch_m: (0.21, Resolution("the village house's wall cell")),
+                keep_share: (0.82, Taste("masonry break look, the village house's")),
+            )),
+        ),
+        "sill": (
+            material: "Wood",
+            surface_frame: Grain((1.0, 0.0, 0.0)),
+            cut: Cells((
+                size_m: (0.1, Resolution("the cell a timber break is drawn in across the grain, at the members' own 0.1 m section so a post or the sill breaks into lengths of about half a metre")),
+                stretch: (5.0, Taste("timber break look, the village house's")),
+            )),
+        ),
+        "post": (
+            material: "Wood",
+            surface_frame: Grain((0.0, 1.0, 0.0)),
+            cut: Cells((
+                size_m: (0.1, Resolution("as the sill's")),
+                stretch: (5.0, Taste("timber break look, the village house's")),
+            )),
+        ),
+        "board": (
+            material: "Wood",
+            surface_frame: Grain((1.0, 0.0, 0.0)),
+            cut: Cells((
+                size_m: (0.1, Resolution("as the sill's; a board thinner than the cell keeps fewer sites, so it breaks into lengths of a metre or more")),
+                stretch: (5.0, Taste("timber break look, the village house's")),
+            )),
+        ),
+    },
+    runs: [
+        (name: "plinth", part: "plinth", component: "plinth", from: (-4.0, 0.0), to: (4.0, 0.0), thickness_m: 0.25, y_m: (-0.45, 0.15)),
+        (name: "sill", part: "sill", component: "sill", from: (-4.0, 0.0125), to: (4.0, 0.0125), thickness_m: 0.125, y_m: (0.15, 0.25)),
+        (name: "post_0", part: "post", component: "post_0", from: (-4.00, 0.0), to: (-3.90, 0.0), thickness_m: 0.1, y_m: (0.25, 2.7)),
+        (name: "post_1", part: "post", component: "post_1", from: (-2.05, 0.0), to: (-1.95, 0.0), thickness_m: 0.1, y_m: (0.25, 2.7)),
+        (name: "post_2", part: "post", component: "post_2", from: (-0.05, 0.0), to: (0.05, 0.0), thickness_m: 0.1, y_m: (0.25, 2.7)),
+        (name: "post_3", part: "post", component: "post_3", from: (1.95, 0.0), to: (2.05, 0.0), thickness_m: 0.1, y_m: (0.25, 2.7)),
+        (name: "post_4", part: "post", component: "post_4", from: (3.90, 0.0), to: (4.00, 0.0), thickness_m: 0.1, y_m: (0.25, 2.7)),
+        (name: "board_0", part: "board", component: "board_0", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (0.25, 0.45)),
+        (name: "board_1", part: "board", component: "board_1", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (0.45, 0.65)),
+        (name: "board_2", part: "board", component: "board_2", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (0.65, 0.85)),
+        (name: "board_3", part: "board", component: "board_3", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (0.85, 1.05)),
+        (name: "board_4", part: "board", component: "board_4", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (1.05, 1.25)),
+        (name: "board_5", part: "board", component: "board_5", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (1.25, 1.45)),
+        (name: "board_6", part: "board", component: "board_6", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (1.45, 1.65)),
+        (name: "board_7", part: "board", component: "board_7", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (1.65, 1.85)),
+        (name: "board_8", part: "board", component: "board_8", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (1.85, 2.05)),
+        (name: "board_9", part: "board", component: "board_9", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (2.05, 2.25)),
+        (name: "board_10", part: "board", component: "board_10", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (2.25, 2.45)),
+        (name: "board_11", part: "board", component: "board_11", from: (-4.0, 0.0625), to: (4.0, 0.0625), thickness_m: 0.025, y_m: (2.45, 2.65)),
+    ],
+    joins: [
+        // The sill bedded on the plinth as a wall plate on its wall (the mortared kind's own case).
+        (parts: ("plinth", "sill"), by: "mortared"),
+        // Each post nailed to the sill and each board to every post. The nailed kind spreads one
+        // nailing density over a joint's area, so it under-counts these small bearings (stated on
+        // the kind).
+        (parts: ("post", "sill"), by: "nailed"),
+        (parts: ("board", "post"), by: "nailed"),
+        // Boards butt edge to edge and the lowest stands on the sill, nothing fixing them there.
+        (parts: ("board", "board"), by: "resting"),
+        (parts: ("board", "sill"), by: "resting"),
+    ],
+)

@@ -21,7 +21,8 @@ plumbing on the recorded host; concurrent lanes make its timings unsuitable for 
 A scheduled run saves every tick's stages, work counts and contact census, and each piece's rest
 record (piece_census); --replication-trace adds replication
 envelope size histograms, from a server started with REPLICATION_TRACE (--print-server-env).
-Full-speed ram: --ram scripts/perf/ram.json (local or hosted).
+Ram: --ram scripts/perf/ram.json [--contact NAME] (local or hosted; every pass and contact,
+scripts/perf/proving.py).
 --server-env OVERMATCH_KEY=VALUE (repeatable) sets one lever on the server only: on the local
 server in match and ram runs, or in --print-server-env's lines for a deployment. Those runs
 pass no inherited OVERMATCH_ variable to any process; the pairs are saved as server-env.json.
@@ -501,20 +502,39 @@ def run_match(args, out, recipe):
             log.close()
 
 
-def ram_recipe(path):
-    """Operator route choices; the server derives speed and run-up from its admitted tank data, and
-    admits the structure reading's labelled in_place_m (src/net/ram.rs, Recipe)."""
+# Each contact kind's fields (src/net/ram.rs, Contact, which owns their domains).
+CONTACTS = dict(Governed={"minimum_fraction", "runup_margin"}, Held={"speed_m_s", "within_m_s", "runup_margin"},
+                Rest={"gap_m", "at_most_m_s"})
+
+
+def ram_recipes(path, only=None):
+    """A pass file's server recipes by contact name, in the file's order: operator route choices and
+    one or more named contacts, each a way the hull meets the instance. The server derives speed
+    and run-up from its admitted tank data and admits each recipe's domains (src/net/ram.rs,
+    Recipe); `only` selects one contact by name."""
     value = json.loads(path.read_text())
-    keys = {"instance", "heading_deg", "runup_margin", "minimum_speed_fraction", "approach_s", "deadline_s", "settle_s", "in_place_m"}
+    keys = {"instance", "heading_deg", "lateral_m", "contacts", "approach_s", "deadline_s", "settle_s", "in_place_m"}
     if not isinstance(value, dict) or set(value) != keys or not isinstance(value["instance"], str) or not value["instance"]:
-        raise ValueError(f"{path}: expected ram recipe fields {sorted(keys)} and a nonempty instance")
-    for key in keys - {"instance", "in_place_m"}:
-        v = value[key]
+        raise ValueError(f"{path}: expected ram pass fields {sorted(keys)} and a nonempty instance")
+    def number(v, what):
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
-            raise ValueError(f"{path}: {key} must be finite")
-    if value["runup_margin"] < 1 or not 0 < value["minimum_speed_fraction"] <= 1 or any(value[k] <= 0 for k in ("approach_s", "deadline_s", "settle_s")) or value["settle_s"] >= value["deadline_s"]:
-        raise ValueError(f"{path}: invalid ram margin, speed fraction or timing domain")
-    return value
+            raise ValueError(f"{path}: {what} must be finite")
+    for key in keys - {"instance", "in_place_m", "contacts"}:
+        number(value[key], key)
+    if any(value[k] <= 0 for k in ("approach_s", "deadline_s", "settle_s")) or value["settle_s"] >= value["deadline_s"]:
+        raise ValueError(f"{path}: invalid ram timing domain")
+    contacts = value.pop("contacts")
+    if not isinstance(contacts, dict) or not contacts:
+        raise ValueError(f"{path}: contacts must name at least one contact")
+    for name, contact in contacts.items():
+        kind = next(iter(contact)) if isinstance(contact, dict) and len(contact) == 1 else None
+        if not re.fullmatch(r"[a-z0-9-]+", name) or kind not in CONTACTS or not isinstance(contact[kind], dict) or set(contact[kind]) != CONTACTS[kind]:
+            raise ValueError(f"{path}: contacts.{name}: expected a lowercase name and one of " + ", ".join(f"{{{k}: {sorted(v)}}}" for k, v in CONTACTS.items()))
+        for field, v in contact[kind].items():
+            number(v, f"contacts.{name}.{kind}.{field}")
+    if only is not None and only not in contacts:
+        raise ValueError(f"{path}: no contact named {only}; it states {sorted(contacts)}")
+    return {name: dict(value, contact=contact) for name, contact in contacts.items() if only in (None, name)}
 
 
 def tick_seconds():
@@ -653,9 +673,11 @@ def ram_rows(text, recipe):
                     finite(hull["forward_change_m_s"], "hull.forward_change_m_s")
             plan, impact = ram["plan"], ram["impact"]
             if plan is not None:
-                for field in ("runup_m", "governed_m_s", "minimum_m_s"):
-                    finite(plan[field], f"plan.{field}")
-                    if plan[field] < 0:
+                least, most = plan["admitted_m_s"]
+                for field, value in (("runup_m", plan["runup_m"]), ("governed_m_s", plan["governed_m_s"]),
+                                     ("admitted_m_s", least), ("admitted_m_s", least if most is None else most)):
+                    finite(value, f"plan.{field}")
+                    if value < 0:
                         raise ValueError(f"invalid plan.{field}: expected nonnegative distance or speed")
                 # A position along the heading, of either sign.
                 finite(plan["clear_m"], "plan.clear_m")
@@ -806,8 +828,9 @@ def ram_summary(text, recipe):
     if last is None:
         return None
     plan, impact = last["plan"], last["impact"]
-    if impact and impact["speed_m_s"] < plan["minimum_m_s"]:
-        raise RuntimeError(f"ram did not reach full-speed admission: impact={impact}, plan={plan}")
+    least, most = plan["admitted_m_s"] if plan else (0, None)
+    if impact and not (least <= impact["speed_m_s"] and (most is None or impact["speed_m_s"] <= most)):
+        raise RuntimeError(f"ram met its instance outside the contact's admitted speeds: impact={impact}, plan={plan}")
     if last["done"] is None:
         return None
     if last["done"] not in ("rest", "deadline"):
@@ -867,7 +890,7 @@ def report_ram(result):
 
 
 def run_ram(args, out, recipe):
-    """Same locked runner and hosted log plumbing, with one real full-throttle UDP client."""
+    """Same locked runner and hosted log plumbing, with one real driving UDP client."""
     import socket
     local = args.target == "local"
     address = "127.0.0.1:5888" if local else args.target
@@ -887,7 +910,9 @@ def run_ram(args, out, recipe):
     if ticks > 2**32-1 or throttle_ticks > 2**32-1-run_lead_ticks():
         raise ValueError("ram duration exceeds harness tick representation")
     script = out / "ram.harness.ron"
-    script.write_text(f"(ticks: {ticks}, drive: Ram(throttle_ticks: {throttle_ticks}))\n")
+    held = recipe["contact"].get("Held")
+    hold = f"Some({float(held['speed_m_s'])})" if held else "None"
+    script.write_text(f"(ticks: {ticks}, drive: Ram(throttle_ticks: {throttle_ticks}, hold_m_s: {hold}))\n")
     children, logs = [], []
     serverlog = out / "server.log"
     snapshot = ServerLogs(serverlog, None if local else args.deployment).snapshot
@@ -1136,7 +1161,8 @@ def main():
     parser.add_argument("--period", type=positive, default=1, help="simulation seconds between shots (default 1)")
     parser.add_argument("--sample", action="store_true", help="macOS sample during sustained slowdown, or after bursts if still real time")
     parser.add_argument("--out", type=Path, help="artifact directory; default target/collapse-<timestamp>")
-    parser.add_argument("--ram", type=Path, help="full-speed ram recipe JSON; shared local/hosted runner")
+    parser.add_argument("--ram", type=Path, help="ram pass JSON: one instance and heading met at each of its named contacts; shared local/hosted runner")
+    parser.add_argument("--contact", help="--ram only: run this one of the pass's contacts, into --out; without it every contact runs in turn, each into --out/NAME")
     parser.add_argument("--schedule", type=Path, help="real-match mode: JSON {events: [{at_s, instances}]} for the game's construction workload")
     parser.add_argument("--target", default="local", help="local, or ip:port of a deployment the operator already started")
     parser.add_argument("--deployment", help="existing Edgegap deployment ID; only its logs are read")
@@ -1163,11 +1189,16 @@ def main():
         parser.error("--rehearsal is local only; hosted runs must verify two vCPU")
     if args.target != "local" and (not (args.schedule or args.ram) or not args.deployment):
         parser.error("remote runs require --schedule or --ram, and --deployment")
-    if args.clip and not (args.ram and args.target == "local"):
-        parser.error("--clip requires a local --ram run")
+    if args.clip and not (args.ram and args.target == "local" and args.contact):
+        parser.error("--clip requires a local --ram run of one --contact")
     if args.ram and (args.schedule or args.sample or args.clients is not None):
         parser.error("--ram is one client; incompatible with --schedule, --sample and --clients")
-    ram = ram_recipe(args.ram) if args.ram else None
+    if args.contact and not args.ram:
+        parser.error("--contact names one of a --ram pass's contacts")
+    rams = ram_recipes(args.ram, args.contact) if args.ram else None
+    if rams and len(rams) > 1 and (args.target != "local" or args.print_server_env):
+        parser.error(f"a deployment runs one contact; name one of {sorted(rams)} with --contact")
+    ram = next(iter(rams.values())) if rams else None
     recipe = recipe_for(args.schedule, args.tanks) if args.schedule else None
     if args.deployment and args.target == "local":
         parser.error("--deployment requires its explicit remote --target IP:PORT")
@@ -1214,7 +1245,20 @@ def main():
             (out / "server-env.json").write_text(json.dumps(dict(args.server_env), indent=2) + "\n")
             print("server env (server only): " + " ".join(f"{k}={v}" for k, v in args.server_env), flush=True)
         if ram:
-            run_ram(args, out, ram)
+            # One run is one folder; a failed contact does not cost the pass its others.
+            failed = []
+            for name, one in rams.items():
+                folder = out if len(rams) == 1 else out / name
+                folder.mkdir(exist_ok=True)
+                try:
+                    run_ram(args, folder, one)
+                except RuntimeError as error:
+                    if len(rams) == 1:
+                        raise
+                    print(f"collapse: contact {name}: {error}", file=sys.stderr)
+                    failed.append(name)
+            if failed:
+                raise RuntimeError(f"contacts failed: {failed}; logs under {out}")
         elif recipe:
             run_match(args, out, recipe)
         else:

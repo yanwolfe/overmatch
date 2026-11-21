@@ -136,8 +136,14 @@ pub(crate) enum Drive {
     /// bump (z≈−70) and the washboard (z≈−82…−90) on the spawn axis, which the arc never leaves the
     /// flat pad for. One primary click at `fire_tick`.
     Straight,
-    /// Operator-duration straight run, used by the tracked full-speed ram recipe. Never fires.
-    Ram { throttle_ticks: u32 },
+    /// Operator-duration straight run, used by the tracked ram recipe. Never fires. With
+    /// `hold_m_s` the driver holds that speed over the run: its demand falls from full to none
+    /// across [`HOLD_BAND_M_S`] under it, read from the hull's replicated speed, so a hull a wall
+    /// slows is driven back up to it as a player holding that speed would.
+    Ram {
+        throttle_ticks: u32,
+        hold_m_s: Option<f32>,
+    },
     /// The same run, then the service brake until the hull is stopped, then no demand: the tank
     /// parks where the run ended (`scripts/perf/pile_park.py`). Zero demand alone parks only a
     /// tank released under first gear's idle speed (`track::transmission`); a faster one keeps
@@ -286,12 +292,23 @@ impl Script {
     }
 
     fn validate(&self) -> Result<(), ScriptError> {
-        if let Drive::Ram { throttle_ticks } | Drive::Park { throttle_ticks } = self.drive
+        if let Drive::Ram { throttle_ticks, .. } | Drive::Park { throttle_ticks } = self.drive
             && (throttle_ticks == 0 || throttle_ticks > u32::MAX - RUN_LEAD)
         {
             return Err(ScriptError::Invalid {
                 field: "drive.throttle_ticks",
                 problem: "positive ticks leaving room for the initial settling window",
+            });
+        }
+        if let Drive::Ram {
+            hold_m_s: Some(hold),
+            ..
+        } = self.drive
+            && !(hold.is_finite() && hold > 0.0)
+        {
+            return Err(ScriptError::Invalid {
+                field: "drive.hold_m_s",
+                problem: "None for full throttle, or a finite positive speed to hold",
             });
         }
         if let Drive::Fire {
@@ -426,6 +443,11 @@ pub(crate) struct SimulateInput {
 /// `collapse.run_lead_ticks`, which reads this declaration.
 const RUN_LEAD: u32 = 256;
 
+/// Resolution: the speed band under a held speed across which [`Drive::Ram`]'s demand falls from
+/// full to none, m/s. The driver reads replicated speed, a few ticks old; a narrower band hunts
+/// across that delay, a wider one settles further under the held speed.
+const HOLD_BAND_M_S: f32 = 0.5;
+
 /// The launch phases in order, each a state the script really passes through. Waiting is bounded
 /// from launch; execution is bounded from its first released input.
 #[derive(Debug)]
@@ -463,7 +485,9 @@ impl SimulateInput {
         let (throttle_ticks, steer) = match script.drive {
             Drive::Arc => (script.arc_ticks, script.arc_steer),
             Drive::Straight => (script.straight_ticks, 0.0),
-            Drive::Ram { throttle_ticks } | Drive::Park { throttle_ticks } => (throttle_ticks, 0.0),
+            Drive::Ram { throttle_ticks, .. } | Drive::Park { throttle_ticks } => {
+                (throttle_ticks, 0.0)
+            }
             Drive::Idle | Drive::Fire { .. } | Drive::Pivot { .. } => (0, 0.0),
         };
         Self {
@@ -658,7 +682,9 @@ pub(crate) fn buffer_input(
             .is_ready()
     });
     sim.write(t, ready, &mut state.command);
-    sim.stop(t, velocity.map(|v| v.length()), &mut state.command);
+    let speed = velocity.map(|v| v.length());
+    sim.hold(speed, &mut state.command);
+    sim.stop(t, speed, &mut state.command);
     if (state.command.fire_primary || state.command.fire_secondary)
         && let ScriptClock::Released {
             first_fire_logged, ..
@@ -706,6 +732,19 @@ impl SimulateInput {
                 (false, false)
             }
         };
+    }
+
+    /// A ram holding a speed scales its run's demand by how far `speed` lies under it
+    /// ([`Drive::Ram`]). No replicated velocity yet is no reading, and the demand stays whole.
+    fn hold(&self, speed: Option<f32>, command: &mut TankCommand) {
+        if let Drive::Ram {
+            hold_m_s: Some(hold),
+            ..
+        } = self.drive
+            && let Some(speed) = speed
+        {
+            command.throttle *= ((hold - speed) / HOLD_BAND_M_S).clamp(0.0, 1.0);
+        }
     }
 
     /// After the run, hold reverse demand on a forward hull until replicated speed reads a
@@ -1106,9 +1145,10 @@ mod tests {
     /// ignored duration or inherited primary click would make its measured workload invalid.
     #[test]
     fn ram_duration_and_never_fire_are_the_script_contract() {
-        let script =
-            super::Script::parse("(ticks: 1000, drive: Ram(throttle_ticks: 400), fire_tick: 200)")
-                .unwrap();
+        let script = super::Script::parse(
+            "(ticks: 1000, drive: Ram(throttle_ticks: 400, hold_m_s: None), fire_tick: 200)",
+        )
+        .unwrap();
         let mut sim = super::SimulateInput::new(&script);
         let mut command = crate::command::TankCommand::default();
         for tick in 0..1000 {
@@ -1124,11 +1164,46 @@ mod tests {
             assert_eq!(command.steer, 0.0);
             assert!(!command.fire_primary && !command.fire_secondary);
         }
-        for ticks in [0, u32::MAX] {
-            assert!(
-                super::Script::parse(&format!("(drive: Ram(throttle_ticks: {ticks}))")).is_err()
-            );
+        for drive in [
+            "Ram(throttle_ticks: 0, hold_m_s: None)",
+            &format!("Ram(throttle_ticks: {}, hold_m_s: None)", u32::MAX),
+            "Ram(throttle_ticks: 400, hold_m_s: Some(0.0))",
+        ] {
+            assert!(super::Script::parse(&format!("(drive: {drive})")).is_err());
         }
+    }
+
+    /// A ram at a held speed arrives at that speed, not at whatever full throttle reaches over
+    /// the run-up (`collapse.py`'s admission window reads it): over the run the driver demands
+    /// everything well under the held speed, nothing at or over it and less the nearer it gets,
+    /// and everything while no speed has replicated. A mutant ignoring the speed is a full-speed
+    /// ram under a slow pass's name.
+    #[test]
+    fn a_held_ram_demands_less_the_nearer_its_speed() {
+        let hold = 3.0; // Fixture: a held speed several bands wide.
+        let script = super::Script::parse(&format!(
+            "(drive: Ram(throttle_ticks: 100, hold_m_s: Some({hold})))"
+        ))
+        .unwrap();
+        let mut sim = super::SimulateInput::new(&script);
+        let mut at = |tick, speed| {
+            let mut command = crate::command::TankCommand::default();
+            sim.write(tick, true, &mut command);
+            sim.hold(speed, &mut command);
+            command.throttle
+        };
+        let run = super::RUN_LEAD;
+        let band = super::HOLD_BAND_M_S;
+        assert_eq!(at(run - 1, Some(0.0)), 0.0);
+        assert_eq!(at(run, None), 1.0);
+        assert_eq!(at(run, Some(hold - 2.0 * band)), 1.0);
+        let (far, near) = (
+            at(run, Some(hold - 0.75 * band)),
+            at(run, Some(hold - 0.25 * band)),
+        );
+        assert!(0.0 < near && near < far && far < 1.0, "{near} {far}");
+        assert_eq!(at(run, Some(hold)), 0.0);
+        assert_eq!(at(run, Some(hold + band)), 0.0);
     }
 
     /// The park recipe's tank must rest where its run ended (`scripts/perf/pile_park.py` reads

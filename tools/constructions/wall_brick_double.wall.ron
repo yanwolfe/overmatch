@@ -1,0 +1,24 @@
+// `wall_brick.wall.ron`'s wall doubled: two one-brick leaves side by side, 0.5 m together, each cut
+// on its own so no crack runs through both. ASSUMED construction: the leaves are bonded over the
+// whole collar joint by the walls' mortar (a solid two-leaf wall with a filled collar; header
+// courses are not modelled). The origin lies on the collar. Part, foot and top as that file's.
+Wall(
+    id: "wall_brick_double",
+    foundation_y_m: -0.45,
+    foundation_attachment: "mortared",
+    parts: {
+        "leaf": (
+            material: "Brick",
+            surface_frame: Upright,
+            cut: Planar((
+                pitch_m: (0.22, Resolution("the nearest cell to the reference wall's 0.21 m whose bake fits the byte budget (`BAKED_BYTES_MAX`, `tools/src/construction.rs`): at 0.21 m the two leaves and the joints across their collar bake 1,000,824 bytes (MEASURED)")),
+                keep_share: (0.82, Taste("masonry break look, the village house's")),
+            )),
+        ),
+    },
+    runs: [
+        (name: "leaf_north", part: "leaf", component: "leaf_north", from: (-4.0, 0.125), to: (4.0, 0.125), thickness_m: 0.25, y_m: (-0.45, 2.7)),
+        (name: "leaf_south", part: "leaf", component: "leaf_south", from: (-4.0, -0.125), to: (4.0, -0.125), thickness_m: 0.25, y_m: (-0.45, 2.7)),
+    ],
+    joins: [(parts: ("leaf", "leaf"), by: "mortared")],
+)

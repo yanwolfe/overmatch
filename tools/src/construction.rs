@@ -2,7 +2,7 @@
 //! the game spawns (`assets/constructions/<id>/<id>.construction.ron`, [`overmatch::construction::schema`]).
 //!
 //! Three steps: a construction's pieces come from its spec ([`spec`]: a house generator's
-//! parameters through [`house`], or convex pieces stated outright), the common cutter cuts each
+//! parameters through [`house`], a wall's runs through [`wall`], or convex pieces stated outright), the common cutter cuts each
 //! piece into chunks by the pattern its data names ([`fracture`]), and the contact search finds the
 //! joints between chunks and the chunks the ground holds ([`contact`]); nothing is written that
 //! [`certify`] refuses. What holds each joint between two components is the attachment kind the
@@ -23,6 +23,7 @@ pub mod fracture;
 pub mod geom;
 pub mod house;
 pub mod spec;
+pub mod wall;
 
 use spec::{Construction, ConstructionSpec, House};
 
@@ -31,6 +32,9 @@ pub const SPECS_DIR: &str = "tools/constructions";
 
 /// A house generator's spec's file suffix ([`House`]).
 pub const HOUSE_SUFFIX: &str = ".house.ron";
+
+/// A wall generator's spec's file suffix ([`wall::Wall`]).
+pub const WALL_SUFFIX: &str = ".wall.ron";
 
 /// An explicit construction's file suffix ([`ConstructionSpec`]).
 pub const PIECES_SUFFIX: &str = ".pieces.ron";
@@ -387,14 +391,22 @@ pub fn asset_path(root: &Path, id: &str) -> PathBuf {
         .join(format!("{id}.construction.ron"))
 }
 
+/// Each authored form's file suffix and its reader.
+const FORMS: [(&str, fn(&str) -> Result<Construction, String>); 3] = [
+    (HOUSE_SUFFIX, |text| {
+        House::from_ron(text).and_then(|house| house::construction(&house))
+    }),
+    (WALL_SUFFIX, wall::Wall::from_ron),
+    (PIECES_SUFFIX, ConstructionSpec::from_ron),
+];
+
 /// One spec under [`SPECS_DIR`]: its path under the repository root, and its construction.
 pub struct Spec {
     pub path: String,
     pub construction: Construction,
 }
 
-/// Every spec under the repository root's [`SPECS_DIR`], house generators' and explicit
-/// constructions' alike, in file name order. Refuses a file whose id is not its stem and two
+/// Every spec under the repository root's [`SPECS_DIR`], of every form, in file name order. Refuses a file whose id is not its stem and two
 /// specs of one id.
 pub fn specs(root: &Path) -> Result<Vec<Spec>, BakeError> {
     let _shipped = spec::Shipped::enter();
@@ -415,7 +427,7 @@ pub fn specs(root: &Path) -> Result<Vec<Spec>, BakeError> {
         })
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
-        .filter(|name| name.ends_with(HOUSE_SUFFIX) || name.ends_with(PIECES_SUFFIX))
+        .filter(|name| FORMS.iter().any(|(suffix, _)| name.ends_with(suffix)))
         .collect();
     names.sort();
     let mut out: Vec<Spec> = Vec::with_capacity(names.len());
@@ -426,17 +438,10 @@ pub fn specs(root: &Path) -> Result<Vec<Spec>, BakeError> {
             operation: "read spec",
             source,
         })?;
-        let (stem, construction) = match name.strip_suffix(HOUSE_SUFFIX) {
-            Some(stem) => (
-                stem,
-                House::from_ron(&text).and_then(|house| house::construction(&house)),
-            ),
-            None => (
-                name.strip_suffix(PIECES_SUFFIX)
-                    .expect("the filter keeps only the two suffixes"),
-                ConstructionSpec::from_ron(&text),
-            ),
-        };
+        let (stem, read) = (FORMS.iter())
+            .find_map(|(suffix, read)| Some((name.strip_suffix(suffix)?, read)))
+            .expect("the filter keeps only the forms' suffixes");
+        let construction = read(&text);
         let construction =
             construction.map_err(|err| BakeError::Admission(format!("{path}: {err}")))?;
         if stem != construction.id {

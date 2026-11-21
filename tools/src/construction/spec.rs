@@ -1,8 +1,10 @@
-//! The bake's construction data, read by the bake only; the game never sees it. Two authored
+//! The bake's construction data, read by the bake only; the game never sees it. Three authored
 //! forms resolve to one [`Construction`], the common cutter's input:
 //!
 //! - `tools/constructions/<id>.house.ron`, a [`House`]: the house generator's parameters
 //!   ([`super::house`]).
+//! - `tools/constructions/<id>.wall.ron`, a [`super::wall::Wall`]: free-standing runs
+//!   ([`super::wall`]).
 //! - `tools/constructions/<id>.pieces.ron`, a [`ConstructionSpec`]: convex pieces stated
 //!   outright, so a new object needs data, not a generator.
 //!
@@ -133,7 +135,7 @@ impl Join {
 }
 
 /// Refuses an anchor or join kind the shared list does not hold and a pair of part names joined twice.
-fn check_holds(foundation_attachment: &str, joins: &[Join]) -> Result<(), String> {
+pub(super) fn check_holds(foundation_attachment: &str, joins: &[Join]) -> Result<(), String> {
     Attachments::shipped_static()
         .holds_anchor(foundation_attachment)
         .map_err(|err| format!("foundation_attachment: {err}"))?;
@@ -173,7 +175,7 @@ pub(super) fn check_disjoint(pieces: &[Piece]) -> Result<(), String> {
 }
 
 /// Refuses a surface frame that is no unit grain, naming `what`.
-fn check_frame(what: &str, frame: SurfaceFrame) -> Result<(), String> {
+pub(super) fn check_frame(what: &str, frame: SurfaceFrame) -> Result<(), String> {
     frame.is_valid().then_some(()).ok_or_else(|| {
         format!("{what}.surface_frame: author Upright or a finite unit Grain direction")
     })
@@ -348,7 +350,7 @@ pub struct Parts {
     pub roof: Part,
 }
 
-/// One part's data.
+/// One part's data, a house's or a wall's.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Part {
@@ -359,7 +361,7 @@ pub struct Part {
     pub cut: PartCut,
 }
 
-/// A house part's cut: a [`Pattern`] whose frame the generator supplies.
+/// A generated part's cut: a [`Pattern`] whose frame the generator supplies.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub enum PartCut {
     Whole,
@@ -369,7 +371,7 @@ pub enum PartCut {
 }
 
 impl PartCut {
-    fn check(&self) -> Result<(), String> {
+    pub(super) fn check(&self) -> Result<(), String> {
         match self {
             Self::Whole => Ok(()),
             Self::Planar(rule) => rule.check(),
