@@ -60,19 +60,59 @@ grade still in place (every corner within the recipe's `in_place_m`, a labelled 
 volume-weighted displacement of what still stands on a body, the opening in `plan.panel` (the
 component the approaching tank meets first, chosen before play), and the largest loose piece.
 
-`ram-hall-wall.json` and `ram-hall-gable.json` are the same pass through the village hall
-(`village_hall_0001`, 12 × 16 m): face-on through the middle of its west long wall, and end-on
-through its north gable at the doorway. Both state a `runup_margin` of 3, which here covers two things. The run-up is laid
-from the instance's origin (backlog dev-21), so the near face stands 6 m (long wall) or 8 m (gable)
-inside it and that much of the 68.3 m ideal distance per unit of margin is never driven: 4 to 6 %
-of a margin of 2. The rest is the margin's own job, terrain and rolling losses: the long wall's
-approach climbs 0.9 m, and under `ram.json`'s margin of 2 the hull met that wall at 9.87 m/s, short
-of the 9.98 m/s admission (MEASURED, one local run). Only 2 and 3 were run, so 3 is the first
-whole margin that admits, not the least; with the run-up laid from the near face it is to be read
-again. `approach_s` is 45 for the longer run. Their
-deadline is 10 s, for a building 12 and 16 m through.
+A ram pass file (`ram*.json`) is one instance met on one line, at each of its named `contacts`.
+`heading_deg` turns the approach from `-Z` toward `-X`; `lateral_m` moves the line to the heading's
+right of the instance's origin. A contact is one of three (`src/net/ram.rs`, `Contact`):
 
-`--clip PLAN`, local `--ram` only, is `scripts/debris-lab`'s: the driving client renders the
+- `{"Governed": {"minimum_fraction", "runup_margin"}}`: full throttle to governed speed, admitted
+  at that fraction of it or over.
+- `{"Held": {"speed_m_s", "within_m_s", "runup_margin"}}`: the scripted driver holds that speed
+  over the run-up and through the contact, its demand falling from full to none across 0.5 m/s
+  under it (`src/net/harness.rs`, `HOLD_BAND_M_S`), as a player holding a speed drives. Admitted
+  within `within_m_s` of it. The driver settles a little under the held speed, so the measured
+  contact speed is the row's fact, not the name.
+- `{"Rest": {"gap_m", "at_most_m_s"}}`: the hull stands with its nearest point `gap_m` short of
+  the face it meets, settles for the harness's four seconds, then takes full throttle. Admitted at
+  `at_most_m_s` or under.
+
+The run-up is free distance: from the hull's nearest point to the face it meets along the line
+(`plan.runup_m`), so a deep building costs no more of it than a thin wall. `runup_margin` scales
+the ideal distance to the contact's speed for terrain and rolling losses; below top gear the ideal
+overstates the distance, which only lengthens the approach. `--contact NAME` runs one contact
+into `--out`; without it every contact runs in turn, each into `--out/NAME`. A deployment runs
+one contact.
+
+The proving ground is a row of plain walls on kalinovo's level ground, each a construction of its
+own (`tools/constructions/wall_*.wall.ron`), every pass approaching from the north (`+Z`):
+
+| instance | at (x, z) | what | passes |
+|---|---|---|---|
+| `wall_brick_double_0001` | (0, -50) | two one-brick leaves, 8 m | `ram-wall-double` |
+| `wall_brick_0001` | (25, -50) | one-brick leaf, 8 m × 2.7 m, the reference | `ram-wall-brick`, `ram-wall-brick-45` |
+| `wall_brick_coarse_0001` | (50, -50) | the reference at a 0.55 m cell | `ram-wall-coarse` |
+| `wall_brick_fine_0001` | (75, -50) | the reference at a 0.15 m cell | `ram-wall-fine` |
+| `wall_boards_0001` | (100, -50) | boards on posts over a brick plinth, 8 m | `ram-wall-boards` |
+| `wall_brick_corner_0001` | (125, -50) | an L of two 5 m runs, turned 45° so its inside faces north | `ram-wall-corner` |
+| `wall_brick_long_0001` | (165, 10) | one-brick leaf, 12 m, laid along `Z` | `ram-wall-long-along` (end-on), `ram-wall-long` (face-on, from the east) |
+
+The walls stand 25 m apart, so a pass through one leaves its neighbours alone; the 45° pass
+crosses the row's line between the reference wall and the double wall and passes 10 m from the
+latter's end. Ground under each footprint lies within 0.16 m, and the approaches rise or fall
+under 2.5 m over 140 m (MEASURED from `terrain_height.png`). Beside them: `ram.json` (the village
+house end-on through its gable), `ram-house-face.json` (the same house through a long wall),
+`ram-hall-wall.json` (the village hall's west long wall at its middle, between the cross walls),
+`ram-hall-junction.json` (the same wall where the north cross wall meets it, `lateral_m` 3),
+`ram-hall-gable.json` (its north gable at the doorway) and `ram-fir.json` (one fir standing clear).
+
+`scripts/perf/proving.py OUT` runs every shipped pass at every contact, one local rehearsal each
+into `OUT/PASS/CONTACT`, and writes `OUT/table.md`; it skips what `OUT` already holds, `--only
+STEM` runs one pass file, `--table` prints without running. A row is one run. Two concrete walls
+the design asks for are absent because the game has no concrete material row, and no loose object
+(boulder, wreck) is placed.
+
+`--clip PLAN`, local `--ram` with one contact, is `scripts/debris-lab`'s (its plan follows behind
+the hull; `scripts/capture/proving-side.ron` follows square off its side and
+`scripts/capture/proving-raised.ron` holds the whole proving ground from a fixed raised camera): the driving client renders the
 capture plan's frames on a hidden window, in the run's folder (the plan's relative paths land
 there) and with its own settings folder. Its frames open on the tank's approach to the recipe's
 construction (`dev_capture`, `Anchor::Approach`), and the run completes only once the client logs

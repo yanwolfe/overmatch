@@ -2,7 +2,7 @@
 """The building-debris model's lab (game state only): a ram pass filmed from the driving client,
 and two passes compared.
 
-  scripts/debris-lab run RECIPE OUT        one ram run (collapse.py --ram) with a labelled clip
+  scripts/debris-lab run PASS CONTACT OUT  one ram run (collapse.py --ram --contact) with a labelled clip
   scripts/debris-lab compare A B OUT       two runs: a replay verdict and a side-by-side clip
 
 Tick cost is comparison only: every run is an unpriced local rehearsal whose client renders on the
@@ -125,7 +125,7 @@ def run(args):
     if out.exists() and any(out.iterdir()):
         refuse(f"{out} is not empty; give each run its own folder")
     status = subprocess.run([str(ROOT / "scripts/perf/collapse.sh"), "--ram", str(args.recipe.resolve()),
-                             "--rehearsal", "--clip", str(PLAN), "--out", str(out)], cwd=ROOT).returncode
+                             "--contact", args.contact, "--rehearsal", "--clip", str(PLAN), "--out", str(out)], cwd=ROOT).returncode
     if status:
         refuse(f"the ram run failed (status {status}); logs: {out}")
     result = json.loads((out / "result.json").read_text())
@@ -239,7 +239,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     one = commands.add_parser("run", help="one ram run with a labelled clip")
-    one.add_argument("recipe", type=Path, help="ram recipe JSON (scripts/perf/ram.json)")
+    one.add_argument("recipe", type=Path, help="ram pass JSON (scripts/perf/ram.json)")
+    one.add_argument("contact", help="one of the pass's contacts, by name")
     one.add_argument("out", type=Path, help="the run's own folder")
     one.set_defaults(handler=run)
     two = commands.add_parser("compare", help="two runs: replay verdict and side-by-side clip")

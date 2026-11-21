@@ -41,14 +41,14 @@ pub(super) struct Panel {
 
 impl Panel {
     /// The component whose element a ray from one of `origins` along unit `heading` (construction
-    /// frame) enters first, the first origin's lowest element on a tie. Refused, naming the recipe
-    /// field, for a construction with no breakable matter above grade and for rays that meet no
-    /// element or a face with no area above grade.
+    /// frame) enters first, the first origin's lowest element on a tie, and how far that ray runs
+    /// before it enters, m. Refused, naming the recipe field, for a construction with no breakable
+    /// matter above grade and for rays that meet no element or a face with no area above grade.
     pub(super) fn met(
         kind: &ConstructionKind,
         origins: impl IntoIterator<Item = Vec3>,
         heading: Vec3,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<(Self, f32), &'static str> {
         if !(kind.layout.chunks.iter())
             .any(|&chunk| kind.asset.chunks[chunk as usize].centroid[1] >= GRADE_M)
         {
@@ -57,7 +57,7 @@ impl Panel {
         let missed =
             "a heading_deg whose approach meets a panel of the instance with face area above grade";
         let blocks = &kind.layout.element_blocks;
-        let (element, _, at, normal) = (origins.into_iter())
+        let (element, ahead_m, at, normal) = (origins.into_iter())
             .flat_map(|origin| {
                 (blocks.iter().enumerate()).filter_map(move |(k, block)| {
                     let (d, n) = block.entry_face(origin, heading)?;
@@ -74,13 +74,14 @@ impl Panel {
         if face_m2 <= 0.0 {
             return Err(missed);
         }
-        Ok(Self {
+        let panel = Self {
             component,
             name: kind.asset.components[usize::from(component)].clone(),
             at: at.to_array(),
             normal: normal.to_array(),
             face_m2,
-        })
+        };
+        Ok((panel, ahead_m))
     }
 }
 
@@ -219,7 +220,8 @@ pub(super) mod tests {
     /// 1 m over grade meeting its west face.
     pub(in crate::net::ram) fn column_panel() -> Panel {
         let kind = column_construction_from(-1.0);
-        Panel::met(&kind, [Vec3::new(-5.0, 1.0, 0.0)], Vec3::X).expect("the column faces the ray")
+        let met = Panel::met(&kind, [Vec3::new(-5.0, 1.0, 0.0)], Vec3::X);
+        met.expect("the column faces the ray").0
     }
 
     /// HOW MUCH STANDS: a chunk is in place while every corner lies within the one limit of where

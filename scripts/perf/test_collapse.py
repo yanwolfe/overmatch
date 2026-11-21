@@ -449,14 +449,14 @@ class CollapseTests(unittest.TestCase):
 class RamTests(unittest.TestCase):
     def fixture(self):
         # Fixture: unequal sends expose percentile-of-percentile bugs.
-        recipe = collapse.ram_recipe(collapse.ROOT / "scripts/perf/ram.json")
+        recipe = collapse.ram_recipes(collapse.ROOT / "scripts/perf/ram.json", "governed")["governed"]
         ticks = [tick_fixture(i, 1) for i in range(1, 5)]
         # Fixture hull: at rest on the approach row, then slowed, stopped and driven on.
         for tick, forward, along in zip(ticks, [0, 6, -1, 2], [0, 5, 6, 12]):
             previous = None if tick["tick"] == 1 else ticks[tick["tick"] - 2]["hull"]["forward_m_s"]
             tick["hull"] = dict(forward_m_s=forward, along_m=along,
                                 forward_change_m_s=None if previous is None else forward - previous)
-        ram = dict(recipe=recipe, plan=dict(minimum_m_s=9, governed_m_s=10, runup_m=20, clear_m=10,
+        ram = dict(recipe=recipe, plan=dict(admitted_m_s=[9, None], governed_m_s=10, runup_m=20, clear_m=10,
                                            spawn=[0, 0, 0], rotation=[0, 0, 0, 1]),
                    impact=dict(tick=2, speed_m_s=10, normal_speed_m_s=10), done="deadline", ticks=ticks,
                    structure=dict(above_grade_m3=2, in_place_m3=1, in_place_share=0.5, carried_m3=1.5, displacement_m=0.4, opening_m2=1),
@@ -655,7 +655,7 @@ class RamTests(unittest.TestCase):
     def test_slow_impact_refuses_before_observation_deadline(self):
         recipe, ram = self.fixture()
         ram.update(done=None, impact=dict(tick=2, speed_m_s=8, normal_speed_m_s=8))
-        with self.assertRaisesRegex(RuntimeError, "full-speed admission"):
+        with self.assertRaisesRegex(RuntimeError, "admitted speeds"):
             collapse.ram_summary(self.text(ram), recipe)
 
     def test_ram_waits_for_server_completion_and_accepts_rest_or_deadline(self):
@@ -680,7 +680,7 @@ class RamTests(unittest.TestCase):
     def test_ram_refuses_nonfinite_numbers_before_completion(self):
         # The runner must refuse invalid numbers in samples and metadata in an unfinished prefix.
         recipe, ram = self.fixture()
-        for section, fields in (("plan", ("minimum_m_s", "governed_m_s", "runup_m", "clear_m", "spawn", "rotation")),
+        for section, fields in (("plan", ("admitted_m_s", "governed_m_s", "runup_m", "clear_m", "spawn", "rotation")),
                                 ("impact", ("speed_m_s", "normal_speed_m_s")),
                                 ("ticks", ("tick_us", "physics_us", "sleep_us", "intake_us", "structure_us", "refit_us", "publish_us", "contacts_us", "sweep_us", "crumble_us", "collector_us", "dt_s")),
                                 ("sends", ("us",))):
@@ -691,7 +691,7 @@ class RamTests(unittest.TestCase):
                     values = changed[section]
                     if isinstance(values, list):
                         values = values[0]
-                    if field in ("spawn", "rotation"):
+                    if field in ("spawn", "rotation", "admitted_m_s"):
                         values[field][0] = bad
                     else:
                         values[field] = bad
@@ -717,16 +717,54 @@ class RamTests(unittest.TestCase):
             path.write_text("second snapshot")
             self.assertEqual(reader.snapshot(100), "second snapshot")
 
-    def test_ram_recipe_refuses_typos_and_invalid_operator_domains(self):
-        recipe, _ = self.fixture()
+    def test_a_contact_over_its_admitted_speeds_refuses_the_run(self):
+        # A pass named for a held speed must have met its instance at that speed: over the
+        # contact's greatest, as under its least, the reading belongs to another pass.
+        recipe, ram = self.fixture()
+        for admitted, admits in (([9, 11], True), ([2, 9.5], False)):
+            changed = copy.deepcopy(ram)
+            changed["plan"]["admitted_m_s"] = admitted
+            with self.subTest(admitted=admitted):
+                if admits:
+                    self.assertEqual(collapse.ram_summary(self.text(changed), recipe)["impact"]["speed_m_s"], 10)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "admitted speeds"):
+                        collapse.ram_summary(self.text(changed), recipe)
+
+    def test_a_pass_makes_one_server_recipe_per_named_contact(self):
+        # The server admits one contact a run (src/net/ram.rs, Recipe): each recipe is the pass's
+        # route fields with one of its contacts, and --contact selects by name.
+        path = collapse.ROOT / "scripts/perf/ram.json"
+        authored = json.loads(path.read_text())
+        recipes = collapse.ram_recipes(path)
+        self.assertEqual(list(recipes), list(authored["contacts"]))
+        for name, recipe in recipes.items():
+            self.assertEqual(recipe, dict({k: v for k, v in authored.items() if k != "contacts"}, contact=authored["contacts"][name]))
+            self.assertEqual(collapse.ram_recipes(path, name), {name: recipe})
+        with self.assertRaisesRegex(ValueError, "no contact named"):
+            collapse.ram_recipes(path, "absent")
+
+    def test_ram_pass_refuses_typos_and_invalid_operator_domains(self):
+        authored = json.loads((collapse.ROOT / "scripts/perf/ram.json").read_text())
+        held = dict(speed_m_s=2, within_m_s=0.5, runup_margin=2)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ram.json"
-            for key, bad in [("typo", 1), ("instance", ""), ("runup_margin", 0.5),
-                             ("minimum_speed_fraction", 1.1), ("settle_s", 0),
-                             ("deadline_s", -1), ("heading_deg", True)]:
-                path.write_text(json.dumps(dict(recipe, **{key: bad})))
-                with self.subTest(field=key), self.assertRaises(ValueError):
-                    collapse.ram_recipe(path)
+            for key, bad in [("typo", 1), ("instance", ""), ("settle_s", 0), ("deadline_s", -1), ("heading_deg", True),
+                             ("lateral_m", "1"), ("contacts", {}), ("contacts", {"Slow": {"Held": held}}),
+                             ("contacts", {"slow": {"Coast": held}}), ("contacts", {"slow": {"Held": dict(held, typo=1)}}),
+                             ("contacts", {"slow": {"Held": dict(held, speed_m_s=float("nan"))}}),
+                             ("contacts", {"slow": {"Held": held, "Rest": dict(gap_m=1, at_most_m_s=1)}})]:
+                path.write_text(json.dumps(dict(authored, **{key: bad})))
+                with self.subTest(field=key, bad=bad), self.assertRaises(ValueError):
+                    collapse.ram_recipes(path)
+
+    def test_every_shipped_ram_pass_parses(self):
+        # A shipped pass a typo made unreadable is found here, not at the head of a long battery.
+        passes = sorted((collapse.ROOT / "scripts/perf").glob("ram*.json"))
+        self.assertTrue(passes)
+        for path in passes:
+            with self.subTest(path=path.name):
+                self.assertTrue(collapse.ram_recipes(path))
 
 
 if __name__ == "__main__":
