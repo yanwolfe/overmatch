@@ -200,6 +200,54 @@ pub(super) struct HullRow {
     blocks: Vec<BlockReadout>,
     /// Cells the step's over-pushed blocks freed.
     freed: usize,
+    /// The hull's nose-up pitch, rad.
+    pitch_rad: f32,
+    /// What pressed the hull this step and what that matter pressed in turn.
+    chain: Chain,
+}
+
+/// The step's solver momentum from the hull outward through loose pieces: every body pair with a
+/// side reached from the hull by pieces in contact, down to the standing matter or ground that
+/// ends each path. Pairs under [`LINK_FLOOR_M_S`] of hull speed are left out.
+#[derive(Serialize, Default)]
+struct Chain {
+    links: Vec<Link>,
+    pieces: Vec<Loose>,
+}
+
+/// Resolution: a pair's momentum, over the hull's mass, below which the chain leaves it out,
+/// m/s. A tick of full drive moves the hull about a hundred times this.
+const LINK_FLOOR_M_S: f32 = 1.0e-3;
+
+/// One body pair of the chain over one step. `near` is the side closer to the hull.
+#[derive(Serialize)]
+struct Link {
+    /// Entity index; the hull's own for a pair it is in.
+    near: u32,
+    far: u32,
+    far_kind: &'static str,
+    /// Pieces between `near` and the hull: none for the hull itself.
+    depth: u32,
+    /// On a hull pair: the hull's collider is a belt's soft run.
+    belt: bool,
+    /// Momentum into `near`, N s, along the hull's forward, world up, and the hull's right.
+    into_near_ns: [f32; 3],
+    /// Where it bears, impulse-weighted, in the hull's frame from its root: right, up, forward, m.
+    at_m: [f32; 3],
+    points: u32,
+}
+
+/// One loose piece of the chain.
+#[derive(Serialize)]
+struct Loose {
+    body: u32,
+    cells: usize,
+    mass_kg: f32,
+    depth: u32,
+    /// In the hull's frame from its root: right, up, forward, m.
+    at_m: [f32; 3],
+    /// Along the hull's forward, m/s.
+    forward_m_s: f32,
 }
 
 /// One bounded block of standing cells over one step.
@@ -207,6 +255,8 @@ pub(super) struct HullRow {
 struct BlockReadout {
     /// The ram's tank presses it; a loose piece otherwise.
     hull: bool,
+    /// The pressing body's entity index, as [`Link`] names it.
+    body: u32,
     cells: usize,
     /// The way it gives soonest at the speed it was crossed.
     way: &'static str,
@@ -479,6 +529,18 @@ pub(super) struct Hull<'w, 's> {
         ),
     >,
     kinds: Query<'w, 's, (Has<Body>, Has<DebrisPiece>)>,
+    belts: Query<'w, 's, (), With<crate::track::soft_run::SoftRun>>,
+    masses: Query<'w, 's, &'static avian3d::prelude::ComputedMass>,
+    loose: Query<
+        'w,
+        's,
+        (
+            &'static Piece,
+            &'static avian3d::prelude::ComputedMass,
+            &'static Position,
+            &'static LinearVelocity,
+        ),
+    >,
     contacts: Res<'w, ContactTransfers>,
     bound: Res<'w, BoundAccount>,
     sweep: Res<'w, SweepAccount>,
@@ -523,6 +585,7 @@ impl Hull<'_, '_> {
             blocks: (self.bound.blocks.iter())
                 .map(|block| BlockReadout {
                     hull: block.body == tank,
+                    body: block.body.index_u32(),
                     cells: block.cells,
                     way: match block.way {
                         Way::ShearOut => "shear_out",
@@ -537,7 +600,96 @@ impl Hull<'_, '_> {
                 })
                 .collect(),
             freed: self.bound.freed.len(),
+            pitch_rad: forward.y.asin(),
+            chain: self.chain(tank, position.0, rotation.0),
         }
+    }
+
+    fn chain(&self, tank: Entity, root: Vec3, facing: Quat) -> Chain {
+        use std::collections::BTreeMap;
+        let hull_mass = (self.masses.get(tank)).map_or(0.0, |mass| mass.value());
+        // Per body pair and belt flag, oriented as the solver holds it: momentum into the
+        // reference, its weighted point, the weight and the point count.
+        let mut pairs = BTreeMap::<(Entity, Entity, bool), (Vec3, Vec3, f32, u32)>::new();
+        for point in self.contacts.solver_groups().flatten() {
+            let belt = (point.reference == tank && self.belts.contains(point.reference_collider))
+                || (point.other == tank && self.belts.contains(point.other_collider));
+            let pair = pairs
+                .entry((point.reference, point.other, belt))
+                .or_default();
+            let weight = point.impulse.length();
+            pair.0 -= point.impulse;
+            pair.1 += point.point * weight;
+            pair.2 += weight;
+            pair.3 += 1;
+        }
+        let mut touching = BTreeMap::<Entity, Vec<Entity>>::new();
+        for &(a, b, _) in pairs.keys() {
+            touching.entry(a).or_default().push(b);
+            touching.entry(b).or_default().push(a);
+        }
+        let mut depth = BTreeMap::from([(tank, 0_u32)]);
+        let mut open = std::collections::VecDeque::from([tank]);
+        while let Some(body) = open.pop_front() {
+            let next = depth[&body] + 1;
+            for &other in touching.get(&body).into_iter().flatten() {
+                if self.loose.contains(other) && !depth.contains_key(&other) {
+                    depth.insert(other, next);
+                    open.push_back(other);
+                }
+            }
+        }
+        let to_hull = facing.inverse();
+        let local = |world: Vec3| {
+            let at = to_hull * world;
+            [at.x, at.y, -at.z]
+        };
+        let mut chain = Chain::default();
+        for (&(a, b, belt), &(into_a, at, weight, points)) in &pairs {
+            let (near, far, into_near) = match (depth.get(&a), depth.get(&b)) {
+                (Some(x), Some(y)) if y < x => (b, a, -into_a),
+                (Some(_), _) => (a, b, into_a),
+                (None, Some(_)) => (b, a, -into_a),
+                (None, None) => continue, // No path of pieces reaches the hull.
+            };
+            if into_near.length() < LINK_FLOOR_M_S * hull_mass {
+                continue;
+            }
+            let forward = facing * Vec3::NEG_Z;
+            let right = facing * Vec3::X;
+            chain.links.push(Link {
+                near: near.index_u32(),
+                far: far.index_u32(),
+                far_kind: if far == tank {
+                    "hull"
+                } else {
+                    match self.kinds.get(far) {
+                        Ok((true, _)) => "standing",
+                        Ok((_, true)) => "piece",
+                        Ok(_) => "other",
+                        Err(_) => "retired",
+                    }
+                },
+                depth: depth[&near],
+                belt,
+                into_near_ns: [into_near.dot(forward), into_near.y, into_near.dot(right)],
+                at_m: local(at / weight.max(f32::MIN_POSITIVE) - root),
+                points,
+            });
+        }
+        for (&body, &depth) in &depth {
+            if let Ok((piece, mass, position, velocity)) = self.loose.get(body) {
+                chain.pieces.push(Loose {
+                    body: body.index_u32(),
+                    cells: piece.chunks.len(),
+                    mass_kg: mass.value(),
+                    depth,
+                    at_m: local(position.0 - root),
+                    forward_m_s: velocity.0.dot(facing * Vec3::NEG_Z),
+                });
+            }
+        }
+        chain
     }
 }
 
