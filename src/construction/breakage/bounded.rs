@@ -1,7 +1,8 @@
 //! AUTHORITY: the game's building model meeting bodies (game state only). A standing cell returns
-//! a body no more than its bonds can ([`fracture::bound`]); pushed across its give it is freed at
-//! rest and is ordinary rubble from the next step on. Nothing is predicted: the cells are the
-//! ones the narrow phase found pressed.
+//! a body no more than its bonds can ([`fracture::bound`]); pushed across its give it has no solid
+//! form left and leaves the simulation as dust (`debris::crumble::Shed`), and what it carried is
+//! ordinary rubble from the next step on. Nothing is predicted: the cells are the ones the narrow
+//! phase found pressed.
 //!
 //! * [`bound_contacts`], inside the physics step after the narrow phase: groups each body's
 //!   contact points on one construction into blocks of connected pressed cells, prices each
@@ -488,15 +489,15 @@ fn release(
         let Ok((_, position, rotation, mut owner)) = owners.get_mut(root) else {
             continue; // The owner left the world inside the step; its cells went with it.
         };
-        let plug: Vec<usize> = (cells.into_iter())
+        let freed: Vec<usize> = (cells.into_iter())
             .filter(|&c| owner.live.state.standing(c))
             .collect();
-        if plug.is_empty() {
+        if freed.is_empty() {
             continue; // Another law freed them first.
         }
         let pose = owner.physics_frame((position, rotation));
         let construction = owner.construction;
-        let cut = cut_fragments(&mut owner, plug, tick);
+        let cut = cut_fragments(&mut owner, Vec::new(), freed, tick);
         // A construction without children has no chunk collider to rehome.
         let reusable = reusable_colliders(children.get(root).ok(), &chunk_entities);
         let (departures, sheds) = sweep_departure(
@@ -510,7 +511,7 @@ fn release(
         );
         account
             .freed
-            .extend(cut.plug.iter().map(|&c| (construction, c as u16)));
+            .extend(cut.crushed.iter().map(|&c| (construction, c as u16)));
         account.shed += sheds.len();
         shed.write_batch(sheds);
         queue.0.push(RawDeposit {

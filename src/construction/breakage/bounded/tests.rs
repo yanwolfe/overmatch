@@ -112,3 +112,24 @@ fn explore() {
         );
     }
 }
+
+/// A cell the law frees has no solid form left: it is dust in its owner's state, so no body of it
+/// lies in the path of what freed it (a hull crossing a wall relies on this). Mutant: freeing the
+/// cells as a plug leaves them `Fallen`.
+#[test]
+fn a_freed_cell_leaves_as_dust() {
+    let kind = wall_construction(WALL, [6, 4, 1], "Brick");
+    // Fixture: a body heavy and fast enough to cross the leaf.
+    let mut ram = Ram::new(&kind, 57_000.0, 4.5, 0.0);
+    let mut freed = Vec::new();
+    for _ in 0..160 {
+        ram.app.update();
+        let account = ram.app.world().resource::<BoundAccount>();
+        freed.extend(account.freed.iter().map(|&(_, c)| usize::from(c)));
+    }
+    assert!(!freed.is_empty(), "the body crosses the leaf");
+    let owner = ram.app.world().get::<Breakage>(ram.root).unwrap();
+    for c in freed {
+        assert_eq!(owner.live.state.fate[c], Fate::Dust, "cell {c}");
+    }
+}

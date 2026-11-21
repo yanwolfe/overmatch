@@ -5129,7 +5129,7 @@ fn a_swept_patch_keeps_its_server_body_mass_and_rigid_motion() {
         .iter()
         .map(|&c| kind.sweep.part(c, &Transform::IDENTITY).mass as f32)
         .sum();
-    let cut = sweep_intake::cut_fragments(&mut owner, group.clone(), 7);
+    let cut = sweep_intake::cut_fragments(&mut owner, group.clone(), Vec::new(), 7);
     let (departures, sheds) = sweep_intake::sweep_departure(
         &mut owner,
         Transform::IDENTITY,
@@ -5569,7 +5569,7 @@ fn a_cut_frees_unsupported_matter_without_building_standing_colliders() {
     let mut record = Record::default();
     let (departures, sheds) = {
         let mut owner = app.world_mut().get_mut::<Breakage>(root).unwrap();
-        let cut = sweep_intake::cut_fragments(&mut owner, vec![1], 7);
+        let cut = sweep_intake::cut_fragments(&mut owner, vec![1], Vec::new(), 7);
         sweep_intake::sweep_departure(
             &mut owner,
             Transform::IDENTITY,

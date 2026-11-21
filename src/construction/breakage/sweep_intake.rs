@@ -828,6 +828,8 @@ struct Resolution {
 /// the plug, the fragments it and its unsupported remainder leave as, and their ledger entries.
 pub(super) struct Cut {
     pub(super) plug: Vec<usize>,
+    /// Crushed cells: they leave the simulation as dust, one shed each.
+    pub(super) crushed: Vec<usize>,
     fragments: Vec<Vec<usize>>,
     entries: Vec<Entry>,
 }
@@ -948,7 +950,7 @@ fn owner_sequence(
         };
         let cut = swept.released().then(|| {
             after = Some(None);
-            cut_fragments(breakage, swept.chunks.clone(), tick)
+            cut_fragments(breakage, swept.chunks.clone(), Vec::new(), tick)
         });
         resolved.push(Resolution {
             source: index,
@@ -1352,11 +1354,26 @@ pub(super) fn fragment_motion(
 
 /// Commit `plug`'s cut before collider reconciliation. Connectivity already identifies
 /// unsupported matter; it needs no standing collider or later force solve to establish that it
-/// is free.
-pub(super) fn cut_fragments(breakage: &mut Breakage, plug: Vec<usize>, tick: u32) -> Cut {
+/// is free. `crushed` (disjoint from `plug`) is matter with no solid form left: it is dust before
+/// the fragments are read, so what it carried is loose and nothing merges with it.
+pub(super) fn cut_fragments(
+    breakage: &mut Breakage,
+    plug: Vec<usize>,
+    crushed: Vec<usize>,
+    tick: u32,
+) -> Cut {
     let kind = &breakage.kind;
     let mut parted = Vec::new();
     let mut entries = Vec::new();
+    for &c in &crushed {
+        breakage.live.state.fate[c] = Fate::Dust;
+        breakage.live.swapped[usize::from(kind.layout.element_of[c])] = true;
+        entries.push(Entry {
+            construction: breakage.construction,
+            event: Event::Dust(c as u16),
+            tick,
+        });
+    }
     for j in kind.sweep.cut(&plug) {
         if !breakage.live.state.separated[j] {
             parted.push(j);
@@ -1395,6 +1412,7 @@ pub(super) fn cut_fragments(breakage: &mut Breakage, plug: Vec<usize>, tick: u32
     }
     Cut {
         plug,
+        crushed,
         fragments,
         entries,
     }
@@ -1419,7 +1437,13 @@ pub(super) fn sweep_departure(
     // Routing sums a fragment's mass and size, in fragment order with its ledger entries; only a
     // server body's preparation, which builds a convex hull per chunk, takes a task.
     let mut kept = Vec::new();
-    let mut sheds = Vec::new();
+    let mut sheds: Vec<_> = (cut.crushed.iter())
+        .map(|&c| {
+            let frame = (breakage.construction, pose);
+            let rest = ReleasedMotion::at_rest(pose.translation);
+            crate::debris::crumble::Shed::of(&breakage.live.structure, frame, &[c], rest, tick)
+        })
+        .collect();
     for group in &cut.fragments {
         let motion = fragment_motion(kind, &pose, group, &driven, motion);
         let (bodies, decor) = crate::debris::crumble::route(
