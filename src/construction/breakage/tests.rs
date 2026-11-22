@@ -4625,11 +4625,13 @@ fn the_law_installer_reuses_departing_standing_colliders() {
 
 /// The game's environment destruction: removing a middle support frees the crown immediately,
 /// before reconciliation can construct a standing collider for it, and the shared ledger derives
-/// both departures. Mutants: the disconnected crown left standing, a chunk leaving twice.
+/// both departures. Fixture: the column at 0.02 scale, so each freed chunk is far smaller than any
+/// chunk a bake ships. Mutants: the disconnected crown left standing, a chunk leaving twice, a
+/// fragment dropped at departure for its size.
 #[test]
 fn a_cut_frees_unsupported_matter_without_building_standing_colliders() {
     use bevy::ecs::system::RunSystemOnce;
-    let kind = column_construction();
+    let kind = scaled_column(0.02);
     let (mut app, root) = composed_kind(false, &kind);
     app.update();
     app.update();

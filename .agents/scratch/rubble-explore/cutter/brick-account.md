@@ -17,7 +17,7 @@ House stage means, µs: physics 1125 to 4827, bound 306 to 912, structure 150 to
 
 ## Deleted, kept
 
-Deleted: `route`'s size split, `server_rubble_min_size_m` and its row, `merge_fragments`, `Live::rubble_joints`, `debris::decor` with `WorldShed`, its channel, refusal and look rows (route was their only producer). `PROTOCOL_REV` 108, hashes re-pinned. Kept: `Fate::Dust`, which named laws use. One test holds the invariant; a size floor in `evaluate_owner` turns it red. Backlog destruction-04/05/07/08/10 stay open: design-level.
+Deleted: `route`'s size split, `server_rubble_min_size_m` and its row, `merge_fragments`, `Live::rubble_joints`, `debris::decor` with `WorldShed`, its channel, refusal and look rows (route was their only producer). `PROTOCOL_REV` 108, hashes re-pinned. Kept: `Fate::Dust`, which named laws use. One test holds the invariant; a size floor in `evaluate_owner` turns it red. Backlog destruction-04/05/10 stay open: design-level. destruction-07 (a walk restriction or a pricing) and -08 (a thread-count witness) go to the next lane that edits `bounded.rs`.
 
 ## Faults
 

@@ -17,7 +17,7 @@
 //! - terrain is a height grid at the shipped cell spacing, with its heightfield collider;
 //! - steps, walls, curbs, bars and trenches finer than a cell are static Avian bodies, made as
 //!   the map makes a graybox block;
-//! - rubble is dynamic pieces at and above the size floor.
+//! - rubble is dynamic pieces.
 //!
 //! Fixture: every dimension and placement below is fixture data, chosen to pose its question.
 
@@ -1688,7 +1688,7 @@ fn ride(card: &mut Card) {
     });
 }
 
-/// Fixture: 0.8 × 0.5 × 0.6 m pieces (cube root of volume 0.62 m, above the 0.5 m size floor).
+/// Fixture: 0.8 × 0.5 × 0.6 m pieces.
 const PIECE: Vec3 = Vec3::new(0.8, 0.5, 0.6);
 const PIECE_GAP: f32 = 0.05;
 

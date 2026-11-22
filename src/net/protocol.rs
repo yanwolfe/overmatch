@@ -34,10 +34,9 @@ use crate::{CombatantId, CombatantLife, ShotId};
 /// Every wire change bumps this revision and re-pins the affected manifest hashes (ADR-0018).
 /// The game's environment destruction model carries shared causes and chunk-addressed groups;
 /// replacement and departure derive from the admitted graph on each peer. The construction ledger
-/// reaches a client as the
-/// diffs past its acknowledged cursor (bevy_replicon 0.45.5), each naming the position it lands
-/// at, and a whole copy only to a client without one or behind the retained history; the hull
-/// marks replicate whole.
+/// reaches a client as the diffs past its acknowledged cursor (bevy_replicon 0.45.5), each naming
+/// the position it lands at, and a whole copy only to a client without one or behind the retained
+/// history; the hull marks replicate whole.
 pub const PROTOCOL_REV: u32 = 108;
 
 /// The compatibility record's wire term: the pinned wire manifest, [`PROTOCOL_REV`] and the crate

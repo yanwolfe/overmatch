@@ -980,7 +980,7 @@ DERIVED from the seams' strengths and the two sides' stiffness, `a_short_drop_la
 weakest seam slipping in cohesion-only shear first; at four times that speed it cracks 121 bonds and
 parts 109 joints into 20 fragments, the cracks taking 79 J of 3,081 J. The rest of this paragraph
 was measured on the running-bond bake, whose element was 66 chunks of 0.74–48 kg, 1,712 kg: from
-10 m it cracked 28 bonds, parted 19 joints and stayed one server body. Through one corner chunk, a 1 cm drop (28.6 kN
+10 m it cracked 28 bonds and parted 19 joints. Through one corner chunk, a 1 cm drop (28.6 kN
 peak) cracks nothing; 10 cm (114 kN) cracks 108 bonds into 21 fragments; 10 m, 44 fragments. The cracks absorb 82–117 J of the landing's 1.7–168 kJ. The corner's
 peak against this ground is close to the step-based force it replaced, so the corner's breakup
 does not come from the solver's step. A landing that cracks nothing costs 1.0 M scalar
