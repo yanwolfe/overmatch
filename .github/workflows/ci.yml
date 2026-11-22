@@ -71,12 +71,20 @@ jobs:
       - name: cargo deny
         run: cargo deny --locked check -W unmaintained
 
-  # Compile-heavy checks share one matrix but run independently. The limit covers a cold cache: a
-  # vendored crate's change re-keys it, and the tests lane then compiles for 28 min (MEASURED
-  # 2026-11-01, run 41248393247) before its tests; warm, the whole lane takes about 8 min.
+  # Compile-heavy checks share one matrix but run independently. The limit covers the tests lane on
+  # a cold cache, which a vendored crate's change causes by re-keying it:
+  # - cold compile: 33.5 min (MEASURED, run 45038453936, cut by the limit before its tests ended);
+  # - tests: 17 to 22 min warm (MEASURED, runs 44945564747 and 44895098763); the cold run reached
+  #   its 1400th test in 20.5 min against 13 and 17 min warm, so about 27 min cold (DERIVED:
+  #   22 min x 20.5/17);
+  # - cold lane: about 65 min (DERIVED: 33.5 + 27, plus setup and the cache save); the limit adds
+  #   40 % for runner variance.
+  # Warm, the tests lane takes 28 to 36 min (MEASURED, same two runs: 10 to 14 min compiling the
+  # workspace's own crates, then the tests). A lane the limit cancels saves no cache (rust-cache
+  # saves in its post step, which a cancelled job skips), so too low a limit keeps every run cold.
   checks:
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
