@@ -95,6 +95,19 @@ fn read(
     for (entity, piece, breakage, at, rotation, centre, velocity) in &pieces {
         let age = seen.entry(entity).or_insert(0);
         *age += 1;
+        // A second after birth, with its mass properties computed: where it is now.
+        if *age == 64 {
+            let centre = at.0 + rotation.0 * centre.0;
+            let filter = SpatialQueryFilter::from_mask(Layer::Terrain);
+            let ground = spatial
+                .cast_ray(centre + Vec3::Y * 60.0, Dir3::NEG_Y, 200.0, true, &filter)
+                .map_or(f32::NAN, |hit| centre.y + 60.0 - hit.distance);
+            info!(
+                "RELAY later tick={tick} piece={entity:?} over_ground={} vy={}",
+                centre.y - ground,
+                velocity.0.y
+            );
+        }
         if *age == 1 {
             let centre = at.0 + rotation.0 * centre.0;
             let filter = SpatialQueryFilter::from_mask(Layer::Terrain);

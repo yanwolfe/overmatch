@@ -781,9 +781,21 @@ fn press_verdict(tick: u32, entity: Entity, piece: &Piece, breakage: &Breakage, 
     let volume: f32 = owned.iter().map(|&c| structure.chunks[c].volume).sum();
     let load: f32 = touches.iter().map(|touch| touch.force.length()).sum();
     // Instrument filter: a piece bearing little more than itself is at rest, not pressed.
-    if load < 3.0 * mass * 9.81 {
+    if load < 3.0 * mass * 9.81 || tick % 4 != 0 {
         return;
     }
+    // Live bonds between the piece's own chunks: what the assessment can fail.
+    let bonds = (structure.joints.iter().enumerate())
+        .filter(|&(j, joint)| {
+            let Side::Chunk(b) = joint.b else {
+                return false;
+            };
+            owned.binary_search(&joint.a).is_ok()
+                && owned.binary_search(&b).is_ok()
+                && !breakage.live.state.separated[j]
+                && breakage.live.state.live(joint)
+        })
+        .count();
     let most = touches
         .iter()
         .map(|touch| touch.force.length())
@@ -803,6 +815,21 @@ fn press_verdict(tick: u32, entity: Entity, piece: &Piece, breakage: &Breakage, 
     let mut first = breakage.live.state.clone();
     let pass = Assessment::landing(kernels, structure, &mut first, &loads(touches));
     let overload_most = pass.failures.iter().map(overload).fold(0.0, f32::max);
+    // The least of these multiples of the presses at which a bond fails: demand over capacity
+    // lies between its inverse and the inverse of the one before.
+    let fails_at = [1.0_f32, 3.0, 10.0, 30.0, 100.0, 1000.0]
+        .into_iter()
+        .find(|&scale| {
+            let scaled: Vec<Touch> = (touches.iter())
+                .map(|touch| Touch {
+                    force: touch.force * scale,
+                    ..*touch
+                })
+                .collect();
+            let mut state = breakage.live.state.clone();
+            let pass = Assessment::landing(kernels, structure, &mut state, &loads(&scaled));
+            !pass.failures.is_empty() || !pass.parted.is_empty()
+        });
     let result = crumble(
         structure,
         &breakage.live.state,
@@ -834,7 +861,7 @@ fn press_verdict(tick: u32, entity: Entity, piece: &Piece, breakage: &Breakage, 
         .map(|fragment| format!("{}", size(fragment)))
         .collect();
     info!(
-        "RELAY verdict tick={tick} piece={entity:?} con={} cells={} vol={volume} mass={mass} load_n={load} most_n={most} crush={crush} overload={overload_most} failures={} parted={} cost_j={} dust=[{}] kept=[{}]",
+        "RELAY verdict tick={tick} piece={entity:?} con={} cells={} vol={volume} mass={mass} load_n={load} most_n={most} crush={crush} bonds={bonds} fails_at={fails_at:?} overload={overload_most} failures={} parted={} cost_j={} dust=[{}] kept=[{}]",
         piece.construction,
         owned.len(),
         pass.failures.len(),
