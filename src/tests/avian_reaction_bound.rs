@@ -8,42 +8,82 @@ use avian3d::prelude::*;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 
-use crate::avian_ext::reaction_bound::{Bound, Bounds};
+use crate::avian_ext::reaction_bound::{Bound, Bounds, Member};
 
-/// Fixture: the bound handed to every point; `None` leaves Avian's contact.
+/// Fixture: the bound handed over; `None` leaves Avian's contact.
 #[derive(Resource)]
-struct Each(Option<Bound>);
+struct Each(Option<Hand>);
 
-fn hand_over(graph: Res<ContactGraph>, mut bounds: ResMut<Bounds>, bound: Res<Each>) {
-    for pair in graph.iter_active() {
-        for (index, manifold) in pair.manifolds.iter().enumerate() {
-            if let Some(impulse) = bound.0 {
-                bounds.set(pair.contact_id, index, vec![impulse; manifold.points.len()]);
+#[derive(Clone, Copy)]
+enum Hand {
+    /// To every point, as a group of its own.
+    Point(Bound),
+    /// To all the points of all manifolds between them, as one group.
+    Block(Bound),
+}
+
+/// The groups the last step named.
+#[derive(Resource, Default)]
+struct Named(Vec<usize>);
+
+fn hand_over(
+    graph: Res<ContactGraph>,
+    mut bounds: ResMut<Bounds>,
+    hand: Res<Each>,
+    mut named: ResMut<Named>,
+) {
+    named.0.clear();
+    let members: Vec<Member> = (graph.iter_active())
+        .flat_map(|pair| {
+            (pair.manifolds.iter().enumerate()).flat_map(move |(manifold, points)| {
+                (0..points.points.len()).map(move |point| Member {
+                    contact: pair.contact_id,
+                    manifold,
+                    point,
+                    lean: 1.0,
+                })
+            })
+        })
+        .collect();
+    match hand.0 {
+        None => {}
+        Some(Hand::Point(most)) => {
+            for member in members {
+                named.0.push(bounds.group(vec![member], most));
             }
         }
+        Some(Hand::Block(most)) => named.0.push(bounds.group(members, most)),
     }
 }
 
-/// Whether every bounded point ended the last step at its bound, and how many there were.
-fn held(graph: Res<ContactGraph>, bounds: Res<Bounds>) -> (bool, usize) {
-    let points: Vec<bool> = (graph.iter_active())
-        .flat_map(|pair| {
-            (0..pair.manifolds.len()).filter_map(|index| bounds.held(pair.contact_id, index))
-        })
-        .flatten()
-        .copied()
-        .collect();
-    (points.iter().all(|&held| held), points.len())
+/// Whether every group ended the last step spent, and how many there were.
+fn held(bounds: Res<Bounds>, named: Res<Named>) -> (bool, usize) {
+    (
+        named.0.iter().all(|&group| bounds.spent(group)),
+        named.0.len(),
+    )
 }
 
 /// Fixture: a box of `mass` kg closing at `approach` m/s, without gravity, on a slab whose four
 /// face points each take `each`; returns its speed after each of four updates, and what
 /// [`held`] reports.
-fn press(mass: f32, approach: f32, each: Option<Bound>) -> (Vec<f32>, Vec<(bool, usize)>) {
+fn press(mass: f32, approach: f32, each: Option<Hand>) -> (Vec<f32>, Vec<(bool, usize)>) {
+    press_beside(mass, approach, each, false)
+}
+
+/// [`press`]; with `idle`, a second box rests on the slab beside the first, closing on nothing,
+/// so its face points carry no load.
+fn press_beside(
+    mass: f32,
+    approach: f32,
+    each: Option<Hand>,
+    idle: bool,
+) -> (Vec<f32>, Vec<(bool, usize)>) {
     {
         let mut app = super::avian_child_pose_churn::physics_app();
         app.insert_resource(Gravity(Vec3::ZERO))
             .insert_resource(Each(each))
+            .init_resource::<Named>()
             .add_systems(
                 PhysicsSchedule,
                 hand_over
@@ -63,6 +103,14 @@ fn press(mass: f32, approach: f32, each: Option<Bound>) -> (Vec<f32>, Vec<(bool,
                 LinearVelocity(Vec3::NEG_Y * approach),
             ))
             .id();
+        if idle {
+            app.world_mut().spawn((
+                RigidBody::Dynamic,
+                Collider::cuboid(1.0, 1.0, 1.0),
+                Mass(mass),
+                Position(Vec3::new(1.5, 0.999, 0.0)),
+            ));
+        }
         let mut speeds = vec![];
         let mut reports = vec![];
         for _ in 0..4 {
@@ -88,7 +136,7 @@ fn a_bounded_point_returns_its_bound_over_the_step() {
         press(
             mass,
             approach,
-            impulse.map(|impulse| Bound { impulse, ..rigid }),
+            impulse.map(|impulse| Hand::Point(Bound { impulse, ..rigid })),
         )
     };
     let (rigid, _) = step(None);
@@ -126,10 +174,10 @@ fn a_bounded_point_returns_its_bound_over_the_step() {
 #[test]
 fn a_work_bounded_point_takes_its_work_at_the_speed_it_is_crossed() {
     let (mass, work) = (2_000.0_f32, 100.0);
-    let each = Some(Bound {
+    let each = Some(Hand::Point(Bound {
         work,
         ..Bound::RIGID
-    });
+    }));
     for approach in [4.0, 8.0] {
         let (speeds, reports) = press(mass, approach, each);
         assert!(reports[1..].iter().all(|&report| report == (true, 4)));
@@ -148,4 +196,37 @@ fn a_work_bounded_point_takes_its_work_at_the_speed_it_is_crossed() {
         stopped[3] >= 0.0,
         "a body short of the work is stopped: {stopped:?}"
     );
+}
+
+/// A group returns its bound over the step between its points, wherever the load falls: the
+/// sum never passes the bound, and a load on some of the points still meets all of it. Relied
+/// on by the game's building model, where a block of cells returns what its bonds hold
+/// whichever of its faces a body presses. Fixture: a 2,000 kg box closing at 4 m/s on a slab,
+/// alone and beside a box at rest, every face point on the slab in one group of 100 N·s; a
+/// step takes 100 N·s of the closing box's momentum either way. Mutants: each wanting point
+/// handed all the group has left (the first step beside the idle box takes more than the
+/// bound); the bound split evenly whatever the points carry (beside the idle box a step takes
+/// half the bound).
+#[test]
+fn a_group_returns_its_bound_over_the_step_whatever_the_split() {
+    let (mass, approach, bound) = (2_000.0_f32, 4.0, 100.0);
+    let most = Bound {
+        impulse: bound,
+        ..Bound::RIGID
+    };
+    for idle in [false, true] {
+        let (speeds, reports) = press_beside(mass, approach, Some(Hand::Block(most)), idle);
+        let losses: Vec<f32> = (speeds.windows(2))
+            .map(|pair| (pair[1] - pair[0]) * mass)
+            .collect();
+        assert!(
+            losses.iter().all(|&loss| loss <= bound * 1.001),
+            "idle {idle}: no step returns more than {bound} N·s: {losses:?}"
+        );
+        // A step's first substep deals a new group before any solve says where the load falls.
+        assert!(
+            losses[1..].iter().all(|&loss| loss >= bound * 0.95),
+            "idle {idle}: each later step returns {bound} N·s: {losses:?}, spent {reports:?}"
+        );
+    }
 }

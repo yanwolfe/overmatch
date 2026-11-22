@@ -5,12 +5,12 @@
 //!
 //! * [`bound_contacts`], inside the physics step after the narrow phase: groups each body's
 //!   contact points on one construction into blocks of connected pressed cells, prices each
-//!   ([`Standing::give`]) and hands its points their share of the reaction as the solver's bound
-//!   (`avian_ext::reaction_bound`). A point the law does not move (an unbreakable element, a
-//!   buried cell, a face slid along) stays rigid.
-//! * [`release`], after the step: a block one of whose points ended the step at its bound was not
-//!   enough to stop the body, which crossed [`crossed`] of its give; the share is remembered per
-//!   cell while the block keeps yielding ([`Give`]) and the cells leave when it reaches one.
+//!   ([`Standing::give`]) and bounds what its points return between them, wherever the body
+//!   presses it, at that price (`avian_ext::reaction_bound`). A point the law does not move (an
+//!   unbreakable element, a buried cell, a face slid along) stays rigid.
+//! * [`release`], after the step: a block that returned all its bound was not enough to stop
+//!   the body, which crossed [`crossed`] of its give; the share is remembered per cell while the
+//!   block keeps yielding ([`Give`]) and the cells leave when it reaches one.
 //! * [`bound_belts`], before the step: the force a belt takes from standing matter is bounded by
 //!   the same price; over it, the belt keeps what the cells can return and they leave.
 //!
@@ -30,7 +30,7 @@ use avian3d::prelude::{
 use super::fracture::bound::{Push, Standing, Way, Yield, crossed, reaction};
 use super::sweep_intake::{ReleasedMotion, cut_fragments, sweep_departure};
 use super::*;
-use crate::avian_ext::reaction_bound::{Bound, Bounds};
+use crate::avian_ext::reaction_bound::{Bound, Bounds, Member};
 use bevy::tasks::ParallelSlice;
 
 /// One body's connected pressed cells on one construction, as the step priced them.
@@ -42,42 +42,12 @@ pub(crate) struct Block {
     pub(crate) cells: Vec<usize>,
     /// The share of its give crossed before this step.
     pub(crate) spent: f64,
-    /// Each push's cheapest way to give.
-    gives: Vec<Yield>,
+    /// Each push's cheapest way to give, and its group of bounded points (`Bounds::group`).
+    gives: Vec<(Yield, usize)>,
     /// Where the body presses, from its centre of mass at the step's start, m, world.
     arm: Vec3,
     /// The world's rotation into the owner's frame at the step's start.
     to_owner: Quat,
-    /// Its bounded points: contact pair, manifold and point; the point's normal into the cell
-    /// in the owner's frame; and the impulse it carried into this step.
-    points: Vec<((u32, usize, usize), DVec3, f64)>,
-}
-
-/// Resolution: the share of a block's bound its points split equally, whatever each carried last
-/// step, so a point that takes load this step answers within it; the rest follows last step's
-/// load. A block has yielded when the points at their bound hold the rest between them: its
-/// loaded points all returned what its bonds allow.
-const EVEN_SHARE: f64 = 0.25;
-
-/// Each point's share of a block's bound among the points leaning along a push (`leans` and
-/// `loads` point for point): zero for a point that does not lean that way.
-fn shares(leans: &[f64], loads: &[f64]) -> Vec<f64> {
-    let leaning = leans.iter().filter(|&&lean| lean > 0.0).count() as f64;
-    let carried: f64 = (leans.iter().zip(loads))
-        .filter(|&(&lean, _)| lean > 0.0)
-        .map(|(_, &load)| load)
-        .sum();
-    (leans.iter().zip(loads))
-        .map(|(&lean, &load)| {
-            if lean <= 0.0 {
-                0.0
-            } else if carried > 0.0 {
-                EVEN_SHARE / leaning + (1.0 - EVEN_SHARE) * load / carried
-            } else {
-                1.0 / leaning
-            }
-        })
-        .collect()
 }
 
 /// The blocks the last physics step bounded; [`release`] takes them.
@@ -236,8 +206,6 @@ struct Touch {
     at: Vec3,
     /// Unit, from the body into the cell, in the owner's frame.
     into: DVec3,
-    /// The normal impulse the point carried into this step (the solver's warm start), N·s.
-    load: f64,
 }
 
 /// The ways a body moving at `velocity` under `acceleration` (both in the owner's frame) pushes
@@ -269,8 +237,9 @@ fn pushes(velocity: DVec3, acceleration: DVec3, touches: &[&Touch]) -> Vec<Push>
         .collect()
 }
 
-/// One body's blocks on one owner, and the bounds of their points by contact and manifold.
-type Priced = (Vec<Block>, Vec<((u32, usize), (usize, Bound))>, Vec<usize>);
+/// One body's blocks on one owner, each with its gives' groups of points and their bounds in
+/// the order of its gives, and the cell counts of the blocks no way is open for.
+type Priced = (Vec<(Block, Vec<(Vec<Member>, Bound)>)>, Vec<usize>);
 
 /// Prices the cells `body` presses on `root` at `touches` ([`bound_contacts`]).
 fn price(
@@ -299,7 +268,7 @@ fn price(
     let mut cells: Vec<usize> = touches.iter().map(|touch| touch.cell).collect();
     cells.sort_unstable();
     cells.dedup();
-    let (mut blocks, mut limits, mut held) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut blocks, mut held) = (Vec::new(), Vec::new());
     for cells in standing.connected(&cells) {
         let on: Vec<&Touch> = (touches.iter())
             .filter(|touch| cells.binary_search(&touch.cell).is_ok())
@@ -316,10 +285,10 @@ fn price(
             (to_owner * acceleration).as_dvec3(),
             &on,
         );
-        // Every push bounds the points that lean its way, each by its share ([`shares`]) of what
-        // the cells hold and of the work they take before they let go; a point takes the least
-        // of each, which is the cheapest way at whatever speed the solve finds the body closing:
-        // min over ways of min(F dt, W / v) is min(least F dt, least W / v).
+        // Every push bounds the points that lean its way, between them, at what the cells hold
+        // and at the work they take before they let go (`Bounds::group`); a point in several
+        // groups takes the least, which is the cheapest way at whatever speed the solve finds
+        // the body closing.
         let gives: Vec<Yield> = (pushes.iter())
             .filter(|push| push.lean > 0.0)
             .filter_map(|&push| standing.give_along(&cells, push, spent, dt))
@@ -328,42 +297,41 @@ fn price(
             held.push(cells.len());
             continue; // No way is open: the cells hold whatever presses them.
         }
-        let loads: Vec<f64> = on.iter().map(|touch| touch.load).collect();
-        let mut most = vec![Bound::RIGID; on.len()];
-        for given in &gives {
-            let leans: Vec<f64> = (on.iter())
-                .map(|touch| touch.into.dot(given.push.along))
-                .collect();
-            let shares = shares(&leans, &loads);
-            let work = (1.0 - spent) * given.price.work;
-            for ((most, lean), share) in most.iter_mut().zip(leans).zip(shares) {
-                if lean > 0.0 {
-                    let impulse = given.price.force * dt * share / lean;
-                    most.impulse = most.impulse.min(impulse as f32);
-                    most.work = most.work.min((work * share) as f32);
-                }
-            }
-        }
-        let mut points = Vec::new();
-        for (touch, most) in on.iter().zip(most) {
-            if most != Bound::RIGID {
-                let (contact, manifold, point) = touch.point;
-                limits.push(((contact, manifold), (point, most)));
-                points.push((touch.point, touch.into, touch.load));
-            }
-        }
-        blocks.push(Block {
-            root,
-            body,
-            cells,
-            spent,
-            arm,
-            to_owner,
-            gives,
-            points,
-        });
+        let groups = (gives.iter())
+            .map(|given| {
+                let members = (on.iter())
+                    .filter_map(|touch| {
+                        let lean = touch.into.dot(given.push.along) as f32;
+                        let (contact, manifold, point) = touch.point;
+                        (lean > 0.0).then_some(Member {
+                            contact: ContactId(contact),
+                            manifold,
+                            point,
+                            lean,
+                        })
+                    })
+                    .collect();
+                let most = Bound {
+                    impulse: (given.price.force * dt) as f32,
+                    work: ((1.0 - spent) * given.price.work) as f32,
+                };
+                (members, most)
+            })
+            .collect();
+        blocks.push((
+            Block {
+                root,
+                body,
+                cells,
+                spent,
+                arm,
+                to_owner,
+                gives: gives.into_iter().map(|given| (given, usize::MAX)).collect(),
+            },
+            groups,
+        ));
     }
-    (blocks, limits, held)
+    (blocks, held)
 }
 
 /// Inside the physics step, between the narrow phase and the solver's constraints (module doc).
@@ -388,7 +356,6 @@ fn bound_contacts(
     let mut rigid = BTreeMap::<(Entity, u16, Held), usize>::new();
     let dt = f64::from(time.delta_secs());
     let mut touches = BTreeMap::<Entity, BTreeMap<Entity, Vec<Touch>>>::new();
-    let mut sizes = BTreeMap::new();
     for pair in contacts.iter_active() {
         let sides = [
             (pair.collider1, pair.body2, -1.0),
@@ -409,7 +376,6 @@ fn bound_contacts(
             }
             let pose = owner.physics_frame((position, rotation));
             for (m, manifold) in pair.manifolds.iter().enumerate() {
-                sizes.insert((pair.contact_id.0, m), manifold.points.len());
                 let into = (pose.rotation.inverse() * (sign * manifold.normal)).as_dvec3();
                 for (p, point) in manifold.points.iter().enumerate() {
                     if let Some(cell) = cell(owner, &pose, element, chunk, point.point) {
@@ -418,7 +384,6 @@ fn bound_contacts(
                             cell,
                             at: point.point,
                             into,
-                            load: f64::from(point.warm_start_normal_impulse),
                         });
                     } else {
                         let why = match (chunk, element) {
@@ -436,7 +401,6 @@ fn bound_contacts(
             }
         }
     }
-    let mut limits = BTreeMap::<(u32, usize), Vec<(usize, Bound)>>::new();
     for (root, bodies) in touches {
         let (_, position, rotation, mut owner) = owners
             .get_mut(root)
@@ -468,16 +432,18 @@ fn bound_contacts(
                 })
                 .collect::<Vec<(Entity, Priced)>>()
         });
-        for (body, (blocks, points, held)) in priced.into_iter().flatten() {
+        for (body, (blocks, held)) in priced.into_iter().flatten() {
             pressed.held.extend(held.into_iter().map(|cells| HeldRow {
                 body,
                 construction,
                 cells,
                 why: Held::NoWay,
             }));
-            pressed.blocks.extend(blocks);
-            for (manifold, point) in points {
-                limits.entry(manifold).or_default().push(point);
+            for (mut block, groups) in blocks {
+                for ((_, group), (members, most)) in block.gives.iter_mut().zip(groups) {
+                    *group = bounds.group(members, most);
+                }
+                pressed.blocks.push(block);
             }
         }
     }
@@ -489,13 +455,6 @@ fn bound_contacts(
             why,
         }),
     );
-    for ((contact, manifold), points) in limits {
-        let mut each = vec![Bound::RIGID; sizes[&(contact, manifold)]];
-        for (point, most) in points {
-            each[point] = most;
-        }
-        bounds.set(ContactId(contact), manifold, each);
-    }
 }
 
 /// After the step: remember what yielded and free what crossed its give (module doc).
@@ -547,35 +506,26 @@ fn release(
             .map_or(DVec3::ZERO, |(linear, angular)| {
                 (block.to_owner * (linear.0 + angular.0.cross(block.arm))).as_dvec3()
             });
-        let returned = |given: &Yield| {
+        let returned = |(given, _): &(Yield, usize)| {
             reaction(given.price, block.spent, velocity.dot(given.push.along), dt) / given.push.lean
         };
-        let Yield {
-            way,
-            push,
-            price,
-            leaves,
-            grounded,
-            ..
-        } = (block.gives.into_iter())
+        let (
+            Yield {
+                way,
+                push,
+                price,
+                leaves,
+                grounded,
+                ..
+            },
+            group,
+        ) = (block.gives.into_iter())
             .min_by(|a, b| returned(a).total_cmp(&returned(b)))
             .expect("a block holds a way to give");
         let closing = velocity.dot(push.along);
         let impulse = reaction(price, block.spent, closing, dt);
-        let leans: Vec<f64> = (block.points.iter())
-            .map(|(_, into, _)| into.dot(push.along))
-            .collect();
-        let loads: Vec<f64> = block.points.iter().map(|&(_, _, load)| load).collect();
-        let at_bound: f64 = (block.points.iter())
-            .zip(shares(&leans, &loads))
-            .filter(|&(&((contact, manifold, point), ..), _)| {
-                bounds
-                    .held(ContactId(contact), manifold)
-                    .is_some_and(|held| held[point])
-            })
-            .map(|(_, share)| share)
-            .sum();
-        let yielded = at_bound >= 1.0 - EVEN_SHARE;
+        // The points of the way that gave returned all its bound between them.
+        let yielded = bounds.spent(group);
         let spent = if yielded {
             block.spent + crossed(price, closing, dt)
         } else if keep.is_some() {

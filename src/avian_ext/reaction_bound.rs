@@ -1,34 +1,37 @@
-//! Bounded contact: a contact point's normal reaction over a physics step is at most an impulse
-//! its writer names, and does at most a work its writer names on the bodies closing through it,
-//! in place of Avian's rigid contact, which returns whatever impulse stops the approach. A
-//! writer sets a manifold's bounds in [`Bounds`] after the narrow phase and before Avian
-//! prepares the step's contact constraints (`SolverSystems::PrepareContactConstraints`). The
-//! store is cleared at the start of every physics step, so a bound never outlives its step;
-//! what the step did with it ([`Bounds::held`]) reads until the next step starts.
+//! Bounded contact: a group of contact points returns, over a physics step, at most an impulse
+//! its writer names, summed over the points along their leans, and does at most a work its
+//! writer names on the bodies closing through them, in place of Avian's rigid contact, which
+//! returns whatever impulse stops the approach. A writer names a group in [`Bounds`] after the
+//! narrow phase and before Avian prepares the step's contact constraints
+//! (`SolverSystems::PrepareContactConstraints`). The store is cleared at the start of every
+//! physics step, so a bound never outlives its step; what the step did with it
+//! ([`Bounds::spent`]) reads until the next step starts.
 //!
-//! [`apply_bounds`] hands each prepared point the fork's `ContactNormalPart::max_impulse` and
-//! `max_work` (the fork's `OVERMATCH_PATCH.md`, "Bounded contact"): its bounds over one substep.
-//! The solve holds the point to `max_work / v` at the closing speed `v` it finds there, so a
-//! body a third one drives inside the step is met at the speed it really has. A point's
-//! accumulated impulse is what one substep applies (the warm start reapplies the whole of it,
-//! `SolverConfig::warm_start_coefficient` 1), so the point returns at most its bound over the
-//! step along its normal, and Coulomb friction, which the solve clamps to the normal impulse, at
-//! most its coefficient times that. A manifold without bounds is Avian's rigid contact bit for
-//! bit.
+//! The solve bounds one point at a time: the fork's `ContactNormalPart::max_impulse` and
+//! `max_work` (its `OVERMATCH_PATCH.md`, "Bounded contact") hold a point's accumulated impulse,
+//! which is what one substep applies (the warm start reapplies the whole of it,
+//! `SolverConfig::warm_start_coefficient` 1), and its work at the closing speed the solve finds
+//! there. So the group's bound is dealt to its points before every substep ([`deal`]): each
+//! keeps what it carries, and what the group has left goes to the points the last solve left
+//! wanting more ([`shares`]). The points' bounds always sum to the group's, whatever the split,
+//! so the group returns at most its bound over the step and Coulomb friction, which the solve
+//! clamps to the normal impulse, at most its coefficient times that. A point in several groups
+//! takes the least of them. A manifold point in no group is Avian's rigid contact bit for bit.
 //!
-//! Who relies on it: the game's building model (`construction::bound`), where a standing cell
-//! returns no more than its bonds can.
+//! Who relies on it: the game's building model (`construction::bound`), where a block of
+//! standing cells returns no more than its bonds can, wherever a body presses it.
 
 use avian3d::collision::contact_types::ContactId;
+use avian3d::dynamics::integrator::IntegrationSystems;
 use avian3d::dynamics::solver::constraint_graph::ConstraintGraph;
-use avian3d::dynamics::solver::schedule::SolverSystems;
+use avian3d::dynamics::solver::schedule::{SolverSystems, SubstepSolverSystems};
 use avian3d::prelude::*;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use bevy::tasks::{ComputeTaskPool, ParallelSlice, ParallelSliceMut};
+use bevy::tasks::{ComputeTaskPool, ParallelSlice};
 
-/// The most a point returns over a step: an impulse, N·s, and the work it does on the bodies
-/// closing through it, J. Infinite parts leave that side rigid.
+/// The most a group returns over a step: an impulse, N·s, and the work it does on the bodies
+/// closing through it, J. An infinite part leaves that side rigid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bound {
     pub impulse: f32,
@@ -42,36 +45,84 @@ impl Bound {
     };
 }
 
-/// One manifold's points, in manifold order: each point's bound, and whether the step ended
-/// with the point at it.
-#[derive(Debug)]
-struct Points {
-    bounds: Vec<Bound>,
-    held: Vec<bool>,
+/// One point of a group: its contact pair, manifold and point, and its lean, the share of its
+/// normal impulse that counts against the group's (positive).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Member {
+    pub contact: ContactId,
+    pub manifold: usize,
+    pub point: usize,
+    pub lean: f32,
 }
 
-/// This step's bounds, by contact pair and manifold index.
+#[derive(Debug)]
+struct Group {
+    members: Vec<Member>,
+    most: Bound,
+    /// Per member, whether the last deal handed it more than it carried.
+    room: Vec<bool>,
+    spent: bool,
+}
+
+/// A bounded manifold's prepared constraint, and this substep's bound of each of its points.
+#[derive(Debug)]
+struct Manifold {
+    /// Colour and index in it; `None` for a manifold the step prepared no constraint for.
+    slot: Option<(usize, usize)>,
+    points: Vec<Bound>,
+}
+
+/// This step's groups, in the order their writers named them.
 #[derive(Resource, Default, Debug)]
-pub struct Bounds(HashMap<(u32, usize), Points>);
+pub struct Bounds {
+    groups: Vec<Group>,
+    manifolds: HashMap<(u32, usize), Manifold>,
+    /// Whether this step's first substep was dealt.
+    dealt: bool,
+}
 
 impl Bounds {
-    /// Bounds each point of manifold `manifold` of pair `contact` at its entry of `bounds` (in
-    /// manifold order), replacing any set before.
-    pub fn set(&mut self, contact: ContactId, manifold: usize, bounds: Vec<Bound>) {
+    /// Bounds the sum of `members`' normal impulses, each times its lean, at `most.impulse` over
+    /// the step, and their work at `most.work`; returns the group's index for [`Self::spent`].
+    pub fn group(&mut self, members: Vec<Member>, most: Bound) -> usize {
         assert!(
-            (bounds.iter()).all(|bound| bound.impulse >= 0.0 && bound.work >= 0.0),
-            "a contact's reaction bounds {bounds:?} hold a negative or NaN: a point pushes or \
-             bears nothing"
+            most.impulse >= 0.0 && most.work >= 0.0,
+            "a group's reaction bound {most:?} holds a negative or NaN: it pushes or bears nothing"
         );
-        let held = vec![false; bounds.len()];
-        self.0
-            .insert((contact.0, manifold), Points { bounds, held });
+        assert!(
+            members.iter().all(|member| member.lean > 0.0),
+            "a group's members lean its way: {members:?}"
+        );
+        // Nothing a point carries measures the work it took, so the work follows the impulse's
+        // deal; without an impulse bound there is no deal to follow.
+        assert!(
+            most.impulse.is_finite() || members.len() == 1,
+            "a group of several points bounded in work alone has no deal"
+        );
+        for member in &members {
+            let manifold = (self.manifolds)
+                .entry((member.contact.0, member.manifold))
+                .or_insert(Manifold {
+                    slot: None,
+                    points: Vec::new(),
+                });
+            if manifold.points.len() <= member.point {
+                manifold.points.resize(member.point + 1, Bound::RIGID);
+            }
+        }
+        self.groups.push(Group {
+            room: vec![false; members.len()],
+            members,
+            most,
+            spent: false,
+        });
+        self.groups.len() - 1
     }
 
-    /// Per point of a bounded manifold, whether the last step ended with the point returning all
-    /// its bound allows: the body was not stopped there.
-    pub fn held(&self, contact: ContactId, manifold: usize) -> Option<&[bool]> {
-        (self.0.get(&(contact.0, manifold))).map(|points| points.held.as_slice())
+    /// Whether the last step ended with group `group` returning all its bound allows: a point
+    /// still wanted more, and no point held room it did not use. The body was not stopped there.
+    pub fn spent(&self, group: usize) -> bool {
+        self.groups[group].spent
     }
 }
 
@@ -81,8 +132,8 @@ pub(super) fn plugin(app: &mut App) {
         .expect("avian_ext::plugin is added after Avian's PhysicsPlugins")
         .add_systems((
             clear_bounds.in_set(PhysicsStepSystems::First),
-            // Both write the prepared constraints; the fields they write are disjoint.
-            apply_bounds
+            // `apply_laws` writes the constraints this reads.
+            locate
                 .after(super::compliance::apply_laws)
                 .after(SolverSystems::PrepareContactConstraints)
                 .before(SolverSystems::PreSubstep),
@@ -90,75 +141,224 @@ pub(super) fn plugin(app: &mut App) {
                 .after(SolverSystems::Restitution)
                 .before(SolverSystems::Finalize),
         ));
+    app.get_schedule_mut(SubstepSchedule)
+        .expect("avian_ext::plugin is added after Avian's PhysicsPlugins")
+        .add_systems(
+            // Before the warm start reapplies what each point carries.
+            deal.after(IntegrationSystems::Velocity)
+                .before(SubstepSolverSystems::WarmStart),
+        );
 }
 
 fn clear_bounds(mut bounds: ResMut<Bounds>) {
-    bounds.0.clear();
+    bounds.groups.clear();
+    bounds.manifolds.clear();
+    bounds.dealt = false;
 }
 
-/// Hands each prepared constraint point of a bounded manifold its bound over a substep (see the
-/// module doc). Colors own disjoint constraints and are handed in parallel.
-pub(crate) fn apply_bounds(
-    bounds: Res<Bounds>,
-    mut constraints: ResMut<ConstraintGraph>,
-    substeps: Res<SubstepCount>,
-) {
-    if bounds.0.is_empty() {
+/// Finds each bounded manifold's prepared constraint.
+fn locate(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
+    if bounds.groups.is_empty() {
         return;
     }
-    let share = (substeps.0 as f32).recip();
-    constraints
-        .colors
-        .par_splat_map_mut(ComputeTaskPool::get(), None, |_, colors| {
-            for constraint in colors
-                .iter_mut()
-                .flat_map(|color| &mut color.contact_constraints)
-            {
-                // A manifold without bounds stays rigid.
-                let Some(points) =
-                    (bounds.0).get(&(constraint.contact_id.0, constraint.manifold_index))
-                else {
-                    continue;
-                };
-                assert_eq!(
-                    constraint.points.len(),
-                    points.bounds.len(),
-                    "a writer bounds a manifold point for point"
-                );
-                for (point, bound) in constraint.points.iter_mut().zip(&points.bounds) {
-                    let most = bound.impulse * share;
-                    point.normal_part.max_impulse = most;
-                    point.normal_part.max_work = bound.work * share;
-                    // The warm start is last step's impulse, which this step's bound never saw.
-                    point.normal_part.impulse = point.normal_part.impulse.min(most);
-                }
-            }
-        });
-}
-
-/// After the step's last solve: which bounded points it left at their bound.
-fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
-    if bounds.0.is_empty() {
-        return;
-    }
-    let at_bound = (constraints.colors).par_splat_map(ComputeTaskPool::get(), None, |_, colors| {
+    let manifolds = &bounds.manifolds;
+    let colors: Vec<(usize, &_)> = constraints.colors.iter().enumerate().collect();
+    let found = colors.par_splat_map(ComputeTaskPool::get(), None, |_, colors| {
         let mut found = Vec::new();
-        for constraint in colors.iter().flat_map(|color| &color.contact_constraints) {
-            let key = (constraint.contact_id.0, constraint.manifold_index);
-            if bounds.0.contains_key(&key) {
-                let held = (constraint.points.iter())
-                    .map(|point| point.normal_part.clamped)
-                    .collect::<Vec<_>>();
-                found.push((key, held));
+        for &(color, constraints) in colors {
+            for (index, constraint) in constraints.contact_constraints.iter().enumerate() {
+                let key = (constraint.contact_id.0, constraint.manifold_index);
+                if let Some(manifold) = manifolds.get(&key) {
+                    assert!(
+                        manifold.points.len() <= constraint.points.len(),
+                        "a writer bounds points its manifold holds"
+                    );
+                    found.push((key, (color, index)));
+                }
             }
         }
         found
     });
-    for (key, held) in at_bound.into_iter().flatten() {
+    for (key, slot) in found.into_iter().flatten() {
         bounds
-            .0
+            .manifolds
             .get_mut(&key)
             .expect("the key was read from this store")
-            .held = held;
+            .slot = Some(slot);
+    }
+}
+
+/// Each point's share of a group's bound, given what each carries against it (`carried`, a
+/// point's impulse times its lean), which points the last solve left at their bound
+/// (`wanting`), whether this is the step's first deal, and the bound; and whether the share is
+/// more than the point carries. The shares sum to one, so the points' bounds sum to the
+/// group's whatever the split: a point keeps what it carries, and what the group has left
+/// goes evenly to the points that want more, or to all when none does. The first deal has no
+/// solve behind it and gives what is left to the points by what they carried into the step.
+/// Carried past the bound, every point is cut alike.
+fn shares(carried: &[f32], wanting: &[bool], first: bool, bound: f32) -> Vec<(f32, bool)> {
+    let total: f32 = carried.iter().sum();
+    let count = carried.len() as f32;
+    if !bound.is_finite() {
+        return vec![(count.recip(), true); carried.len()];
+    }
+    if total >= bound {
+        // A bound of nothing deals nothing; the split is then no one's.
+        return (carried.iter())
+            .map(|&carried| {
+                let share = if total > 0.0 {
+                    carried / total
+                } else {
+                    count.recip()
+                };
+                (share, false)
+            })
+            .collect();
+    }
+    let left = bound - total;
+    let wanters = wanting.iter().filter(|&&wanting| wanting).count() as f32;
+    (carried.iter().zip(wanting))
+        .map(|(&carried, &wanting)| {
+            let of_left = if first && total > 0.0 {
+                carried / total
+            } else if first || wanters == 0.0 {
+                count.recip()
+            } else if wanting {
+                wanters.recip()
+            } else {
+                0.0
+            };
+            ((carried + left * of_left) / bound, of_left > 0.0)
+        })
+        .collect()
+}
+
+/// Before each substep's solve: deals every group's bound over one substep to its points (the
+/// module doc) and cuts what a point carries to its bound.
+fn deal(
+    mut bounds: ResMut<Bounds>,
+    mut constraints: ResMut<ConstraintGraph>,
+    substeps: Res<SubstepCount>,
+) {
+    if bounds.groups.is_empty() {
+        return;
+    }
+    let Bounds {
+        groups,
+        manifolds,
+        dealt,
+    } = &mut *bounds;
+    let substep = (substeps.0 as f32).recip();
+    for manifold in manifolds.values_mut() {
+        manifold.points.fill(Bound::RIGID);
+    }
+    let part = |member: &Member, manifolds: &HashMap<(u32, usize), Manifold>| {
+        let (color, index) = manifolds[&(member.contact.0, member.manifold)].slot?;
+        Some(&constraints.colors[color].contact_constraints[index].points[member.point].normal_part)
+    };
+    for group in groups.iter_mut() {
+        // A member whose manifold has no constraint this step carries and wants nothing.
+        let carried: Vec<f32> = (group.members.iter())
+            .map(|member| part(member, manifolds).map_or(0.0, |part| part.impulse * member.lean))
+            .collect();
+        let wanting: Vec<bool> = (group.members.iter())
+            .map(|member| part(member, manifolds).is_some_and(|part| part.clamped))
+            .collect();
+        let impulse = group.most.impulse * substep;
+        let work = group.most.work * substep;
+        let shares = shares(&carried, &wanting, !*dealt, impulse);
+        for ((member, room), (share, roomy)) in
+            group.members.iter().zip(&mut group.room).zip(shares)
+        {
+            *room = roomy;
+            let point = &mut manifolds
+                .get_mut(&(member.contact.0, member.manifold))
+                .expect("the group's manifolds are in the store")
+                .points[member.point];
+            point.impulse = point.impulse.min(impulse * share / member.lean);
+            point.work = point.work.min(work * share);
+        }
+    }
+    *dealt = true;
+    for manifold in manifolds.values() {
+        let Some((color, index)) = manifold.slot else {
+            continue;
+        };
+        let constraint = &mut constraints.colors[color].contact_constraints[index];
+        for (point, bound) in constraint.points.iter_mut().zip(&manifold.points) {
+            point.normal_part.max_impulse = bound.impulse;
+            point.normal_part.max_work = bound.work;
+            point.normal_part.impulse = point.normal_part.impulse.min(bound.impulse);
+        }
+    }
+}
+
+/// After the step's last solve: which groups it left spent ([`Bounds::spent`]).
+fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
+    let Bounds {
+        groups, manifolds, ..
+    } = &mut *bounds;
+    for group in groups.iter_mut() {
+        let wanting = |member: &Member| {
+            (manifolds[&(member.contact.0, member.manifold)].slot).is_some_and(|(color, index)| {
+                constraints.colors[color].contact_constraints[index].points[member.point]
+                    .normal_part
+                    .clamped
+            })
+        };
+        let wants: Vec<bool> = group.members.iter().map(wanting).collect();
+        group.spent = wants.contains(&true)
+            && (wants.iter().zip(&group.room)).all(|(&wants, &room)| wants || !room);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shares;
+
+    /// The points' bounds sum to the group's, whatever the split, so a group never returns
+    /// more than its bound in a substep; and a point is never dealt less than it carries while
+    /// the group has room, so the deal itself cuts no contact. Relied on by the game's
+    /// building model: a block's points return its bonds' bound between them. Fixture: splits
+    /// of a bound of 8 over four points. Mutants: what is left handed whole to each wanting
+    /// point (the sum passes the bound); the bound split evenly whatever is carried (a loaded
+    /// point is dealt less than it carries).
+    #[test]
+    fn a_groups_points_are_dealt_exactly_its_bound_whatever_the_split() {
+        let bound = 8.0_f32;
+        let splits: [[f32; 4]; 5] = [
+            [0.0, 0.0, 0.0, 0.0],
+            [6.0, 0.0, 0.0, 0.0],
+            [1.0, 2.0, 0.5, 0.0],
+            [4.0, 4.0, 0.0, 0.0],
+            [9.0, 3.0, 0.0, 0.0],
+        ];
+        let wants = [
+            [false; 4],
+            [true, false, false, false],
+            [true, true, false, true],
+            [true; 4],
+        ];
+        for carried in splits {
+            for wanting in wants {
+                for first in [true, false] {
+                    let shares = shares(&carried, &wanting, first, bound);
+                    let sum: f32 = shares.iter().map(|&(share, _)| share).sum();
+                    assert!(
+                        (sum - 1.0).abs() < 1e-5,
+                        "{carried:?} {wanting:?} first {first}: shares {shares:?} sum to {sum}"
+                    );
+                    let over = carried.iter().sum::<f32>() > bound;
+                    for (&carried, &(share, room)) in carried.iter().zip(&shares) {
+                        assert!(
+                            over || share * bound >= carried - 1e-5,
+                            "a point carrying {carried} is dealt {}",
+                            share * bound
+                        );
+                        assert_eq!(room, share * bound > carried + 1e-5);
+                    }
+                }
+            }
+        }
     }
 }

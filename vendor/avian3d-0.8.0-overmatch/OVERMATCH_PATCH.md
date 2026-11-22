@@ -631,12 +631,13 @@ accumulated-impulse clamp in `solve_impulse` and in `apply_restitution` gains it
 point's accumulated impulse is what one substep applies, so a finite `max_impulse` is the most the
 point returns per substep; an infinite one is Avian's contact bit for bit.
 
-The bound and its writers are the game's (`avian_ext::reaction_bound`): a writer sets each point
-of a manifold its largest normal impulse over the step in the `Bounds` resource, keyed by contact
-and manifold, after the narrow phase; the store is cleared at the start of every step. After
-`SolverSystems::PrepareContactConstraints` the game gives each bounded point its bound over the
-substep and clamps its warm start to it; after the last solve it reads which points ended the step
-at their bound. Friction needs no patch: the tangent solve clamps to the normal impulse.
+The bound and its writers are the game's (`avian_ext::reaction_bound`): a writer names a group of
+points and the most they return between them over the step in the `Bounds` resource, after the
+narrow phase; the store is cleared at the start of every step. Before each substep's warm start
+(`SubstepSchedule`) the game deals each group's bound to its points' `max_impulse` and `max_work`
+by what they carry and which the last solve left clamped, and cuts their accumulated impulse to
+it; after the last solve it reads which groups ended the step spent. Friction needs no patch: the
+tangent solve clamps to the normal impulse.
 
 Not game-side: the clamp sits inside the solve's inner loop, and no public field or schedule slot
 caps an impulse between two solves. 13 fork lines (MEASURED).
