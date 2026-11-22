@@ -27,13 +27,11 @@
 //!   bodies (a hull, a launched turret) and every other surface (the ground); one
 //!   that stops on such a body pushes it the same way, through avian at the point it stops.
 //!   Terrain and other nonstructural surfaces only shade the field.
-//! * **Contacts**: [`sweep_intake::run`] frees intersected patches before physics, handing each to
-//!   [`sweep_intake::sweep_departure`] with velocity and tick, which routes what stays connected of
-//!   it by size ([`crate::debris::crumble::route`]). Unfreed contact transfers on a placed
-//!   construction enter [`read_contacts`] as forces for the structure check. The solver already
-//!   exchanged their momentum; intake never launches or refunds a second body blow. Sleeping
-//!   presses remain in [`RestingLoads`]. A moving group's contacts load no law here: its landings
-//!   crumble it ([`crate::debris::crumble`]).
+//! * **Contacts**: a standing cell returns a body no more than its bonds can, and cells pushed
+//!   across their give leave at rest ([`bounded`]), routed by size
+//!   ([`crate::debris::crumble::route`]). No contact loads a placed construction's structure
+//!   check, from a body awake or asleep: it reads the construction's own weight and field
+//!   impulses. A moving group's landings crumble it ([`crate::debris::crumble`]).
 //! * **The order.** Tick intake reads one geometry snapshot. Each owner runs removal and
 //!   cavity cracks ([`fracture::strike`]), the part-scale verdict
 //!   ([`fracture::parts::Assessment`]), then connectivity on change. Independent owners
@@ -79,9 +77,9 @@ use std::sync::Arc;
 
 use avian3d::collider_tree::{ColliderTrees, update_moved_collider_aabbs};
 use avian3d::prelude::{
-    ActiveCollisionHooks, AngularVelocity, Collider, ColliderAabb, ColliderOf, CollisionLayers,
-    Forces, LayerMask, LinearVelocity, Position, ReadRigidBodyForces, RigidBody, Rotation, Sensor,
-    SpatialQuery, SpatialQueryFilter, WriteRigidBodyForces,
+    AngularVelocity, Collider, ColliderAabb, ColliderOf, CollisionLayers, Forces, LayerMask,
+    LinearVelocity, Position, ReadRigidBodyForces, RigidBody, Rotation, Sensor, SpatialQuery,
+    SpatialQueryFilter, WriteRigidBodyForces,
 };
 
 use bevy::ecs::entity::EntityHashMap;
@@ -100,18 +98,42 @@ use crate::ballistics::{
     ArmourMark, BallisticVolume, BurstField, DeliveredLine, PenetrationMarks, ShellMarched,
     SpallMarks,
 };
-use crate::contact_transfer::{ContactGroup, ContactTransfer, ContactTransfers};
+use crate::contact_transfer::ContactTransfers;
 use crate::debris::launch::{Launch, launch_mass};
 use crate::{ClientReplica, Layer, ShotClock};
 
 /// Resolution: face-stop tolerance, m, for repeated f32 intersection rounding.
 const STOP_TOLERANCE_M: f32 = 0.01;
 
-/// DERIVED from the construction frame: grade is its zero-height plane, m, the plane the construction stands on (a construction spawns with its
-/// frame's origin on the ground, its foundation below). A chunk wholly below it is buried.
+/// DERIVED from the construction frame: grade is its zero-height plane, m, the plane a level site
+/// meets it at (a construction spawns with its frame's origin on the ground, its foundation
+/// below).
 pub(crate) const GRADE_M: f32 = 0.0;
 /// Resolution: on-grade tolerance, m, for baked corners rounded off the cutting plane.
 const ON_GRADE_M: f32 = 1e-4;
+
+/// The ground a construction stands on. The soil holds a chunk it covers wholly, corner for
+/// corner: that chunk is buried.
+#[derive(Clone, Copy)]
+pub(crate) enum Site<'a> {
+    /// Level ground at the frame's grade: a fixture's, and what a kind is admitted on.
+    Level,
+    /// The map's ground under a construction placed at this pose.
+    Terrain(&'a crate::terrain_grid::HeightGrid, Isometry3d),
+}
+
+impl Site<'_> {
+    /// Whether the ground covers every one of `corners`, given in the construction frame.
+    fn covers(self, mut corners: impl Iterator<Item = Vec3>) -> bool {
+        corners.all(|corner| match self {
+            Site::Level => corner.y <= GRADE_M + ON_GRADE_M,
+            Site::Terrain(grid, pose) => {
+                let world = pose * corner;
+                world.y <= grid.height_at(world.x, world.z) + ON_GRADE_M
+            }
+        })
+    }
+}
 
 /// The most holes one chunk draws and the record carries (module doc), the earliest cut kept; a
 /// later one still wears the pool (Resolution: bounds the view's per-chunk table and the shared
@@ -329,7 +351,7 @@ impl Layout {
                         centroid: Vec3::from_array(chunk.centroid),
                         mass: chunk.mass_kg,
                         material,
-                        buried: chunk.hull.iter().all(|p| p[1] <= GRADE_M + ON_GRADE_M),
+                        buried: Site::Level.covers(chunk.hull.iter().map(|&p| Vec3::from_array(p))),
                     }
                 })
                 .collect(),
@@ -556,9 +578,33 @@ pub(crate) struct Live {
 }
 
 impl Live {
+    /// `kind` on level ground at its frame's grade.
+    #[cfg(test)]
     fn new(kind: &ConstructionKind) -> Self {
-        let mut live = Self::from_shared(kind.structure.clone(), kind.layout.elements.len());
-        live.assessment = kind.equilibrium.clone();
+        Self::sited(kind, Site::Level)
+    }
+
+    /// `kind` standing on `site`. A site that buries what level ground does shares the kind's
+    /// structure and equilibrium; any other holds its own.
+    fn sited(kind: &ConstructionKind, site: Site) -> Self {
+        let buried: Vec<bool> = (kind.layout.blocks.iter())
+            .map(|block| site.covers(block.points.iter().copied()))
+            .collect();
+        let shared = (kind.structure.chunks.iter())
+            .zip(&buried)
+            .all(|(chunk, &buried)| chunk.buried == buried);
+        if shared {
+            let mut live = Self::from_shared(kind.structure.clone(), kind.layout.elements.len());
+            live.assessment = kind.equilibrium.clone();
+            return live;
+        }
+        let mut structure = (*kind.structure).clone();
+        for (chunk, buried) in structure.chunks.iter_mut().zip(buried) {
+            chunk.buried = buried;
+        }
+        let equilibrium = Arc::new(fracture::parts::Assessment::at_rest(&structure));
+        let mut live = Self::from_shared(Arc::new(structure), kind.layout.elements.len());
+        live.assessment = equilibrium;
         live
     }
 
@@ -635,8 +681,14 @@ pub(crate) struct Breakage {
 }
 
 impl Breakage {
+    /// On level ground at the frame's grade.
+    #[cfg(test)]
     pub(crate) fn new(kind: Arc<ConstructionKind>, construction: u16) -> Self {
-        let live = Box::new(Live::new(&kind));
+        Self::sited(kind, construction, Site::Level)
+    }
+
+    pub(crate) fn sited(kind: Arc<ConstructionKind>, construction: u16, site: Site) -> Self {
+        let live = Box::new(Live::sited(&kind, site));
         Self {
             kind,
             construction,
@@ -792,7 +844,8 @@ impl AdmittedPiece {
     }
 }
 
-/// What one shell's march step deposited, in world terms, waiting for [`apply_deposits`].
+/// What one march step deposited, or one contact release changed ([`bounded`]), in world terms,
+/// waiting for [`apply_deposits`].
 #[derive(Debug, Default)]
 struct RawDeposit {
     /// The game's damage model: resolved line work and momentum, preserving entrance-only shares.
@@ -801,9 +854,7 @@ struct RawDeposit {
     rays: Vec<RayDeposit>,
     /// A burst's blast: where, and its energy and charge.
     blast: Option<(Vec3, Blast)>,
-    /// A physics step's body contacts, each its construction's root and its load ([`contact_load`]).
-    contacts: Vec<(Entity, Load)>,
-    /// Owners whose swept topology changed before physics.
+    /// Owners whose standing matter a contact release freed: the support check reads them anew.
     changed: Vec<Entity>,
 }
 
@@ -847,15 +898,9 @@ impl RayDeposit {
     }
 }
 
-/// The deposits the march and the contacts raised this tick.
+/// The deposits the march and the contact law raised this tick.
 #[derive(Resource, Default)]
 struct Queue(Vec<RawDeposit>);
-
-/// Per construction root, as of the last physics step: the presses of the bodies asleep against it
-/// ([`crate::contact_transfer::Resting`]), each a load with no blow ([`contact_load`]). Every run
-/// of the laws on the construction carries them; none starts one.
-#[derive(Resource, Default)]
-struct RestingLoads(BTreeMap<Entity, Vec<Load>>);
 
 /// The colliders a contact point can lie on: a construction's element or chunk, under its root.
 type Colliders<'w, 's> = Query<
@@ -869,268 +914,25 @@ type Colliders<'w, 's> = Query<
     Or<(With<Element>, With<ChunkCollider>)>,
 >;
 
+pub(crate) mod bounded;
 pub(crate) mod felling;
-mod sweep_intake;
-#[cfg(test)]
-pub(crate) use sweep_intake::pushes;
-pub(crate) use sweep_intake::{ReleasedMotion, SweepAccount, SweepCast, SweepContacts};
 
-/// AUTHORITY: each physics step's body contacts on the constructions as loads, read once a step
-/// (module doc): every point on a standing breakable element or chunk queued, the step's as one deposit,
-/// with the whole solver transfer divided by the step; and every resting point's press as its
-/// construction's ([`RestingLoads`]).
-fn read_contacts(
-    transfers: Res<ContactTransfers>,
-    mut read: Local<u64>,
-    colliders: Colliders,
-    constructions: Query<((&Position, &Rotation), &Breakage, Option<&Piece>)>,
-    mut queue: ResMut<Queue>,
-    mut resting: ResMut<RestingLoads>,
-    stages: Option<Res<Stages>>,
-) {
-    let _intake = Stages::start(stages.as_deref(), Stage::Intake);
-    if transfers.steps() == *read {
-        return;
-    }
-    *read = transfers.steps();
-    let mut inputs: Vec<_> = transfers.groups().map(ContactSource::Group).collect();
-    inputs.extend(transfers.resting().iter().map(|rest| {
-        ContactSource::Point(ContactInput {
-            point: rest.transfer,
-            press: rest.press(),
-            step: rest.dt,
-        })
-    }));
-    // Only standing construction receives structural loads; moving groups' landings crumble
-    // through debris. Reject those roots before grouping or converting their points.
-    inputs.retain(|input| {
-        constructions
-            .get(input.root())
-            .is_ok_and(|(_, _, moving)| moving.is_none())
-    });
-    let awake = inputs
-        .iter()
-        .map(|input| match input {
-            ContactSource::Group(points) => points.len(),
-            ContactSource::Point(_) => 0,
-        })
-        .sum::<usize>();
-    let converted = prepare_contacts(
-        ComputeTaskPool::get(),
-        &inputs,
-        &transfers,
-        &colliders,
-        &constructions,
-        stages.as_deref(),
-    );
-    resting.0.clear();
-    let mut contacts = Vec::new();
-    for (index, load) in converted.into_iter().enumerate() {
-        if let Some((root, load)) = load {
-            if index < awake {
-                contacts.push((root, load));
-            } else {
-                resting.0.entry(root).or_default().push(load);
-            }
+/// A rigid velocity field: `velocity + spin × (x − centre)`, in the frame its user names.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ReleasedMotion {
+    pub(crate) velocity: Vec3,
+    pub(crate) spin: Vec3,
+    pub(crate) centre: Vec3,
+}
+
+impl ReleasedMotion {
+    pub(crate) fn at_rest(centre: Vec3) -> Self {
+        Self {
+            velocity: Vec3::ZERO,
+            spin: Vec3::ZERO,
+            centre,
         }
     }
-    if !contacts.is_empty() {
-        queue.0.push(RawDeposit {
-            contacts,
-            ..default()
-        });
-    }
-}
-
-/// Test instrumentation at production contact intake, before the laws.
-#[cfg(test)]
-#[derive(Resource)]
-struct ContactIntakeWitness {
-    construction: u16,
-    source: Entity,
-    seen: Arc<std::sync::atomic::AtomicBool>,
-}
-
-#[cfg(test)]
-fn witness_construction_contact(
-    queue: Res<Queue>,
-    owners: Query<&Breakage>,
-    witness: Res<ContactIntakeWitness>,
-) {
-    if queue
-        .0
-        .iter()
-        .flat_map(|d| &d.contacts)
-        .any(|(root, load)| {
-            matches!(load.origin, Origin::Contact { other, .. } if other == witness.source)
-                && (load.blow != Vec3::ZERO || load.press != Vec3::ZERO)
-                && owners
-                    .get(*root)
-                    .is_ok_and(|owner| owner.construction == witness.construction)
-        })
-    {
-        witness
-            .seen
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-/// Require this source's nonzero queued contact; fracture remains observational.
-#[cfg(test)]
-pub(crate) fn watch_contact_intake(
-    app: &mut App,
-    construction: u16,
-    source: Entity,
-) -> Arc<std::sync::atomic::AtomicBool> {
-    let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    app.insert_resource(ContactIntakeWitness {
-        construction,
-        source,
-        seen: seen.clone(),
-    })
-    .add_systems(
-        FixedPostUpdate,
-        witness_construction_contact
-            .after(read_contacts)
-            .before(apply_deposits),
-    );
-    seen
-}
-
-/// An awake constraint retains its complete distribution until its owner's worker splits and
-/// converts it. A sleeping point already has a known press and needs only frame conversion.
-enum ContactSource<'a> {
-    Group(ContactGroup<'a>),
-    Point(ContactInput),
-}
-
-impl ContactSource<'_> {
-    fn root(&self) -> Entity {
-        match self {
-            Self::Group(points) => {
-                points
-                    .first()
-                    .expect("retained contact groups are nonempty")
-                    .reference
-            }
-            Self::Point(input) => input.point.reference,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ContactInput {
-    point: ContactTransfer,
-    press: Vec3,
-    step: f32,
-}
-
-/// Convert complete contact groups on their owner's task. Source-index collection
-/// preserves awake and retained-point order independently of task completion.
-fn prepare_contacts(
-    pool: &TaskPool,
-    inputs: &[ContactSource<'_>],
-    transfers: &ContactTransfers,
-    colliders: &Colliders,
-    constructions: &Query<((&Position, &Rotation), &Breakage, Option<&Piece>)>,
-    stages: Option<&Stages>,
-) -> Vec<Option<(Entity, Load)>> {
-    let mut owners: BTreeMap<Entity, Vec<(usize, &ContactSource<'_>)>> = BTreeMap::new();
-    for (index, input) in inputs.iter().enumerate() {
-        let root = input.root();
-        owners.entry(root).or_default().push((index, input));
-    }
-    if let Some(stages) = stages {
-        stages.add(Work::ContactReadRoots, owners.len() as u64);
-    }
-    let mut converted: Vec<_> = pool
-        .scope(|scope| {
-            for inputs in owners.into_values() {
-                scope.spawn(async move {
-                    let convert = |input: ContactInput| {
-                        contact_load(
-                            colliders,
-                            constructions,
-                            &input.point,
-                            input.press,
-                            input.step,
-                        )
-                    };
-                    inputs
-                        .into_iter()
-                        .map(|(index, input)| {
-                            let loads = match input {
-                                ContactSource::Group(points) => points
-                                    .iter()
-                                    .map(|point| {
-                                        convert(ContactInput {
-                                            point,
-                                            press: -point.impulse / transfers.dt(),
-                                            step: transfers.dt(),
-                                        })
-                                    })
-                                    .collect(),
-                                ContactSource::Point(input) => vec![convert(*input)],
-                            };
-                            (index, loads)
-                        })
-                        .collect::<Vec<_>>()
-                });
-            }
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-    converted.sort_unstable_by_key(|(index, _)| *index);
-    converted.into_iter().flat_map(|(_, loads)| loads).collect()
-}
-
-/// A solver contact's world force becomes a load at its occupied chunk, in construction space.
-/// An unbreakable element, a body without construction state or a moving group (its landings
-/// crumble it, [`crate::debris::crumble`]) has no structural receiver here.
-fn contact_load(
-    colliders: &Colliders,
-    constructions: &Query<((&Position, &Rotation), &Breakage, Option<&Piece>)>,
-    transfer: &ContactTransfer,
-    press: Vec3,
-    step: f32,
-) -> Option<(Entity, Load)> {
-    let (transform, breakage, moving) = constructions.get(transfer.reference).ok()?;
-    if moving.is_some() {
-        return None; // A moving group's landings crumble it (`crate::debris::crumble`).
-    }
-    let (element, chunk, parent) = colliders.get(transfer.reference_collider).expect(
-        "a construction collider the last physics step touched stands until the laws' next refit",
-    );
-    assert_eq!(
-        parent.parent(),
-        transfer.reference,
-        "a construction's collider is its root's child"
-    );
-    let layout = &breakage.kind.layout;
-    let frame = Frame::new(&breakage.physics_frame(transform), breakage.kind.bounds());
-    let local = frame.local(transfer.point);
-    let chunk = match (element, chunk) {
-        (_, Some(&ChunkCollider(c))) => usize::from(c),
-        (Some(&Element(e)), None) => nearest_chunk(layout, usize::from(e), local)?,
-        (None, None) => unreachable!("Colliders admits elements and chunks only"),
-    };
-    Some((
-        transfer.reference,
-        Load {
-            chunk,
-            at: local,
-            energy: 0.0,
-            crushed: 0.0,
-            blow: Vec3::ZERO,
-            press: frame.turn(press),
-            peak: None,
-            origin: Origin::Contact {
-                other: transfer.other,
-                step,
-            },
-        },
-    ))
 }
 
 /// AUTHORITY: a charge set off at `at` (world), its blast fed to the blast field at the next
@@ -1314,7 +1116,7 @@ fn first_chunk(
 }
 
 /// What a construction took of one deposit, in its frame: lines and their loads, field
-/// stops, blast hits and contacts.
+/// stops and blast hits.
 #[derive(Default)]
 struct Taken {
     /// Each line's share of a chunk `(chunk, entry, end, energy J)`, which its hole reads.
@@ -1323,14 +1125,12 @@ struct Taken {
     line_loads: Vec<Load>,
     field: Vec<(usize, Vec3, f32, Vec3)>,
     blast: Vec<(usize, fracture::RayHit)>,
-    contacts: Vec<Load>,
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
 struct DepositParam<'w, 's> {
     stages: Option<Res<'w, Stages>>,
     queue: ResMut<'w, Queue>,
-    resting: Res<'w, RestingLoads>,
     volumes: Colliders<'w, 's>,
     constructions: Query<
         'w,
@@ -1635,8 +1435,6 @@ struct OwnerInputs<'a> {
     pool: &'a TaskPool,
     reusable: &'a ReusableColliders,
     taken: &'a Taken,
-    pressing: &'a [Load],
-    resting: &'a [Load],
     /// The owner body's rigid field in world terms; placed matter is at rest.
     motion: ReleasedMotion,
     tick: u32,
@@ -1654,8 +1452,6 @@ fn evaluate_owner(
         pool,
         reusable,
         taken,
-        pressing,
-        resting,
         motion,
         tick,
         step,
@@ -1674,12 +1470,6 @@ fn evaluate_owner(
             kind.layout.materials[c].crush
         }))
         .chain(blast)
-        .chain(taken.contacts.iter().map(|load| Load {
-            press: Vec3::ZERO,
-            ..*load
-        }))
-        .chain(pressing.iter().copied())
-        .chain(resting.iter().copied())
         .collect();
     let before = live.state.separated.clone();
     let mut changes = run_laws(&kind.layout.element_of, live, &loads, holes, spin, step);
@@ -1851,17 +1641,6 @@ fn apply_deposits(mut p: DepositParam) {
         return;
     } // No changed load, topology, unfinished solve or moving-frame acceleration.
     let intake = Stages::start(p.stages.as_deref(), Stage::Intake);
-    // A press lasts through the physics step, including every other deposit in this pass.
-    // The contact deposit retains its blow; its press joins every run exactly once here.
-    let mut presses: BTreeMap<Entity, Vec<Load>> = BTreeMap::new();
-    for &(root, load) in p.queue.0.iter().flat_map(|deposit| &deposit.contacts) {
-        if load.press != Vec3::ZERO {
-            presses.entry(root).or_default().push(Load {
-                blow: Vec3::ZERO,
-                ..load
-            });
-        }
-    }
     let tick = p.clock.as_deref().map_or(0, |clock| clock.0.raw());
     let frames: BTreeMap<Entity, Frame> = p
         .constructions
@@ -1915,9 +1694,6 @@ fn apply_deposits(mut p: DepositParam) {
         for root in deposit.changed {
             taken.entry(root).or_default();
         }
-        for &(root, load) in &deposit.contacts {
-            taken.entry(root).or_default().contacts.push(load);
-        }
         drop(intake);
     }
     for (root, _, breakage, piece) in p.constructions.iter() {
@@ -1946,7 +1722,6 @@ fn apply_deposits(mut p: DepositParam) {
             let children = &p.children;
             let chunk_entities = &p.chunk_entities;
             let (bodies, centres) = (&p.bodies, &p.centres);
-            let resting = &p.resting.0;
             let stages = p.stages.as_deref();
             // One owner per task: an owner's laws scale with the chunks its loads reach, from one
             // to hundreds, so contiguous batches of owners cannot balance them.
@@ -1955,7 +1730,7 @@ fn apply_deposits(mut p: DepositParam) {
                 .batching_strategy(bevy::ecs::batching::BatchingStrategy::fixed(1))
                 .for_each(|candidate| {
                     let (root, transform, mut breakage, piece) = candidate.expect(
-                        "sweep_intake queues changed roots for LawSet in the same tick, before retirement",
+                        "a root is queued as changed for LawSet in the same tick, before retirement",
                     );
                     let taken = &batch[&root];
                     let construction = breakage.physics_frame(transform);
@@ -1983,8 +1758,6 @@ fn apply_deposits(mut p: DepositParam) {
                                 pool: ComputeTaskPool::get(),
                                 reusable: &reusable,
                                 taken,
-                                pressing: presses.get(&root).map_or(&[][..], Vec::as_slice),
-                                resting: resting.get(&root).map_or(&[][..], Vec::as_slice),
                                 motion,
                                 tick,
                                 step,
@@ -2602,16 +2375,6 @@ pub(crate) const LOOSE_GAP_M: f32 = 1e-3;
 /// [`fracture::ON_PLANE`].
 const CORNER_TOLERANCE_M: f64 = 1e-6;
 
-/// The face of `block` that `joint` lies on, if any: its plane through the joint's centroid,
-/// with the joint's normal.
-pub(crate) fn joint_face(block: &Block, joint: &Joint) -> Option<usize> {
-    block.planes.iter().position(|&(normal, offset)| {
-        // Resolution: a joint's unit normal is its face's, within the bake's f32 rounding.
-        normal.dot(joint.normal).abs() >= 1.0 - 1e-4
-            && (normal.dot(joint.centroid) - offset).abs() <= fracture::ON_PLANE
-    })
-}
-
 /// Which faces of `block` carry one of its `joints` (each with its index): where another body's
 /// coplanar face can meet it, a neighbour's once the two ride different bodies, or the anchor
 /// plane's. `Err` names a chunk-to-chunk joint on none of the faces: freed, its chunk would meet
@@ -2623,7 +2386,7 @@ pub(crate) fn joint_faces<'a>(
 ) -> Result<Vec<bool>, usize> {
     let mut faces = vec![false; block.planes.len()];
     for (j, joint) in joints {
-        match (joint_face(block, joint), joint.b) {
+        match (fracture::joint_face(block, joint), joint.b) {
             (Some(face), _) => faces[face] = true,
             (None, Side::Ground) => {}
             (None, Side::Chunk(_)) => return Err(j),
@@ -2716,9 +2479,9 @@ type OccupiedCollider = (
 type ContactCollider = (Collider, avian3d::prelude::Friction, ChunkCollider);
 
 fn occupied_collider(kind: &ConstructionKind, c: usize, rotation: Quat) -> OccupiedCollider {
-    let hull = kind.sweep.occupied(c).0.clone();
+    let hull = kind.hulls.occupied(c).0.clone();
     (
-        super::sweep::posed(hull, rotation),
+        super::hulls::posed(hull, rotation),
         kind.chunk_friction(c),
         chunk_volume(kind, c),
         ChunkCollider(c as u16),
@@ -2727,10 +2490,7 @@ fn occupied_collider(kind: &ConstructionKind, c: usize, rotation: Quat) -> Occup
 
 fn freed_contact(kind: &ConstructionKind, c: usize, rotation: Quat) -> ContactCollider {
     (
-        with_insertion_mass(super::sweep::posed(
-            kind.sweep.contact_hull(c).clone(),
-            rotation,
-        )),
+        with_insertion_mass(super::hulls::posed(kind.hulls.contact(c).clone(), rotation)),
         kind.chunk_friction(c),
         ChunkCollider(c as u16),
     )
@@ -2869,7 +2629,6 @@ struct PreparedChunk {
 struct PreparedDeparture {
     departure: Departure,
     chunks: Vec<PreparedChunk>,
-    source: super::sweep::SourceShape,
 }
 
 /// Move `owner`'s members named in `leaving` to the back of its list, the first to leave last.
@@ -2981,14 +2740,7 @@ fn prepare_group(departure: Departure, reusable: &ReusableColliders) -> Prepared
             }
         })
         .collect();
-    let source = kind
-        .sweep
-        .source(&departure.group, departure.launch.centroid, rotation);
-    PreparedDeparture {
-        departure,
-        chunks,
-        source,
-    }
+    PreparedDeparture { departure, chunks }
 }
 
 /// Occupied free-group geometry and motion from its field impulses, in construction coordinates.
@@ -3010,7 +2762,7 @@ pub(crate) fn launch(
     let total = group
         .iter()
         .map(|&c| {
-            let (_, props) = kind.sweep.occupied(c);
+            let (_, props) = kind.hulls.occupied(c);
             props.transformed_by(Isometry3d::from_translation(chunks[c].centroid - centroid))
         })
         .fold(MassProperties3d::default(), |sum, part| sum + part);
@@ -3053,17 +2805,7 @@ fn spawn_group(commands: &mut Commands, departure: Departure) {
 /// Commit a group from its synchronous, independently prepared construction state.
 fn spawn_prepared(commands: &mut Commands, prepared: PreparedDeparture) {
     let piece = commands.spawn_empty().id();
-    spawn_prepared_as(commands, piece, prepared);
-}
-
-/// [`spawn_prepared`] onto `piece`, an entity reserved for it: the sweep names a departure's body
-/// before it spawns.
-fn spawn_prepared_as(commands: &mut Commands, piece: Entity, prepared: PreparedDeparture) {
-    let PreparedDeparture {
-        departure,
-        chunks,
-        source,
-    } = prepared;
+    let PreparedDeparture { departure, chunks } = prepared;
     let Departure {
         kind,
         construction,
@@ -3084,7 +2826,6 @@ fn spawn_prepared_as(commands: &mut Commands, piece: Entity, prepared: PreparedD
     // `Position`/`Rotation` before the body: it never flushes with avian's placeholder pose.
     let body = (
         Name::new("Piece"),
-        source,
         Piece {
             construction,
             chunks: group.iter().map(|&c| c as u16).collect(),
@@ -3111,7 +2852,7 @@ fn spawn_prepared_as(commands: &mut Commands, piece: Entity, prepared: PreparedD
         avian3d::prelude::RigidBodyColliders::default(),
         avian3d::AncestorMarker::<avian3d::prelude::ColliderMarker>::default(),
         // The whole group owns its occupied properties at spawn. Child rehoming cannot
-        // expose a partial aggregate to driving or sweeps before Avian's prepare phase.
+        // expose a partial aggregate to driving before Avian's prepare phase.
         (
             avian3d::prelude::Mass(launch.mass_properties.mass),
             avian3d::prelude::AngularInertia::new_with_local_frame(
@@ -3385,21 +3126,16 @@ fn derive_from_record(
 enum ColliderChange<E, C> {
     Despawn(Entity),
     Element(E),
-    Chunk(usize, C),
+    Chunk(C),
 }
 
 impl<E: Bundle, C: Bundle> ColliderChange<E, C> {
-    fn apply(self, commands: &mut Commands) -> Option<(usize, Entity)> {
+    fn apply(self, commands: &mut Commands) {
         match self {
-            Self::Despawn(entity) => {
-                commands.entity(entity).despawn();
-            }
-            Self::Element(bundle) => {
-                commands.spawn(bundle);
-            }
-            Self::Chunk(c, bundle) => return Some((c, commands.spawn(bundle).id())),
+            Self::Despawn(entity) => commands.entity(entity).despawn(),
+            Self::Element(bundle) => drop(commands.spawn(bundle)),
+            Self::Chunk(bundle) => drop(commands.spawn(bundle)),
         }
-        None
     }
 }
 
@@ -3445,28 +3181,22 @@ fn prepare_reconcile(
             (true, None) => {
                 let (hull, friction, volume, chunk) =
                     occupied_collider(kind, c, transform.rotation);
-                effects.push(ColliderChange::Chunk(
-                    c,
+                effects.push(ColliderChange::Chunk((
+                    ChildOf(root),
+                    Transform::from_translation(kind.structure.chunks[c].centroid),
+                    (with_insertion_mass(hull), friction, volume, chunk),
+                    super::element_layers(),
                     (
-                        ChildOf(root),
-                        Transform::from_translation(kind.structure.chunks[c].centroid),
-                        (with_insertion_mass(hull), friction, volume, chunk),
-                        (
-                            super::element_layers(),
-                            ActiveCollisionHooks::MODIFY_CONTACTS,
-                        ),
-                        (
-                            Position::PLACEHOLDER,
-                            Rotation::PLACEHOLDER,
-                            GlobalTransform::from(
-                                Transform::from_translation(
-                                    transform.transform_point(kind.structure.chunks[c].centroid),
-                                )
-                                .with_rotation(transform.rotation),
-                            ),
+                        Position::PLACEHOLDER,
+                        Rotation::PLACEHOLDER,
+                        GlobalTransform::from(
+                            Transform::from_translation(
+                                transform.transform_point(kind.structure.chunks[c].centroid),
+                            )
+                            .with_rotation(transform.rotation),
                         ),
                     ),
-                ));
+                )));
             }
             _ => {}
         }
@@ -3496,8 +3226,6 @@ fn prepare_reconciliations(
 }
 
 /// Every peer: prepare changed owners together, then commit colliders before the same-update refit.
-/// A belt reaction staged on an element collider that retires for its chunks' moves to the chunk
-/// collider the sweep found at its point ([`sweep_intake::SwappedBelts`]).
 fn reconcile(
     constructions: Query<
         (Entity, &Transform, &Breakage, Option<&Children>),
@@ -3506,14 +3234,11 @@ fn reconcile(
     elements: Query<&Element>,
     chunks: Query<&ChunkCollider>,
     mut commands: Commands,
-    mut transfers: ResMut<ContactTransfers>,
-    mut swapped: ResMut<sweep_intake::SwappedBelts>,
     stages: Option<Res<Stages>>,
 ) {
     let _refit = Stages::start(stages.as_deref(), Stage::Refit);
     let effects =
         prepare_reconciliations(ComputeTaskPool::get(), &constructions, &elements, &chunks);
-    let mut built = BTreeMap::new();
     // Direct scoped submissions collect in query order. All hulls are ready before this flush,
     // and refit_systems exposes every new collider to spatial queries in the same update.
     let changes = effects.iter().any(|(_, effects)| !effects.is_empty());
@@ -3522,35 +3247,18 @@ fn reconcile(
             Stages::hold(world.get_resource::<Stages>(), Stage::RefitCommit);
         });
     }
-    for (root, effects) in effects {
-        for effect in effects {
-            if let Some((c, entity)) = effect.apply(&mut commands) {
-                built.insert((root, c), entity);
-            }
-        }
+    for effect in effects.into_iter().flat_map(|(_, effects)| effects) {
+        effect.apply(&mut commands);
     }
     if changes {
         commands.queue(|world: &mut World| Stages::release(world.get_resource::<Stages>()));
     }
-    let moves = std::mem::take(&mut swapped.0).into_iter();
-    transfers.readdress(moves.map(|(index, root, chunk)| {
-        let collider = built
-            .get(&(root, chunk))
-            .expect("a staged reaction outlives its swapped element only on a chunk that stands");
-        (index, *collider)
-    }));
 }
 
 /// Avian's refit of moved colliders in a frame a construction changed: the spawned chunks' bounds
 /// and the collider trees a spatial query walks, so the next march reads them.
 fn refit_systems() -> bevy::ecs::schedule::ScheduleConfigs<bevy::ecs::system::ScheduleSystem> {
     (
-        |swapped: Res<sweep_intake::SwappedBelts>| {
-            assert!(
-                swapped.0.is_empty(),
-                "sweep reconciliation consumes every swapped belt before physics clears staged contacts"
-            );
-        },
         reconcile,
         (
             |stages: Option<Res<Stages>>| Stages::hold(stages.as_deref(), Stage::MovedBounds),
@@ -3568,9 +3276,9 @@ fn refit_systems() -> bevy::ecs::schedule::ScheduleConfigs<bevy::ecs::system::Sc
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct LawSet;
 
-/// Hull sweep and its reconciliation, before physics consumes the changed colliders.
+/// The belts' forces on standing matter bounded ([`bounded`]), before physics applies them.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct SweepSet;
+pub(crate) struct BeltSet;
 
 /// Carrier splits after the laws, flushed before publication reads the resulting groups.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -3586,28 +3294,11 @@ pub(crate) struct LandingSet;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ReplicaSet;
 
-/// AUTHORITY: the hull sweep ([`sweep_intake::run`]), timed as its own stage.
-fn sweep(intake: sweep_intake::Intake, stages: Option<Res<Stages>>) {
-    let _sweep = Stages::start(stages.as_deref(), Stage::Sweep);
-    sweep_intake::run(intake);
-}
-
 pub(crate) fn sim_plugin(app: &mut App) {
     crate::collider_rehome::plugin(app);
-    app.init_resource::<SweepAccount>()
-        .init_resource::<SweepCast>()
-        .init_resource::<sweep_intake::SwappedBelts>()
-        .add_message::<crate::debris::crumble::Shed>()
-        .add_systems(
-            FixedPostUpdate,
-            (sweep, reconcile.run_if(sweep_intake::changed))
-                .chain()
-                .in_set(SweepSet)
-                .before(avian3d::prelude::PhysicsSystems::Prepare)
-                .run_if(not(resource_exists::<ClientReplica>)),
-        )
+    bounded::plugin(app);
+    app.add_message::<crate::debris::crumble::Shed>()
         .init_resource::<Queue>()
-        .init_resource::<RestingLoads>()
         .init_resource::<Record>()
         .add_observer(read_shell)
         .add_observer(set_off)
@@ -3619,7 +3310,7 @@ pub(crate) fn sim_plugin(app: &mut App) {
         .add_systems(
             FixedPostUpdate,
             (
-                (read_contacts, apply_deposits).chain().before(LandingSet),
+                apply_deposits.before(LandingSet),
                 refit_systems().after(LandingSet),
             )
                 .in_set(LawSet)

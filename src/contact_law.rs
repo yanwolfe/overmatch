@@ -1,6 +1,5 @@
 //! How hard two bodies stop each other on impact, in the game's environment destruction model
-//! (game state only): the elastic contact law a landing (`debris::crumble`) and a hull's ram
-//! (`construction::sweep`) both read, from each side's material stiffness and curvature (Hertz;
+//! (game state only): the elastic contact law a landing (`debris::crumble`) reads, from each side's material stiffness and curvature (Hertz;
 //! K. L. Johnson, *Contact Mechanics*, Cambridge 1985, §11.4).
 
 use crate::construction::fracture::Structure;
@@ -83,12 +82,4 @@ pub(crate) fn peak_force(mass: f64, speed: f64, a: Contactor, b: Contactor) -> f
     let (stiffness, root) = hertz(a, b);
     let approach = (15.0 * mass * speed * speed / (16.0 * stiffness * root)).powf(0.4);
     4.0 / 3.0 * stiffness * root * approach.powf(1.5)
-}
-
-/// The closing speed (m/s) at which [`peak_force`] reaches `force` N, its inverse:
-/// `δ = (3P / (4 E* √R))^(2/3)` and `v = √(16 E* √R δ^(5/2) / (15 m))`.
-pub(crate) fn peak_speed(mass: f64, force: f64, a: Contactor, b: Contactor) -> f64 {
-    let (stiffness, root) = hertz(a, b);
-    let approach = (3.0 * force / (4.0 * stiffness * root)).powf(2.0 / 3.0);
-    (16.0 * stiffness * root * approach.powf(2.5) / (15.0 * mass)).sqrt()
 }

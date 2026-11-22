@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use avian3d::prelude::{ActiveCollisionHooks, Collider, CollisionLayers, LayerMask, RigidBody};
+use avian3d::prelude::{Collider, CollisionLayers, LayerMask, RigidBody};
 use bevy::prelude::*;
 
 use crate::Layer;
@@ -38,8 +38,8 @@ use crate::substances::SubstanceRegistry;
 pub mod attachments;
 pub(crate) mod breakage;
 pub(crate) mod fracture;
+pub(crate) mod hulls;
 pub mod schema;
-pub(crate) mod sweep;
 pub(crate) mod view;
 
 use attachments::Attachments;
@@ -72,9 +72,9 @@ pub(crate) struct ConstructionKind {
     /// library ([`ConstructionLibrary::load`]); bare for a kind resolved from its text alone.
     pub(crate) dressing: view::Dressing,
     /// Checked geometry and initial gravity, shared until an instance changes.
-    structure: Arc<fracture::Structure>,
+    pub(crate) structure: Arc<fracture::Structure>,
     pub(crate) equilibrium: Arc<fracture::parts::Assessment>,
-    pub(crate) sweep: sweep::Geometry,
+    pub(crate) hulls: hulls::Hulls,
 }
 
 impl ConstructionKind {
@@ -145,9 +145,22 @@ impl ConstructionKind {
             .collect::<Result<Vec<_>, String>>()?;
         let layout = breakage::Layout::of(&asset, &law_materials, attachments)?;
         let structure = Arc::new(layout.checked_structure(&asset)?);
+        // Whatever a site buries or bares ([`breakage::Site`]): burial holds nothing here.
+        let mut bared = (*structure).clone();
+        for chunk in &mut bared.chunks {
+            chunk.buried = false;
+        }
+        if let Some(group) = fracture::loose_groups(&bared, &fracture::State::new(&bared)).first() {
+            return Err(format!(
+                "chunk {} reaches no ground joint through `joints`: a site that bares it would \
+                 leave it loose; rebake so every chunk is joined to an anchor on the foundation \
+                 plane",
+                group[0]
+            ));
+        }
         let equilibrium = Arc::new(fracture::parts::Assessment::at_rest(&structure));
         let kind = Self {
-            sweep: sweep::Geometry::new(&layout.blocks, &structure)?,
+            hulls: hulls::Hulls::new(&layout.blocks, &structure)?,
             dressing: view::Dressing::bare(&layout)?,
             asset,
             materials,
@@ -288,12 +301,12 @@ fn element_bundle(kind: &ConstructionKind, k: usize) -> impl Bundle {
             substance: kind.asset.materials[material].clone(),
         },
         Element(u16::try_from(k).expect("the schema bounds the element count")),
-        ActiveCollisionHooks::MODIFY_CONTACTS, // `breakage::SweepContacts`.
     )
 }
 
 /// Spawn one construction of `kind` at `pose`, the ground pose: the authored XZ, the grid's Y, the
-/// authored yaw. A tilted instance is refused (ADR-0011):
+/// authored yaw, on `site`, the ground under that pose, which buries what it covers. A tilted
+/// instance is refused (ADR-0011):
 /// a construction stands on its foundation plane. Returns the root; the body is whole without a view.
 /// The root carries `Visibility` because a view, where one draws, is its child and inherits
 /// visibility through it.
@@ -302,6 +315,7 @@ pub(crate) fn spawn(
     kind: &Arc<ConstructionKind>,
     identity: MapInstance,
     pose: Isometry3d,
+    site: breakage::Site,
 ) -> Entity {
     assert!(
         (pose.rotation * Vec3::Y).y >= 1.0 - UPRIGHT_EPSILON,
@@ -309,7 +323,7 @@ pub(crate) fn spawn(
         identity.id,
         pose.rotation,
     );
-    let breakage = breakage::Breakage::new(kind.clone(), identity.ordinal);
+    let breakage = breakage::Breakage::sited(kind.clone(), identity.ordinal, site);
     let root = commands
         .spawn((
             Name::new(format!("construction {}", identity.id)),
@@ -347,6 +361,110 @@ pub(crate) mod tests {
     /// It has no house topology or view asset; all masses derive from the registry's material density.
     pub(crate) fn column_construction() -> Arc<ConstructionKind> {
         column_construction_from(0.0)
+    }
+
+    /// Fixture: one upright wall of `material`, `size` m (length along X, height, thickness along
+    /// Z) about the origin on grade, cut into `cells` equal cuboid cells per axis, every shared
+    /// face a seam and the bottom course anchored. Cells count along X, then up, then through
+    /// the thickness: cell `(i, j, k)` is `i + cells[0] * (j + cells[1] * k)`.
+    pub(crate) fn wall_construction(
+        size: Vec3,
+        cells: [usize; 3],
+        material: &str,
+    ) -> Arc<ConstructionKind> {
+        let registry = crate::substances::SubstanceRegistry::shipped_static();
+        let density = fracture::Material::of(registry, material)
+            .unwrap()
+            .unwrap()
+            .density;
+        let [nx, ny, nz] = cells;
+        let step = size / Vec3::new(nx as f32, ny as f32, nz as f32);
+        let low = Vec3::new(-size.x / 2.0, 0.0, -size.z / 2.0);
+        let hull = |lo: Vec3, hi: Vec3| -> Vec<[f32; 3]> {
+            (0..8)
+                .map(|k| {
+                    Vec3::select(BVec3::new(k & 1 > 0, k & 2 > 0, k & 4 > 0), hi, lo).to_array()
+                })
+                .collect()
+        };
+        let index = |i: usize, j: usize, k: usize| (i + nx * (j + ny * k)) as u32;
+        let corner =
+            |i: usize, j: usize, k: usize| low + step * Vec3::new(i as f32, j as f32, k as f32);
+        let mut chunks = Vec::new();
+        let mut joints = Vec::new();
+        let mut anchors = Vec::new();
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    let (lo, hi) = (corner(i, j, k), corner(i + 1, j + 1, k + 1));
+                    let centre = (lo + hi) / 2.0;
+                    let volume = step.x * step.y * step.z;
+                    chunks.push(schema::Chunk {
+                        element: 0,
+                        material: 0,
+                        hull: hull(lo, hi),
+                        volume_m3: volume,
+                        mass_kg: density * volume,
+                        centroid: centre.to_array(),
+                    });
+                    let faces = [
+                        (i + 1 < nx, [i + 1, j, k], Vec3::X, step.y * step.z),
+                        (j + 1 < ny, [i, j + 1, k], Vec3::Y, step.x * step.z),
+                        (k + 1 < nz, [i, j, k + 1], Vec3::Z, step.x * step.y),
+                    ];
+                    for (inside, [bi, bj, bk], normal, area) in faces {
+                        if inside {
+                            joints.push(schema::Joint {
+                                a: index(i, j, k),
+                                b: index(bi, bj, bk),
+                                area_m2: area,
+                                centroid: (centre + normal * step / 2.0).to_array(),
+                                normal: normal.to_array(),
+                                bond: schema::Bond::Seam,
+                            });
+                        }
+                    }
+                    if j == 0 {
+                        anchors.push(schema::Anchor {
+                            chunk: index(i, j, k),
+                            attachment: 0,
+                            area_m2: step.x * step.z,
+                            centroid: [centre.x, 0.0, centre.z],
+                        });
+                    }
+                }
+            }
+        }
+        joints.sort_by_key(|joint| (joint.a, joint.b));
+        let asset = ConstructionAsset {
+            id: "wall_fixture".into(),
+            format: schema::FORMAT,
+            foundation_y_m: 0.0,
+            materials: vec![material.into()],
+            attachments: vec!["mortared".into()],
+            components: vec!["wall".into()],
+            elements: vec![schema::Element {
+                name: "wall".into(),
+                part: "pier".into(),
+                component: 0,
+                material: 0,
+                surface_frame: schema::SurfaceFrame::Upright,
+                hull: hull(low, low + size),
+                chunks: [0, (nx * ny * nz) as u32],
+            }],
+            chunks,
+            joints,
+            anchors,
+        };
+        Arc::new(
+            ConstructionKind::resolve(
+                &asset.id,
+                &ron::ser::to_string(&asset).unwrap(),
+                registry,
+                Attachments::shipped_static(),
+            )
+            .unwrap(),
+        )
     }
 
     /// [`column_construction`] with its base at height `base` in its frame, m.
@@ -530,7 +648,13 @@ pub(crate) mod tests {
             id: "house_0001".to_owned(),
             ordinal: 0,
         };
-        let root = spawn(&mut commands, kind, identity, pose.to_isometry());
+        let root = spawn(
+            &mut commands,
+            kind,
+            identity,
+            pose.to_isometry(),
+            breakage::Site::Level,
+        );
         queue.apply(&mut world);
         (world, root)
     }
@@ -772,6 +896,26 @@ pub(crate) mod tests {
         let unknown = text.replacen("\"Brick\"", "\"Adobe\"", 1);
         let err = resolve("house_1", &unknown).unwrap_err();
         assert!(err.contains("Adobe"), "{err}");
+    }
+
+    /// A CHUNK NO JOINT PATH HOLDS TO THE GROUND DOES NOT LOAD: a site buries only what its ground
+    /// covers (`breakage::Site`), so a chunk held by burial alone would hang loose wherever a
+    /// slope bares it. `Breakage::sited` relies on it and checks no site. Fixture: the shipped
+    /// house without its anchors. Mutant: the refusal removed (the house loads).
+    #[test]
+    fn a_chunk_no_joints_hold_to_the_ground_is_refused_before_play() {
+        let path = shipped_assets().join("constructions/house_1/house_1.construction.ron");
+        let mut asset =
+            ConstructionAsset::from_ron(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        asset.anchors.clear();
+        let err = ConstructionKind::resolve(
+            "house_1",
+            &ron::ser::to_string(&asset).unwrap(),
+            SubstanceRegistry::shipped_static(),
+            Attachments::shipped_static(),
+        )
+        .unwrap_err();
+        assert!(err.contains("reaches no ground joint"), "{err}");
     }
 
     /// A NON-FINITE OR MALFORMED GEOMETRIC FACT DOES NOT LOAD: NaN passes every `>` and `<`

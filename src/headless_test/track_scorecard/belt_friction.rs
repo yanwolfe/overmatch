@@ -166,12 +166,7 @@ fn track_pieces(bed: &Bed, tick: usize, pieces: &mut BTreeMap<Entity, PieceTrack
         if point.impulse == Vec3::ZERO {
             continue; // A speculative point that carried nothing.
         }
-        let other = (
-            point.other,
-            point
-                .other_collider
-                .expect("a solver constraint joins two colliders"),
-        );
+        let other = (point.other, point.other_collider);
         let reference = (point.reference, point.reference_collider);
         for ((body, face), (piece, _)) in [(reference, other), (other, reference)] {
             if body != bed.tank || world.get::<BeltFace>(face).is_none() {
@@ -418,9 +413,7 @@ fn mode_masses(bed: &Bed) -> Value {
         .to_mat3();
     let mut sums = [(0.0_f32, Vec3::ZERO, Vec3::ZERO); 2];
     for (point, _) in bed.solver_points() {
-        let other = point
-            .other_collider
-            .expect("a solver constraint joins two colliders");
+        let other = point.other_collider;
         for (collider, sign) in [(point.reference_collider, -1.0), (other, 1.0)] {
             let Some(face) = world.get::<BeltFace>(collider) else {
                 continue; // Not a moving shoe face.

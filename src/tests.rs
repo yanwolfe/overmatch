@@ -21,6 +21,7 @@ mod avian_moved_aabb_prune;
 mod avian_moved_lists;
 mod avian_narrow_phase;
 mod avian_prepared_mass;
+mod avian_reaction_bound;
 mod avian_spawn_batch;
 mod avian_swept_ccd;
 mod avian_warm_start;

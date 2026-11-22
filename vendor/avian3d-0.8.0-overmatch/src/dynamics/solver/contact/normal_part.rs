@@ -38,6 +38,18 @@ pub struct ContactNormalPart {
     /// OVERMATCH PATCH: the spring law's soft-constraint coefficients at this point's mass, read
     /// when [`Self::compliant`] is set. A writer sets both after constraint preparation.
     pub spring: SoftnessCoefficients,
+
+    /// OVERMATCH PATCH: the largest accumulated impulse the point holds, so the most one substep
+    /// applies along the normal. Infinite on a new part: Avian's rigid contact.
+    pub max_impulse: f32,
+
+    /// OVERMATCH PATCH: the most work one substep's impulse does on the bodies closing along the
+    /// normal, J: at a closing speed `v` the point holds at most `max_work / v`. Infinite on a
+    /// new part.
+    pub max_work: f32,
+
+    /// OVERMATCH PATCH: whether the last solve left the point at its upper clamp.
+    pub clamped: bool,
 }
 
 impl ContactNormalPart {
@@ -117,6 +129,9 @@ impl ContactNormalPart {
             softness,
             compliant: false, // OVERMATCH PATCH
             spring: softness, // OVERMATCH PATCH
+            max_impulse: f32::INFINITY, // OVERMATCH PATCH
+            max_work: f32::INFINITY,    // OVERMATCH PATCH
+            clamped: false,             // OVERMATCH PATCH
         }
     }
 
@@ -176,7 +191,14 @@ impl ContactNormalPart {
         };
 
         // Clamp the accumulated impulse.
-        let new_impulse = (self.impulse + impulse).max(0.0);
+        // OVERMATCH PATCH: the upper clamp, `max_impulse` and `max_work` at this closing speed.
+        let most = if normal_speed < 0.0 {
+            self.max_impulse.min(self.max_work / -normal_speed)
+        } else {
+            self.max_impulse
+        };
+        let new_impulse = (self.impulse + impulse).max(0.0).min(most);
+        self.clamped = new_impulse >= most;
         impulse = new_impulse - self.impulse;
         self.impulse = new_impulse;
         self.total_impulse += new_impulse;

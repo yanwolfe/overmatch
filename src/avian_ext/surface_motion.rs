@@ -462,6 +462,9 @@ mod tests {
                     softness,
                     compliant: false,
                     spring: softness,
+                    max_impulse: f32::INFINITY,
+                    max_work: f32::INFINITY,
+                    clamped: false,
                 },
                 tangent_part: Some(ContactTangentPart::generate(
                     Vec3::splat(1.0 / mass),

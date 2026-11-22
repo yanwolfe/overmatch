@@ -16,25 +16,6 @@ use crate::scatter::MapInstance;
 /// A fixture physics step, s: the harness's 64 Hz tick (fixture data).
 const STEP: f32 = 1.0 / 64.0;
 
-/// Fixture: the source cube's side, m.
-const CUBE_SIDE_M: f32 = 0.4;
-
-/// Fixture: a dynamic cube at rest, with principal inertia equal to its mass in kg m².
-fn cube(start: Vec3, mass: f32) -> impl Bundle {
-    (
-        RigidBody::Dynamic,
-        Position(start),
-        Rotation::default(),
-        Collider::cuboid(CUBE_SIDE_M, CUBE_SIDE_M, CUBE_SIDE_M),
-        Mass(mass),
-        NoAutoMass,
-        AngularInertia::new(Vec3::splat(mass)),
-        CenterOfMass::default(),
-        LinearVelocity::ZERO,
-        piece_layers(),
-    )
-}
-
 /// The breakage sim on the offline physics with the solver's contact reading, the march probe,
 /// and the shipped house spawned at the origin (unit scale), one fixed tick per update. `replica`
 /// adds the replica marker.
@@ -86,6 +67,7 @@ fn composed_kind_with_physics(
             ordinal: 3,
         },
         Isometry3d::IDENTITY,
+        Site::Level,
     );
     queue.apply(world);
     (app, root)
@@ -291,36 +273,20 @@ fn a_construction_is_complete_at_spawn_and_keeps_its_state_through_splits() {
 /// Fixture support loss: sever every bond joining `group` to other matter or the ground and
 /// request a zero-work evaluation on its first chunk.
 fn isolate(app: &mut App, root: Entity, group: &[usize]) {
-    let chunk = group[0];
-    let at = {
-        let mut body = app.world_mut().get_mut::<Breakage>(root).unwrap();
-        let live = &mut body.live;
-        for (index, joint) in live.structure.joints.iter().enumerate() {
-            let inside = match joint.b {
-                Side::Chunk(b) => group.contains(&b),
-                Side::Ground => false,
-            };
-            if group.contains(&joint.a) != inside {
-                live.state.cracked[index] = true;
-                live.state.separated[index] = true;
-            }
+    let mut body = app.world_mut().get_mut::<Breakage>(root).unwrap();
+    let live = &mut body.live;
+    for (index, joint) in live.structure.joints.iter().enumerate() {
+        let inside = match joint.b {
+            Side::Chunk(b) => group.contains(&b),
+            Side::Ground => false,
+        };
+        if group.contains(&joint.a) != inside {
+            live.state.cracked[index] = true;
+            live.state.separated[index] = true;
         }
-        live.structure.chunks[chunk].centroid
-    };
+    }
     app.world_mut().resource_mut::<Queue>().0.push(RawDeposit {
-        contacts: vec![(
-            root,
-            Load {
-                chunk,
-                at,
-                energy: 0.0,
-                crushed: 0.0,
-                blow: Vec3::ZERO,
-                press: Vec3::ZERO,
-                peak: None,
-                origin: Origin::Field,
-            },
-        )],
+        changed: vec![root],
         ..default()
     });
 }
@@ -539,7 +505,8 @@ fn admitted_map_kinds_detach_with_common_centroid_local_colliders() {
             app.update();
         } // Fixture observation window.
         let after = app.world().get::<Position>(owner).unwrap().0;
-        assert!(after.x > before.x, "the common dynamic owner advances");
+        // What stands beside the group may hold it (`bounded`): any motion moves its frames.
+        assert_ne!(after, before, "the common dynamic owner moves");
         for (entity, chunk) in contact {
             let world = app.world();
             assert_eq!(world.get::<ColliderOf>(entity).unwrap().body, owner);
@@ -935,31 +902,15 @@ fn settled_freed_matter_rests_within_avians_rest_window() {
     app.update();
     app.update();
     let supports: BTreeSet<_> = kind.asset.anchors.iter().map(|a| a.chunk).collect();
-    let contacts = kind
-        .structure
-        .chunks
-        .iter()
-        .enumerate()
-        .filter(|(c, chunk)| chunk.buried || supports.contains(&kind.layout.chunks[*c]))
-        .map(|(chunk, matter)| {
-            (
-                root,
-                Load {
-                    chunk,
-                    at: matter.centroid,
-                    // DERIVED: twice the pool removes every support without a launch impulse.
-                    energy: 2.0 * matter.volume * matter.material.crush,
-                    crushed: 2.0 * fracture::full_pool(matter),
-                    blow: Vec3::ZERO,
-                    press: Vec3::ZERO,
-                    peak: None,
-                    origin: Origin::Field,
-                },
-            )
-        })
-        .collect();
+    // Fixture: every support turned to dust in place, so the rest comes loose with no launch.
+    let mut owner = app.world_mut().get_mut::<Breakage>(root).unwrap();
+    for (c, chunk) in kind.structure.chunks.iter().enumerate() {
+        if chunk.buried || supports.contains(&kind.layout.chunks[c]) {
+            owner.live.state.fate[c] = Fate::Dust;
+        }
+    }
     app.world_mut().resource_mut::<Queue>().0.push(RawDeposit {
-        contacts,
+        changed: vec![root],
         ..default()
     });
     let dt = app
@@ -1962,87 +1913,8 @@ fn a_frozen_loose_piece_moves_to_a_blast() {
     );
 }
 
-/// Per update, the contact loads [`read_contacts`] queued in it, each with its construction's root.
-#[derive(Resource, Default)]
-struct QueuedContacts(Vec<Vec<(Entity, Load)>>);
-
-fn keep_queued_contacts(queue: Res<Queue>, mut kept: ResMut<QueuedContacts>) {
-    kept.0.push(
-        queue
-            .0
-            .iter()
-            .flat_map(|deposit| deposit.contacts.iter().copied())
-            .collect(),
-    );
-}
-
-/// [`composed_kind`] with queued contact loads retained between the reader and the laws,
-/// its clocks started.
-fn composed_keeping_contacts(kind: &Arc<ConstructionKind>) -> (App, Entity) {
-    let (mut app, root) = composed_kind(false, kind);
-    app.init_resource::<QueuedContacts>().add_systems(
-        FixedPostUpdate,
-        keep_queued_contacts
-            .after(read_contacts)
-            .before(apply_deposits),
-    );
-    for _ in 0..3 {
-        app.update();
-    }
-    app.world_mut().resource_mut::<QueuedContacts>().0.clear();
-    (app, root)
-}
-
-/// An implicit belt contact enters the wall's actual queued reading without a source collider.
-/// The construction laws rely on the same load path as solver contacts, with no body-kind exception.
-/// FIXTURE DATA: a 20 N press on a breakable outer wall; the source is clear of solver contacts.
-#[test]
-fn an_implicit_belt_press_reaches_the_wall_laws_reading() {
-    let kind = shipped_house();
-    let (mut app, root) = composed_keeping_contacts(&kind);
-    let (element, face, into) = wall_face(&kind);
-    let source = contact_cube(&mut app, Vec3::splat(50.0), Vec3::ZERO);
-    app.update();
-    let collider = app
-        .world_mut()
-        .query::<(Entity, &Element, &ChildOf)>()
-        .iter(app.world())
-        .find(|(_, index, parent)| usize::from(index.0) == element && parent.parent() == root)
-        .map(|(entity, ..)| entity)
-        .expect("the intact fixture wall has its element collider");
-    let force = into * -20.0;
-    app.world_mut().resource_mut::<ContactTransfers>().stage(
-        crate::contact_transfer::AppliedContact {
-            structure: root,
-            structure_collider: collider,
-            body: source,
-            point: face,
-            normal: -into,
-            force,
-            closing_speed: 0.0,
-        },
-    );
-    app.world_mut().resource_mut::<QueuedContacts>().0.clear();
-    app.update();
-    let queued = &app.world().resource::<QueuedContacts>().0;
-    let loads: Vec<_> = queued
-        .iter()
-        .flatten()
-        .filter(|(_, load)| matches!(load.origin, Origin::Contact { other, .. } if other == source))
-        .collect();
-    assert_eq!(
-        loads.len(),
-        1,
-        "the belt press must reach the wall reader exactly once"
-    );
-    assert_eq!(loads[0].0, root);
-    assert_eq!(loads[0].1.blow, Vec3::ZERO);
-    assert!((loads[0].1.press + force).length() < 1e-5);
-}
-
-/// The side of the fixture's cubes, m, and their mass at brick density, kg (fixture data).
-pub(crate) const CUBE_SIDE: f32 = 0.4;
-const CUBE_KG: f32 = 1845.0 * CUBE_SIDE * CUBE_SIDE * CUBE_SIDE;
+/// The side of the fixture's cubes, m (fixture data).
+const CUBE_SIDE: f32 = 0.4;
 
 /// A dynamic cube of [`CUBE_SIDE`] at brick density, colliding as a loose piece does, centred at
 /// `at` and moving at `velocity` (fixture data).
@@ -2060,230 +1932,56 @@ fn contact_cube(app: &mut App, at: Vec3, velocity: Vec3) -> Entity {
         .id()
 }
 
-/// A flat patch of the shipped house's outer wall met from outside along +x: a breakable
-/// element, a point on its face and the unit direction into it, where the face stands square to
-/// the approach and the rays through the centre and the four corners of a [`CUBE_SIDE`] square
-/// about the point all meet that element first at the same depth (the fixture's choice by class,
-/// searched from the middle of the bounds outward).
-pub(crate) fn wall_face(kind: &ConstructionKind) -> (usize, Vec3, Vec3) {
-    let layout = &kind.layout;
-    let (lo, hi) = kind.bounds();
-    let dir = Vec3::X;
-    let half = CUBE_SIDE / 2.0;
-    let fractions = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8];
-    for fy in fractions {
-        for fz in fractions {
-            let origin = Vec3::new(lo.x - 1.0, lo.y.lerp(hi.y, fy), lo.z.lerp(hi.z, fz));
-            let first = |offset: Vec3| {
-                fracture::first_hit(&layout.element_blocks, |_| true, origin + offset, dir)
-            };
-            let Some((e, t, normal)) = first(Vec3::ZERO) else {
-                continue;
-            };
-            let flat = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)]
-                .into_iter()
-                .all(|(a, b)| {
-                    first(Vec3::new(0.0, a * half, b * half))
-                        .is_some_and(|(k, s, _)| k == e && (s - t).abs() < 1e-3)
-                });
-            if layout.elements[e].is_some() && normal.dot(dir) < -0.9999 && flat {
-                return (e, origin + dir * t, dir);
-            }
-        }
-    }
-    panic!("the shipped house shows a flat patch of breakable wall to +x");
-}
-
-/// The game's environment destruction: equal motion and geometry produce equal contact forces
-/// for a plain body and a construction carrier. The structure check relies on no body-kind gate;
-/// the unbroken fixture is deliberately too slow to sweep its wall: its stop's peak force at
-/// 0.1 m/s stays under the struck patch's cut.
+/// The game's building model: a standing construction's support check hears no contact. A body
+/// asleep on it and one a force holds pressed against it, awake in the solver every step, leave
+/// the part solve's loads what gravity alone makes them; what a body does to standing matter is
+/// the contact law's to judge ([`bounded`]). Mutant: any contact's transfer, awake or resting, entered as a press.
+/// Fixture: a column, a 400 N press down on its crown and one along +x on its side.
 #[test]
-fn no_bodys_kind_enters_a_contacts_loads() {
-    let kind = shipped_house();
-    let (e, face, w) = wall_face(&kind);
-    // Fixture: 2 cm short of the face at 0.1 m/s, so the cube meets it within the run.
-    let (gap, speed) = (0.02, 0.1);
-    let start = face - w * (CUBE_SIDE / 2.0 + gap);
-    let strike = |construction_piece: bool| {
-        let (mut app, root) = composed_keeping_contacts(&kind);
-        let cube = contact_cube(&mut app, start, w * speed);
-        if construction_piece {
-            // A free group carries its source tree from spawn: here, its own collider.
-            let hull = app.world().get::<Collider>(cube).unwrap().clone();
-            app.world_mut().entity_mut(cube).insert((
-                Piece {
-                    construction: 3,
-                    chunks: vec![0],
-                    born: 0,
-                    retired: None,
-                },
-                crate::debris::DebrisPiece,
-                super::super::sweep::SourceShape(Arc::new(super::super::sweep::SourceTree::new(
-                    vec![super::super::sweep::Hull {
-                        surface: None,
-                        hull,
-                        position: Vec3::ZERO,
-                        rotation: Quat::IDENTITY,
-                    }],
-                ))),
-            ));
-        }
-        for _ in 0..30 {
-            app.update();
-        }
-        let ticks = std::mem::take(&mut app.world_mut().resource_mut::<QueuedContacts>().0);
-        assert_eq!(ticks.len(), 30, "one physics step and one read an update");
-        for (on, load) in ticks.iter().flatten() {
-            assert_eq!(*on, root, "the house takes the loads");
-            assert!(
-                matches!(load.origin, Origin::Contact { other, .. } if other == cube),
-                "each load names its body and effective mass: {load:?}"
-            );
-        }
-        let momentum = app.world().get::<LinearVelocity>(cube).unwrap().0 * CUBE_KG;
-        (ticks, momentum)
-    };
-    let ((plain, final_momentum), (piece, _)) = (strike(false), strike(true));
-    let strip = |ticks: &[Vec<(Entity, Load)>]| -> Vec<Vec<Load>> {
-        ticks
-            .iter()
-            .map(|tick| {
-                tick.iter()
-                    .map(|&(_, load)| Load {
-                        origin: Origin::Field,
-                        ..load
-                    })
-                    .collect()
-            })
-            .collect()
-    };
-    assert_eq!(
-        strip(&plain),
-        strip(&piece),
-        "a construction piece's loads are a plain body's"
-    );
-    let loads: Vec<Load> = plain.into_iter().flatten().map(|(_, load)| load).collect();
-    assert!(!loads.is_empty(), "the cube strikes the wall");
-    let blow: Vec3 = loads.iter().map(|load| load.blow + load.press * STEP).sum();
-    let closing = CUBE_KG * speed;
-    let transferred = w * closing - final_momentum;
-    assert!(
-        (blow - transferred).length() <= 0.01 * closing,
-        "the strike's blow {blow} against its momentum change {transferred} N·s"
-    );
-    let layout = &kind.layout;
-    for load in &loads {
-        assert!(
-            layout.chunks_of(e).contains(&load.chunk),
-            "{load:?} on the struck element's chunks"
-        );
-        assert!(
-            layout.blocks[load.chunk].outside(load.at) <= 0.05,
-            "{load:?} on its chunk's hull"
-        );
-        assert_eq!(load.energy, 0.0, "a contact crushes nothing");
-    }
-}
-
-/// The game's environment destruction: a cube's 400 N press, asleep against a construction or,
-/// a loose piece, frozen there, stays cached, with no new queued deposit, until its body leaves.
-/// The structure law relies on resting piles keeping their supported press without repeating the
-/// work each tick; a frozen piece has left Avian's contact graph. Fixture: loading the column's
-/// crown puts every supporting joint in compression, below its bulk capacity.
-#[test]
-fn a_body_at_rest_against_a_construction_presses_it_once_and_starts_no_run() {
-    for loose in [false, true] {
-        let kind = column_construction();
-        let block = kind.layout.blocks.last().unwrap();
-        let face = Vec3::new(
-            (block.min.x + block.max.x) / 2.0,
-            block.max.y,
-            (block.min.z + block.max.z) / 2.0,
-        );
-        let w = Vec3::NEG_Y;
-        let (mut app, root) = composed_keeping_contacts(&kind);
-        // Fixture: 400 N normal press and 2 mm approach gap, centred on the crown.
-        let force_n = 400.0;
-        let cube = contact_cube(&mut app, face - w * (CUBE_SIDE / 2.0 + 0.002), Vec3::ZERO);
-        app.world_mut().entity_mut(cube).insert((
-            ConstantForce(w * force_n),
-            crate::contact_transfer::StructureBody,
-        ));
-        if loose {
-            app.world_mut()
-                .entity_mut(cube)
-                .insert(crate::debris::DebrisPiece);
-        }
-        let at_rest = |app: &App| {
-            if loose {
-                app.world()
-                    .get::<crate::debris::freeze::Frozen>(cube)
-                    .is_some()
-            } else {
-                app.world().get::<Sleeping>(cube).is_some()
-            }
-        };
-        (0..640)
-            .find(|_| {
-                app.update();
-                at_rest(&app)
-            })
-            .expect("the held cube came to rest within 10 s");
-        app.world_mut().resource_mut::<QueuedContacts>().0.clear();
-        let mut held: Option<Vec<Load>> = None;
-        for tick in 0..40 {
-            app.update();
-            assert!(
-                at_rest(&app),
-                "tick {tick}: the cube rests (loose: {loose})"
-            );
-            let queued = std::mem::take(&mut app.world_mut().resource_mut::<QueuedContacts>().0);
-            assert!(
-                queued.iter().all(Vec::is_empty),
-                "tick {tick}: a resting body's contact queues nothing: {queued:?}"
-            );
-            assert!(
-                app.world()
-                    .resource::<ContactTransfers>()
-                    .resting()
-                    .iter()
-                    .all(|rest| rest.transfer.reference == root),
-                "only the static structural side retains resting points"
-            );
-            let resting = app.world().resource::<RestingLoads>();
-            let loads = resting.0.get(&root).cloned().unwrap_or_default();
-            assert_eq!(
-                resting.0.len(),
-                1,
-                "tick {tick}: one construction holds a press (loose: {loose})"
-            );
-            assert!(!loads.is_empty(), "tick {tick}: the column holds the press");
-            let press: Vec3 = loads.iter().map(|load| load.press).sum();
-            assert!(
-                (press - w * force_n).length() <= 0.005 * force_n,
-                "tick {tick}: the resting press {press} against {force_n} N along {w}"
-            );
-            for load in &loads {
-                assert_eq!(
-                    (load.blow, load.energy),
-                    (Vec3::ZERO, 0.0),
-                    "tick {tick}: a resting load is its body's press alone"
-                );
-                assert!(matches!(load.origin, Origin::Contact { other, .. } if other == cube));
-            }
-            match &held {
-                Some(held) => assert_eq!(held, &loads, "tick {tick}: the press stands unchanged"),
-                None => held = Some(loads),
-            }
-        }
-        app.world_mut().entity_mut(cube).despawn();
+fn a_standing_structure_hears_no_contact() {
+    let kind = column_construction();
+    let (mut app, root) = composed_kind(false, &kind);
+    for _ in 0..3 {
         app.update();
-        assert!(
-            app.world().resource::<RestingLoads>().0.is_empty(),
-            "the press goes with its body (loose: {loose})"
-        );
     }
+    let run_laws = |app: &mut App| {
+        app.world_mut().resource_mut::<Queue>().0.push(RawDeposit {
+            changed: vec![root],
+            ..default()
+        });
+        app.update();
+        let owner = app.world().get::<Breakage>(root).unwrap();
+        owner.live.assessment.applied_force()
+    };
+    let gravity = run_laws(&mut app);
+    let top = kind.layout.blocks.last().unwrap();
+    let centre = (top.min + top.max) / 2.0;
+    let gap = CUBE_SIDE / 2.0 + 0.002;
+    let resting = contact_cube(&mut app, centre.with_y(top.max.y + gap), Vec3::ZERO);
+    let pressed = contact_cube(&mut app, centre.with_x(top.min.x - gap), Vec3::ZERO);
+    for (cube, force) in [(resting, Vec3::NEG_Y), (pressed, Vec3::X)] {
+        app.world_mut()
+            .entity_mut(cube)
+            .insert(ConstantForce(force * 400.0));
+    }
+    app.world_mut().entity_mut(pressed).insert(SleepingDisabled);
+    let mut slept = false;
+    for tick in 0..640 {
+        assert_eq!(run_laws(&mut app), gravity, "tick {tick}");
+        let held = |cube| {
+            (app.world()
+                .resource::<ContactTransfers>()
+                .groups()
+                .flatten())
+            .any(|point| point.reference == root && point.other == cube)
+        };
+        slept |= app.world().get::<Sleeping>(resting).is_some() && held(pressed);
+    }
+    assert!(
+        slept,
+        "the fixture rests one body on the column while the solver holds the other against it"
+    );
+    assert!(app.world().resource::<Record>().entries.is_empty());
 }
 
 /// The game's damage model delivers each march before its shell despawns. Construction deposits
@@ -2388,88 +2086,6 @@ fn collider_valid_hulls_with_collapsed_law_boundaries_are_refused_at_load() {
         for required in [field.as_str(), "law block", "rebake"] {
             assert!(error.contains(required), "{error}");
         }
-    }
-}
-
-/// A STEP'S PRESSES JOIN EVERY DEPOSIT ONCE (the game's environment destruction model).
-/// The authority's strength check needs awake and sleeping presses while processing any load,
-/// in either deposit order. Dropping the awake press after its own contact deposit clears the
-/// held gate; counting it twice doubles the force. The soil-held fixture isolates that input
-/// invariant from fracture, using ASSUMED small forces and a zero-energy crossing.
-#[test]
-fn awake_and_sleeping_presses_join_every_deposit_once() {
-    use bevy::ecs::system::RunSystemOnce;
-    for contact_first in [false, true] {
-        let (mut app, root) = composed(false);
-        let kind = app.world().get::<Breakage>(root).unwrap().kind.clone();
-        let structure = kind.layout.structure(&kind.asset);
-        let c = structure
-            .chunks
-            .iter()
-            .position(|chunk| chunk.buried)
-            .unwrap();
-        let at = structure.chunks[c].centroid;
-        let volume = app
-            .world_mut()
-            .query::<(Entity, &Element, &ChildOf)>()
-            .iter(app.world())
-            .find(|(_, element, parent)| {
-                parent.parent() == root && element.0 == kind.layout.element_of[c]
-            })
-            .unwrap()
-            .0;
-        let active = Load {
-            chunk: c,
-            at,
-            energy: 0.0,
-            crushed: 0.0,
-            blow: Vec3::ZERO,
-            press: Vec3::X,
-            peak: None,
-            origin: Origin::Field,
-        };
-        let sleeping = Load {
-            at: at + Vec3::Y * 0.001,
-            press: Vec3::X * 2.0,
-            ..active
-        };
-        app.world_mut()
-            .resource_mut::<RestingLoads>()
-            .0
-            .insert(root, vec![sleeping]);
-        let contacts = RawDeposit {
-            contacts: vec![(root, active)],
-            ..default()
-        };
-        let crossing = RawDeposit {
-            crossings: vec![DeliveredLine {
-                contacts: vec![(at - Vec3::X * 0.001, at + Vec3::X * 0.001)],
-                crossing: crate::ballistics::VolumeCrossing {
-                    volume,
-                    entry: at - Vec3::X * 0.001,
-                    end: at + Vec3::X * 0.001,
-                    chord: 0.002,
-                    cost: 0.0,
-                    energy: 0.0,
-                    perforated: true,
-                },
-                entrance_energy: 0.0,
-                momentum: Vec3::ZERO,
-                entrance_momentum: Vec3::ZERO,
-            }],
-            ..default()
-        };
-        let deposits = if contact_first {
-            vec![contacts, crossing]
-        } else {
-            vec![crossing, contacts]
-        };
-        app.world_mut().resource_mut::<Queue>().0 = deposits;
-        app.world_mut().run_system_once(apply_deposits).unwrap();
-        let mut breakage = app.world_mut().get_mut::<Breakage>(root).unwrap();
-        let live = breakage.live.as_mut();
-        let force = live.assessment.applied_force().as_vec3();
-        assert_eq!(force.x, 3.0, "contact first: {contact_first}");
     }
 }
 
@@ -3922,7 +3538,7 @@ fn contact_hulls_set_back_only_joint_faces_by_the_contact_gap() {
         }
         for (c, block) in kind.layout.blocks.iter().enumerate() {
             let centroid = structure.chunks[c].centroid;
-            let hull = kind.sweep.contact_hull(c);
+            let hull = kind.hulls.contact(c);
             let points = hull.shape().as_convex_polyhedron().unwrap().points();
             let set_back: BTreeSet<_> = block
                 .planes
@@ -4267,10 +3883,8 @@ fn owner_laws_and_prepared_groups_do_not_depend_on_worker_assignment() {
                                 pool: &pool,
                                 reusable: &ReusableColliders::Standing(BTreeMap::new()),
                                 taken,
-                                pressing: &[],
-                                resting: &[],
                                 // Fixture spin, 4 rad/s about the construction's Z.
-                                motion: sweep_intake::ReleasedMotion {
+                                motion: ReleasedMotion {
                                     velocity: Vec3::ZERO,
                                     spin: pose.rotation * Vec3::Z * 4.0,
                                     centre: Vec3::ZERO,
@@ -4386,7 +4000,7 @@ fn split_preparation_keeps_child_order_and_state_across_workers() {
         tick: 11,
     };
     let root = Transform::from_xyz(20.0, 10.0, -3.0).with_rotation(Quat::from_rotation_y(0.7));
-    let motion = sweep_intake::ReleasedMotion {
+    let motion = ReleasedMotion {
         velocity: Vec3::new(2.0, -3.0, 1.0),
         spin: Vec3::new(0.3, 0.5, -0.2),
         centre: Vec3::new(0.0, 1.5, 0.0),
@@ -4506,118 +4120,6 @@ fn occupied_matter_queries_follow_common_release_and_sleeping_pose() {
     }
 }
 
-/// The game's environment destruction intake preserves source order and frame conversion across
-/// worker assignments, while moving receivers contribute no structural load.
-#[test]
-fn contact_preparation_preserves_source_order_across_workers() {
-    use bevy::ecs::system::{RunSystemOnce, SystemState};
-    use bevy::tasks::TaskPoolBuilder;
-    let kind = column_construction();
-    let mut world = World::new();
-    let mut inputs = Vec::new();
-    for ordinal in 0..3 {
-        let root = world
-            .spawn((
-                Position(Vec3::X * ordinal as f32),
-                Rotation::default(),
-                Breakage::new(kind.clone(), ordinal),
-            ))
-            .id();
-        if ordinal == 1 {
-            world.entity_mut(root).insert(Piece {
-                construction: ordinal,
-                chunks: vec![0],
-                born: 0,
-                retired: None,
-            });
-        }
-        let collider = world.spawn((Element(0), ChildOf(root))).id();
-        for sequence in 0..4 {
-            inputs.push(ContactInput {
-                point: ContactTransfer {
-                    reference: root,
-                    reference_collider: collider,
-                    other: root,
-                    other_collider: None,
-                    point: Vec3::X * ordinal as f32 + kind.layout.element_blocks[0].points[0],
-                    normal: Vec3::Y,
-                    impulse: Vec3::ZERO,
-                    effective_mass: 7.0,
-                    closing_speed: 2.0,
-                    friction: 0.0,
-                },
-                press: Vec3::Y * (sequence + 1) as f32,
-                step: STEP,
-            });
-        }
-    }
-    // Fixture: interleave owners while retaining each source sequence.
-    inputs.rotate_left(3);
-    let mut state: SystemState<(
-        Colliders,
-        Query<((&Position, &Rotation), &Breakage, Option<&Piece>)>,
-    )> = SystemState::new(&mut world);
-    let (colliders, constructions) = state.get(&world).unwrap();
-    let expected: Vec<_> = inputs
-        .iter()
-        .map(|i| contact_load(&colliders, &constructions, &i.point, i.press, i.step))
-        .collect();
-    assert!(
-        expected.iter().any(Option::is_some) && expected.iter().any(Option::is_none),
-        "the fixture has standing receivers and moving groups with no structural load"
-    );
-    for threads in [1, 2] {
-        let pool = TaskPoolBuilder::new().num_threads(threads).build();
-        assert_eq!(
-            prepare_contacts(
-                &pool,
-                &inputs
-                    .iter()
-                    .copied()
-                    .map(ContactSource::Point)
-                    .collect::<Vec<_>>(),
-                &ContactTransfers::default(),
-                &colliders,
-                &constructions,
-                None
-            ),
-            expected
-        );
-    }
-    let groups = inputs
-        .iter()
-        .map(|input| {
-            vec![ContactTransfer {
-                impulse: -input.press * input.step,
-                ..input.point
-            }]
-        })
-        .collect();
-    world.insert_resource(ContactTransfers::fixture(groups, STEP));
-    world.init_resource::<Stages>();
-    world.init_resource::<Queue>();
-    world.init_resource::<RestingLoads>();
-    ComputeTaskPool::get_or_init(Default::default);
-    world.run_system_once(read_contacts).unwrap();
-    let queued: Vec<_> = world
-        .resource::<Queue>()
-        .0
-        .iter()
-        .flat_map(|deposit| deposit.contacts.iter().copied())
-        .collect();
-    assert_eq!(
-        queued,
-        expected.iter().flatten().copied().collect::<Vec<_>>(),
-        "the intake keeps exactly the standing loads and their source order"
-    );
-    let roots: BTreeSet<_> = expected.iter().flatten().map(|(root, _)| *root).collect();
-    assert_eq!(
-        world.resource::<Stages>().take_counts().values[Work::ContactReadRoots as usize],
-        roots.len() as u64,
-        "moving receivers never enter the owner task grouping"
-    );
-}
-
 /// Collider preparation and its committed geometry are independent of worker assignment.
 /// The existing march/refit witness checks same-update visibility through the shipped plugin.
 #[test]
@@ -4637,6 +4139,7 @@ fn reconciliation_prepares_the_same_ordered_geometry_across_workers() {
                 ordinal: 2,
             },
             Isometry3d::from_translation(Vec3::new(5.0, 0.0, 0.0)),
+            Site::Level,
         );
         queue.apply(app.world_mut());
         {
@@ -4824,780 +4327,6 @@ fn owners_share_initial_equilibrium_until_their_first_changed_load() {
     assert!(!second.assessment.needs_tick());
 }
 
-/// The game's environment destruction: a cut that swaps an element to chunks keeps the belt
-/// support staged on its standing matter. The reaction on the chunk that leaves is cancelled on
-/// its source; the one on the chunk that stands reaches the physics step's reading on that
-/// chunk's own collider, and its force stays on the source. Cancelling every reaction on the
-/// retiring element collider takes a tick of real support away; keeping the one on departed
-/// matter leaves a reaction with no surface to come from.
-#[test]
-fn a_partial_cut_keeps_belt_support_on_the_matter_that_stands() {
-    use bevy::ecs::system::RunSystemOnce;
-    let kind = resolved_column();
-    let (mut app, root) = composed_kind(false, &kind);
-    for _ in 0..3 {
-        app.update();
-    }
-    let chunks = &kind.structure.chunks;
-    let side = chunks[1].centroid.y - chunks[0].centroid.y;
-    // Fixture: a 1e6 kg cube one chunk side from the middle, travelling that distance per tick;
-    // it frees the middle and top chunks while the anchored bottom chunk stands.
-    let (mass, speed) = (1e6, side / STEP);
-    let start = chunks[1].centroid - Vec3::X * side;
-    let source = app.world_mut().spawn(cube(start, mass)).id();
-    app.update();
-    let element = app
-        .world_mut()
-        .query::<(Entity, &Element, &ChildOf)>()
-        .iter(app.world())
-        .find(|(_, _, parent)| parent.parent() == root)
-        .unwrap()
-        .0;
-    // Fixture: belt reactions on the element's face at the chunk that leaves and at the one that
-    // stands, with support large enough to expose a lost reaction in the momentum assertion.
-    let belts = [1, 0].map(|c| crate::contact_transfer::AppliedContact {
-        structure: root,
-        structure_collider: element,
-        body: source,
-        point: chunks[c].centroid - Vec3::X * side / 2.0,
-        normal: Vec3::NEG_X,
-        force: Vec3::Y * 1e7,
-        closing_speed: 0.0,
-    });
-    app.world_mut()
-        .run_system_once(move |mut bodies: Query<Forces>| {
-            for belt in belts {
-                bodies
-                    .get_mut(source)
-                    .unwrap()
-                    .apply_force_at_point(belt.force, belt.point);
-            }
-        })
-        .unwrap();
-    for belt in belts {
-        app.world_mut()
-            .resource_mut::<ContactTransfers>()
-            .stage(belt);
-    }
-    app.world_mut().get_mut::<LinearVelocity>(source).unwrap().0 = Vec3::X * speed;
-    app.update();
-    let cancelled: Vec<_> = (app.world().resource::<SweepAccount>().cancelled_belts)
-        .iter()
-        .map(|belt| belt.point)
-        .collect();
-    assert_eq!(
-        cancelled,
-        [belts[0].point],
-        "only departed matter's reaction ceases"
-    );
-    let kept: Vec<_> = app
-        .world()
-        .resource::<ContactTransfers>()
-        .groups()
-        .flatten()
-        .filter(|point| point.other == source && point.other_collider.is_none())
-        .map(|point| {
-            let collider = app.world().entity(point.reference_collider);
-            (
-                collider.get::<ChunkCollider>().copied(),
-                collider.get::<ChildOf>().map(ChildOf::parent),
-                point.impulse,
-            )
-        })
-        .collect();
-    assert_eq!(
-        kept,
-        [(Some(ChunkCollider(0)), Some(root), belts[1].force * STEP)],
-        "the standing chunk's own collider carries its reaction"
-    );
-    let rubble: DVec3 = app
-        .world_mut()
-        .query::<(&Piece, &ComputedMass, &LinearVelocity)>()
-        .iter(app.world())
-        .filter(|(piece, ..)| piece.construction == 3)
-        .map(|(_, m, v)| f64::from(m.value()) * v.0.as_dvec3())
-        .sum();
-    let after = app.world().get::<LinearVelocity>(source).unwrap().0;
-    let expected = f64::from(mass * speed) * DVec3::X + (belts[1].force * STEP).as_dvec3();
-    let total = f64::from(mass) * after.as_dvec3() + rubble;
-    // Resolution: f32 velocity and mass roundoff, about 1e-7 relative (DERIVED), with margin.
-    assert!(
-        (total - expected).length() < 1e-4 * expected.length(),
-        "the standing support stays on the source: {total:?} against {expected:?}"
-    );
-}
-
-/// The game's environment destruction: the production pre-physics sweep removes the minimum-cut
-/// plug containing its occupied source patch on first contact, before the solver. At zero
-/// gravity the hull's momentum plus its freed rubble's is conserved over the tick: a stop or
-/// exchange against the standing construction, or a stale belt reaction left uncancelled, is
-/// external to that pair and breaks it. Matter the sweep frees this tick neither brakes nor lifts
-/// the hull in the solver: the hull ends the tick at its post-exchange velocity and travels on it.
-#[test]
-fn a_sweep_opens_the_swept_chunk_before_the_solver_and_keeps_momentum() {
-    let kind = resolved_column();
-    let (mut app, root) = composed_kind(false, &kind);
-    for _ in 0..3 {
-        app.update();
-    }
-    // Fixture: a centred 0.4 m cube one chunk side short of the middle chunk's centre, crossing
-    // only that chunk within the tick.
-    let middle = kind.structure.chunks[1].centroid;
-    let side = middle.y - kind.structure.chunks[0].centroid.y;
-    let start = middle - Vec3::X * side;
-    let speed = 128.0;
-    let mass = 1e6;
-    let source = app
-        .world_mut()
-        .spawn((
-            RigidBody::Dynamic,
-            Position(start),
-            Rotation::default(),
-            Collider::cuboid(0.4, 0.4, 0.4),
-            Mass(mass),
-            NoAutoMass,
-            AngularInertia::new(Vec3::splat(mass)),
-            CenterOfMass::default(),
-            LinearVelocity(Vec3::X * speed),
-            piece_layers(),
-        ))
-        .id();
-    // First preparation creates the collider hierarchy; start outside this tick's sweep.
-    app.world_mut().get_mut::<LinearVelocity>(source).unwrap().0 = Vec3::ZERO;
-    app.update();
-    use bevy::ecs::system::RunSystemOnce;
-    let old = app
-        .world_mut()
-        .query::<(Entity, &Element, &ChildOf)>()
-        .iter(app.world())
-        .find(|(_, _, parent)| parent.parent() == root)
-        .unwrap()
-        .0;
-    // Fixture: a stale belt reaction whose tick impulse (1.6e5 N s) exceeds the 1.3e4 N s
-    // conservation tolerance below.
-    let force = Vec3::NEG_X * 1e7;
-    app.world_mut()
-        .run_system_once(move |mut bodies: Query<Forces>| {
-            bodies
-                .get_mut(source)
-                .unwrap()
-                .apply_force_at_point(force, start);
-        })
-        .unwrap();
-    app.world_mut().resource_mut::<ContactTransfers>().stage(
-        crate::contact_transfer::AppliedContact {
-            structure: root,
-            structure_collider: old,
-            body: source,
-            point: middle - Vec3::X * side / 2.0,
-            normal: Vec3::NEG_X,
-            force,
-            closing_speed: speed,
-        },
-    );
-    app.world_mut().get_mut::<LinearVelocity>(source).unwrap().0 = Vec3::X * speed;
-    app.update();
-    let account = app.world().resource::<SweepAccount>();
-    let selected: Vec<_> = account
-        .chunks
-        .iter()
-        .filter(|(ordinal, _, _)| *ordinal == 3)
-        .copied()
-        .collect();
-    assert!(
-        selected.iter().any(|chunk| chunk.1 == 1),
-        "the occupied middle chunk belongs to the plug"
-    );
-    let (_, _, exchanged, _) = *account
-        .source_changes
-        .iter()
-        .find(|(body, ..)| *body == source)
-        .unwrap();
-    let after = app.world().get::<LinearVelocity>(source).unwrap().0;
-    let rubble: DVec3 = app
-        .world_mut()
-        .query::<(&Piece, &ComputedMass, &LinearVelocity)>()
-        .iter(app.world())
-        .filter(|(piece, ..)| piece.construction == 3)
-        .map(|(_, m, v)| f64::from(m.value()) * v.0.as_dvec3())
-        .sum();
-    assert!(rubble != DVec3::ZERO, "the plug leaves as server rubble");
-    let before = f64::from(mass * speed) * DVec3::X;
-    let total = f64::from(mass) * after.as_dvec3() + rubble;
-    // Resolution: f32 velocity and mass roundoff, about 1e-7 relative (DERIVED), with margin.
-    assert!(
-        (total - before).length() < 1e-4 * before.length(),
-        "hull and freed rubble keep the hull's momentum: {total:?} against {before:?}"
-    );
-    // Resolution: f32 velocity roundoff at 128 m/s.
-    assert!(
-        (after - exchanged).length() < 1e-5 * speed,
-        "the solver changes no exchanged hull velocity: {after:?} against {exchanged:?}"
-    );
-    // The plug's centre of mass lies off the hull's line, so the exchange alone moves it vertically.
-    let rise = app.world().get::<Position>(source).unwrap().0.y - start.y;
-    assert!(
-        (rise - exchanged.y * STEP).abs() < 1e-5 * speed * STEP,
-        "freed matter lifts no hull: rose {rise} m at {} m/s exchanged",
-        exchanged.y
-    );
-    assert!(
-        !app.world()
-            .get::<Breakage>(root)
-            .unwrap()
-            .live
-            .state
-            .standing(1)
-    );
-    let mut shape = Shape::intact(&kind.layout);
-    for entry in &app.world().resource::<Record>().entries {
-        shape.apply(entry.event, &kind.layout);
-    }
-    let live = Live::new(&kind);
-    shape.derive_departures(&kind.layout, &live);
-    for &(_, c, _) in &selected {
-        assert_eq!(
-            shape.fate[usize::from(c)],
-            app.world().get::<Breakage>(root).unwrap().live.state.fate[usize::from(c)],
-            "the streamed ledger agrees with the authority for all freed matter"
-        );
-    }
-}
-
-/// The game's environment destruction: what the sweep does to a frozen piece's support reaches the
-/// thaw inside the same update, before the step makes its contacts (`debris::freeze` module doc).
-/// A loose piece frozen on a column's top chunk is dynamic at the end of the update whose sweep
-/// takes that chunk from under it. A thaw that ran before the sweep would leave it static through
-/// that step, holding its press on a collider the sweep despawned (`contact_transfer`, resting
-/// contacts), which the contact reading refuses; the hull is too slow to reach it meanwhile.
-#[test]
-fn a_sweep_that_takes_a_frozen_pieces_support_thaws_it_in_the_same_update() {
-    let kind = resolved_column();
-    let (mut app, _) = composed_kind(false, &kind);
-    app.insert_resource(Gravity(Vec3::NEG_Y * 9.81));
-    for _ in 0..3 {
-        app.update();
-    }
-    let [_, middle, top] = [0, 1, 2].map(|c| kind.structure.chunks[c].centroid);
-    let half = (top.y - middle.y) / 2.0;
-    // Fixture: a 0.5 m loose cube on the column's top face.
-    let side = 0.5;
-    let piece = app
-        .world_mut()
-        .spawn((
-            RigidBody::Dynamic,
-            Position(top + Vec3::Y * (half + side / 2.0)),
-            Rotation::default(),
-            Collider::cuboid(side, side, side),
-            ColliderDensity(1845.0),
-            piece_layers(),
-            crate::debris::DebrisPiece,
-        ))
-        .id();
-    let frozen = |app: &App| {
-        app.world()
-            .get::<crate::debris::freeze::Frozen>(piece)
-            .is_some()
-    };
-    (0..1280)
-        .find(|_| {
-            app.update();
-            frozen(&app)
-        })
-        .expect("the piece came to rest and froze within 20 s");
-    // Fixture: a 1e7 kg hull cube at the top chunk's centre height, 5 cm short of its face,
-    // entering it at 12 m/s: 0.19 m a tick, 0.8 m below the piece.
-    let mass = 1e7;
-    let source = app
-        .world_mut()
-        .spawn(cube(
-            top - Vec3::X * (half + CUBE_SIDE_M / 2.0 + 0.05),
-            mass,
-        ))
-        .insert(GravityScale(0.0))
-        .id();
-    // First preparation creates the collider hierarchy; start outside this tick's sweep.
-    app.update();
-    assert!(
-        frozen(&app),
-        "the hull at rest beside the column reaches nothing"
-    );
-    app.world_mut().get_mut::<LinearVelocity>(source).unwrap().0 = Vec3::X * 12.0;
-    app.update();
-    assert!(
-        app.world()
-            .resource::<SweepAccount>()
-            .chunks
-            .iter()
-            .any(|&(ordinal, chunk, _)| ordinal == 3 && chunk == 2),
-        "the sweep took the top chunk"
-    );
-    assert!(
-        !frozen(&app),
-        "the piece thawed in the update its support went"
-    );
-    assert_eq!(
-        app.world().get::<RigidBody>(piece),
-        Some(&RigidBody::Dynamic)
-    );
-}
-
-/// The game's environment destruction: the collision hook keeps Avian's contact for a body the
-/// sweep did not cast this tick, and drops look-ahead only where a cast says its body does not
-/// reach. Read as a cast that missed, no cast would take every look-ahead point on standing
-/// matter from a departure past the round cap or a body woken in the step, matter no cut judged.
-#[test]
-fn a_body_the_sweep_did_not_cast_keeps_avians_contact() {
-    use bevy::ecs::system::RunSystemOnce;
-    let kind = resolved_column();
-    let (mut app, root) = composed_kind(false, &kind);
-    for _ in 0..3 {
-        app.update();
-    }
-    let middle = kind.structure.chunks[1].centroid;
-    let side = middle.y - kind.structure.chunks[0].centroid.y;
-    // Fixture: two cubes clear of the middle chunk's face; at zero gravity the one at rest has no
-    // motion to cast, and the other moves away from the column.
-    let [resting, leaving] = [1.0, 2.0].map(|offset| {
-        app.world_mut()
-            .spawn(cube(middle - Vec3::X * side * offset, 1e3))
-            .id()
-    });
-    app.update(); // First preparation creates the collider hierarchy at rest.
-    app.world_mut()
-        .get_mut::<LinearVelocity>(leaving)
-        .unwrap()
-        .0 = Vec3::NEG_X;
-    app.update();
-    let element = app
-        .world_mut()
-        .query::<(Entity, &Element, &ChildOf)>()
-        .iter(app.world())
-        .find(|(_, _, parent)| parent.parent() == root)
-        .unwrap()
-        .0;
-    let face = middle - Vec3::X * side / 2.0;
-    let read = app
-        .world_mut()
-        .run_system_once(move |hooks: SweepContacts| {
-            [resting, leaving].map(|body| hooks.unjudged(element, body, face))
-        })
-        .unwrap();
-    assert_eq!(
-        read,
-        [Some(false), Some(true)],
-        "no cast keeps Avian's contact; a cast that misses covered matter drops its look-ahead"
-    );
-}
-
-/// The game's environment destruction: a detected target reaches the mounted intake and keeps
-/// the solver's look-ahead point, including a target with no inward witness or cut verdict.
-/// Filtering intake by witness presence would erase the unresolved target's solver contact.
-#[test]
-fn detected_targets_keep_lookahead_contacts_through_intake() {
-    use super::super::sweep::tests::{
-        failed_contact_hulls, failed_contact_kind, failed_contact_motion, failed_linear_motion,
-        failed_overlap_motion,
-    };
-    use bevy::ecs::system::RunSystemOnce;
-    let kind = failed_contact_kind();
-    let (hull, target) = failed_contact_hulls();
-    for (motion, has_witness) in [
-        (failed_contact_motion(&hull), true),
-        (failed_overlap_motion(&hull), false),
-        (failed_linear_motion(&hull), true),
-    ] {
-        let (mut app, root) = composed_kind(false, &kind);
-        for _ in 0..3 {
-            app.update();
-        }
-        // Fixture: a light source, prepared away from contact at rest, so the captured motion
-        // cannot release the anchored target. Its COM and shape retain the capture's frame.
-        let source = app
-            .world_mut()
-            .spawn((
-                RigidBody::Dynamic,
-                Position(motion.position + Vec3::Y * 10.0),
-                Rotation(motion.rotation),
-                hull.clone(),
-                Mass(1e-6),
-                NoAutoMass,
-                AngularInertia::new(Vec3::ONE),
-                NoAutoAngularInertia,
-                CenterOfMass(motion.rotation.inverse() * (motion.centre - motion.position)),
-                NoAutoCenterOfMass,
-                LinearVelocity::ZERO,
-                AngularVelocity::ZERO,
-                piece_layers(),
-            ))
-            .id();
-        app.update();
-        app.world_mut().entity_mut(source).insert((
-            Position(motion.position),
-            LinearVelocity(motion.velocity),
-            AngularVelocity(motion.spin),
-        ));
-        app.update();
-        let owner = app.world().get::<Breakage>(root).unwrap();
-        assert!(
-            owner.live.state.standing(0),
-            "the fixture target must remain standing"
-        );
-        let account = app.world().resource::<SweepAccount>();
-        assert!(
-            account.sources > 0 && account.work.casts > 0,
-            "the mounted sweep cast the source against the target"
-        );
-        assert_eq!(
-            account.contacts.contains_key(&(source, owner.construction)),
-            has_witness,
-            "only usable inward geometry may produce a load"
-        );
-        let element = app
-            .world_mut()
-            .query::<(Entity, &Element, &ChildOf)>()
-            .iter(app.world())
-            .find(|(_, _, parent)| parent.parent() == root)
-            .unwrap()
-            .0;
-        // Fixture: a solver look-ahead point on the fixed target's face, separated by 1 mm.
-        let face = Vec3::new(target.aabb(Vec3::ZERO, Quat::IDENTITY, 0.0).max.x, 0.0, 0.0);
-        let (unjudged, kept) = app
-            .world_mut()
-            .run_system_once(move |hooks: SweepContacts, mut commands: Commands| {
-                let unjudged = hooks.unjudged(element, source, face);
-                let mut pair = ContactPair::new(
-                    element,
-                    source,
-                    avian3d::collision::contact_types::ContactId::PLACEHOLDER,
-                );
-                pair.body1 = Some(root);
-                pair.body2 = Some(source);
-                pair.manifolds.push(ContactManifold::new(
-                    [ContactPoint::new(Vec3::ZERO, Vec3::ZERO, face, -0.001)],
-                    Vec3::X,
-                ));
-                let kept = avian3d::prelude::CollisionHooks::modify_contacts(
-                    &hooks,
-                    &mut pair,
-                    &mut commands,
-                );
-                (unjudged, kept)
-            })
-            .unwrap();
-        assert_eq!(
-            (unjudged, kept),
-            (Some(false), true),
-            "a detected target keeps Avian's look-ahead point"
-        );
-    }
-}
-
-/// Two 1e6 kg, 0.4 m cubes at rest one chunk side short of `resolved_column`'s middle chunk and
-/// of chunk `later`, the first by entity order at the middle; the first is launched at 128 m/s across its chunk,
-/// then the second, in the same tick or the next. Returns the app after the second's tick.
-fn two_sources(
-    kind: &Arc<ConstructionKind>,
-    later: usize,
-    same_tick: bool,
-) -> (App, Entity, Entity) {
-    let (mut app, _) = composed_kind(false, kind);
-    for _ in 0..3 {
-        app.update();
-    }
-    let chunks = &kind.structure.chunks;
-    let side = chunks[1].centroid.y - chunks[0].centroid.y;
-    let mut bodies = [1, later].map(|_| {
-        app.world_mut()
-            .spawn((
-                RigidBody::Dynamic,
-                Rotation::default(),
-                Collider::cuboid(0.4, 0.4, 0.4),
-                Mass(1e6),
-                NoAutoMass,
-                AngularInertia::new(Vec3::splat(1e6)),
-                CenterOfMass::default(),
-                LinearVelocity::ZERO,
-                piece_layers(),
-            ))
-            .id()
-    });
-    // Entity order is the sweep's commit order: the earlier entity takes the middle chunk.
-    bodies.sort();
-    let [a, b] = bodies;
-    for (body, chunk) in [(a, 1), (b, later)] {
-        let start = chunks[chunk].centroid - Vec3::X * side;
-        app.world_mut()
-            .entity_mut(body)
-            .insert((Position(start), Transform::from_translation(start)));
-    }
-    app.update(); // First preparation creates the collider hierarchy at rest.
-    for (body, update) in [(a, !same_tick), (b, true)] {
-        app.world_mut().get_mut::<LinearVelocity>(body).unwrap().0 = Vec3::X * 128.0;
-        if update {
-            app.update();
-        }
-    }
-    (app, a, b)
-}
-
-/// The game's environment destruction: the sweep split tells a source whose bounds met no
-/// standing owner from one whose bounds did. Reading `roots` wrong, or crediting a far source a
-/// cast it never made, breaks the count the reader prices a no-owner source with.
-#[test]
-fn a_source_far_from_any_owner_counts_as_meeting_none() {
-    let kind = resolved_column();
-    let (mut app, _) = composed_kind(false, &kind);
-    app.insert_resource(crate::cost::stages::Capture { active: true });
-    for _ in 0..3 {
-        app.update();
-    }
-    let chunks = &kind.structure.chunks;
-    let side = chunks[1].centroid.y - chunks[0].centroid.y;
-    let near = chunks[1].centroid - Vec3::X * side;
-    // Fixture: one body at the column's middle chunk and one a kilometre from any construction.
-    let bodies = [near, near + Vec3::X * 1000.0].map(|at| {
-        app.world_mut()
-            .spawn((
-                RigidBody::Dynamic,
-                Rotation::default(),
-                Position(at),
-                Transform::from_translation(at),
-                Collider::cuboid(0.4, 0.4, 0.4),
-                Mass(1e6),
-                NoAutoMass,
-                AngularInertia::new(Vec3::splat(1e6)),
-                CenterOfMass::default(),
-                LinearVelocity::ZERO,
-                piece_layers(),
-            ))
-            .id()
-    });
-    app.update(); // First preparation creates the collider hierarchy at rest.
-    for body in bodies {
-        app.world_mut().get_mut::<LinearVelocity>(body).unwrap().0 = Vec3::X * 128.0;
-    }
-    app.update();
-    let account = app.world().resource::<SweepAccount>();
-    assert_eq!(
-        account.sources_no_owner, 1,
-        "only the far body met no owner"
-    );
-    assert!(account.sources > account.sources_no_owner);
-    assert!(
-        account.work.casts > 0,
-        "the near body cast against the column"
-    );
-    assert!(
-        (1..=account.work.casts).contains(&account.max_casts_per_source),
-        "the busiest source's casts are among the tick's casts"
-    );
-}
-
-/// The game's environment destruction: a later source on a construction an earlier source cut
-/// this tick resolves on the topology that cut left, with the gravity field solved on it. Matter
-/// the earlier cut freed is no later plug; matter still standing yields the plug and load a sweep
-/// on that state reads a tick later, once the law has re-solved the owner. The account keeps the
-/// resolution that committed.
-#[test]
-fn a_later_source_resolves_on_the_cut_an_earlier_one_left() {
-    let kind = resolved_column();
-    let exchanged = |app: &App, body: Entity| {
-        app.world()
-            .resource::<SweepAccount>()
-            .source_changes
-            .iter()
-            .any(|(source, ..)| *source == body)
-    };
-    // The middle's cut leaves the crown unsupported.
-    let (app, a, b) = two_sources(&kind, 2, true);
-    assert!(exchanged(&app, a), "the earlier source frees its plug");
-    assert!(
-        !exchanged(&app, b),
-        "matter an earlier cut freed this tick is no later source's plug"
-    );
-    // The base still stands below the middle's cut.
-    let (contested, a, b) = two_sources(&kind, 0, true);
-    assert!(exchanged(&contested, a) && exchanged(&contested, b));
-    let (later, ..) = two_sources(&kind, 0, false);
-    let resolution = |app: &App| {
-        let account = app.world().resource::<SweepAccount>();
-        let (.., plug, _) = account
-            .patches
-            .iter()
-            .find(|(body, ..)| *body == b)
-            .unwrap();
-        let (.., load) = account
-            .samples
-            .iter()
-            .find(|(body, ..)| *body == b)
-            .unwrap();
-        (plug.clone(), *load)
-    };
-    let ((plug, load), (expected_plug, expected)) = (resolution(&contested), resolution(&later));
-    assert_eq!(plug, expected_plug);
-    // Resolution: f32 casts and loads at a 1e6 kg, 128 m/s fixture.
-    for (got, want) in [
-        (load.0, expected.0),
-        (load.1, expected.1),
-        (load.3, expected.3),
-    ] {
-        assert!(
-            (got - want).abs() <= 1e-4 * want.abs().max(1.0),
-            "the re-resolved load is the one its state reads: {load:?} against {expected:?}"
-        );
-    }
-}
-
-/// The game's environment destruction: an end contact on a slender source rotates it away,
-/// reducing the Hertz demand. The production intake must use that contact response, rather
-/// than total mass, when deciding whether the standing construction holds.
-#[test]
-fn a_sweep_reads_the_slender_sources_contact_mass() {
-    use crate::contact_law::{Contactor, peak_force};
-    // Fixture: M = 128 kg, L = 2 m, transverse inertia ML²/12 = M/3 kg m².
-    // The sphere is a contact proxy centred either at the COM or one metre above it.
-    let mass = 128.0;
-    let speed = 64.0;
-    let mut peaks = Vec::new();
-    for end in [false, true] {
-        let kind = column_construction();
-        let (mut app, _) = composed_kind(false, &kind);
-        for _ in 0..3 {
-            app.update();
-        }
-        let offset = if end { Vec3::NEG_Y } else { Vec3::ZERO };
-        let position = Vec3::new(-1.0, 1.5, 0.0);
-        let body = app
-            .world_mut()
-            .spawn((
-                RigidBody::Dynamic,
-                Position(position),
-                Rotation::default(),
-                Collider::sphere(0.1),
-                Mass(mass),
-                NoAutoMass,
-                AngularInertia::new(Vec3::splat(mass / 3.0)),
-                NoAutoAngularInertia,
-                CenterOfMass(offset),
-                NoAutoCenterOfMass,
-                LinearVelocity::ZERO,
-                piece_layers(),
-            ))
-            .id();
-        app.update();
-        app.world_mut().get_mut::<LinearVelocity>(body).unwrap().0 = Vec3::X * speed;
-        app.update();
-        let account = app.world().resource::<SweepAccount>();
-        let (_, _, _, witness) = account.patches.iter().find(|(b, ..)| *b == body).unwrap();
-        let arm = witness.at - position - offset - Vec3::X * speed * witness.reach;
-        let torque = arm.cross(witness.normal);
-        let effective = (mass.recip() + torque.length_squared() / (mass / 3.0)).recip();
-        let expected_mass = if end { mass / 4.0 } else { mass };
-        println!(
-            "DERIVED ideal contact mass={expected_mass}; MEASURED cast witness mass={effective}"
-        );
-        let demand = account
-            .samples
-            .iter()
-            .find(|(b, ..)| *b == body)
-            .unwrap()
-            .3
-            .0;
-        let expected = peak_force(
-            f64::from(effective),
-            f64::from(witness.speed),
-            Contactor::chunk(&kind.structure, witness.chunk),
-            Contactor::RIGID,
-        ) as f32;
-        assert!(
-            (demand / expected - 1.0).abs() < 1e-4,
-            "peak {demand} != {expected}"
-        );
-        peaks.push(demand);
-    }
-    assert!(peaks[1] < peaks[0], "rotation reduces the contact peak");
-}
-
-/// Fixture for the game's environment destruction latency gate: an impact whose Hertz demand
-/// exceeds a shear-cut bound derived without asking the sweep for its verdict.
-#[test]
-fn an_over_capacity_fixture_opens_within_two_contact_ticks() {
-    // Fixture: column side lengths, m; each impact independently exceeds its cut capacity.
-    for scale in [2.0, 3.0] {
-        use crate::contact_law::{Contactor, peak_force, peak_speed};
-        let kind = scaled_column(scale);
-        let (mut app, root) = composed_kind(false, &kind);
-        for _ in 0..3 {
-            app.update();
-        }
-        let structure = &kind.structure;
-        // DERIVED: sliding the upper two chunks costs at most the bottom seam's cohesion times
-        // area plus friction under the entire column's weight (an upper bound on its preload).
-        let seam = &structure.joints[0];
-        let weight = structure
-            .chunks
-            .iter()
-            .map(|c| f64::from(c.mass))
-            .sum::<f64>()
-            * f64::from(crate::physical_laws::gravity_mps2());
-        let capacity = f64::from(seam.area * seam.seam().unwrap().shear.cohesion)
-            + fracture::bondsolve::pair_friction(structure, seam) * weight;
-        // Fixture: a 1e6 kg, 0.4 m cube with principal inertia equal to its mass in kg m².
-        // DERIVED: any face witness has r_y² + r_z² <= 0.08 m², so m/2 bounds effective mass below.
-        let mass = 1e6;
-        let effective = f64::from(mass) / 2.0;
-        let patch = Contactor::chunk(structure, 1);
-        // Fixture: twice the cut bound; travel at least one chunk side per tick.
-        let speed = (peak_speed(effective, 2.0 * capacity, patch, Contactor::RIGID) as f32)
-            .max(scale / STEP);
-        assert!(peak_force(effective, f64::from(speed), patch, Contactor::RIGID) > capacity);
-        let middle = structure.chunks[1].centroid;
-        // DERIVED: a half-side face gap, crossed within this tick at the chosen speed.
-        let start = middle - Vec3::X * (scale + CUBE_SIDE_M / 2.0);
-        let source = app.world_mut().spawn(cube(start, mass)).id();
-        app.update(); // Prepare the collider hierarchy before the driving stimulus.
-        assert!(
-            app.world()
-                .get::<Breakage>(root)
-                .unwrap()
-                .live
-                .state
-                .standing(1)
-        );
-        app.world_mut().get_mut::<LinearVelocity>(source).unwrap().0 = Vec3::X * speed;
-        let ordinal = app.world().get::<Breakage>(root).unwrap().construction;
-        let (mut contact, mut opening) = (None, None);
-        for tick in 0..=2 {
-            app.update();
-            if app
-                .world()
-                .resource::<SweepAccount>()
-                .contacts
-                .contains_key(&(source, ordinal))
-            {
-                contact.get_or_insert(tick);
-            }
-            if !app
-                .world()
-                .get::<Breakage>(root)
-                .unwrap()
-                .live
-                .state
-                .standing(1)
-            {
-                opening.get_or_insert(tick);
-            }
-        }
-        let first = contact.expect("the fixture reaches occupied matter within one tick");
-        assert!(
-            opening.is_some_and(|tick| tick <= first + 2),
-            "an independently over-capacity fixture opens within two contact ticks"
-        );
-        println!("MEASURED fixture side={scale} m: contact={first}, opening={opening:?}");
-    }
-}
-
 /// Fixture: keep unit-column proportions while each chunk exceeds the authored rubble floor.
 fn resolved_column() -> Arc<ConstructionKind> {
     let scale = crate::physical_laws::PhysicalLaws::shipped()
@@ -5613,10 +4342,11 @@ fn scaled_column(scale: f32) -> Arc<ConstructionKind> {
     Arc::new(crate::construction::tests::scaled(column, scale).expect("a scaled column loads"))
 }
 
-/// The game's environment destruction keeps a resolved hull plug's matter and rigid motion.
-/// The server body must retain occupied mass; internal seams and contact hooks stay untouched.
+/// The game's environment destruction: a block the contact law frees leaves at rest as one
+/// server body of its occupied mass, its internal seams untouched and its ledger entries at its
+/// tick. Mutants: a body weighed by its contact hulls, the block's own seams parted, a launch.
 #[test]
-fn a_swept_patch_keeps_its_server_body_mass_and_rigid_motion() {
+fn a_freed_block_leaves_at_rest_with_its_occupied_mass() {
     let kind = resolved_column();
     let (mut app, root) = composed_kind(false, &kind);
     crate::headless_test::start_fixed_clock(&mut app);
@@ -5624,26 +4354,18 @@ fn a_swept_patch_keeps_its_server_body_mass_and_rigid_motion() {
     app.update();
     let mut owner = app.world_mut().get_mut::<Breakage>(root).unwrap();
     let mut record = Record::default();
-    // Fixture: the upper pair leaves with translation and spin about the construction origin.
+    // Fixture: the upper pair leaves.
     let group = vec![1, 2];
     assert!(crate::debris::crumble::server_body(
         &owner.live.structure,
         &group
     ));
-    let expected_mass: f32 = group
-        .iter()
-        .map(|&c| kind.sweep.part(c, &Transform::IDENTITY).mass as f32)
-        .sum();
-    let cut = sweep_intake::cut_fragments(&mut owner, group.clone(), 7);
-    let (departures, sheds) = sweep_intake::sweep_departure(
+    let expected_mass: f32 = group.iter().map(|&c| kind.hulls.occupied(c).1.mass).sum();
+    let cut = bounded::cut(&mut owner, &group, 7, &mut record);
+    let (departures, sheds) = bounded::depart(
         &mut owner,
         Transform::IDENTITY,
-        &cut,
-        sweep_intake::ReleasedMotion {
-            velocity: Vec3::X * 2.0,
-            spin: Vec3::Z,
-            centre: Vec3::ZERO,
-        },
+        cut,
         7,
         &mut record,
         &ReusableColliders::Standing(BTreeMap::new()),
@@ -5653,10 +4375,9 @@ fn a_swept_patch_keeps_its_server_body_mass_and_rigid_motion() {
     let launched = &departures[0].departure;
     assert_eq!(launched.group, group);
     assert_eq!(
-        launched.launch.velocity,
-        Vec3::X * 2.0 + Vec3::Z.cross(launched.launch.centre)
+        (launched.launch.velocity, launched.launch.spin),
+        (Vec3::ZERO, Vec3::ZERO)
     );
-    assert_eq!(launched.launch.spin, Vec3::Z);
     let internal = kind
         .layout
         .joints
@@ -5747,10 +4468,10 @@ fn chunk_facts(world: &mut World) -> Vec<ChunkFact> {
                         *layers,
                         CollisionLayers::new([Layer::Armor], LayerMask::NONE)
                     );
-                    &breakage.kind.sweep.occupied(c).0
+                    &breakage.kind.hulls.occupied(c).0
                 } else {
                     assert_eq!(*layers, piece_layers());
-                    breakage.kind.sweep.contact_hull(c)
+                    breakage.kind.hulls.contact(c)
                 };
                 assert_eq!(
                     collider.shape().as_convex_polyhedron().unwrap().points(),
@@ -5758,32 +4479,6 @@ fn chunk_facts(world: &mut World) -> Vec<ChunkFact> {
                     "batching retains the occupied and inset contact shapes from construction data"
                 );
                 assert_eq!(friction, Some(&breakage.kind.chunk_friction(c)));
-                if !sensor {
-                    let source = world
-                        .get::<super::super::sweep::SourceShape>(parent.parent())
-                        .expect("a free group's query geometry exists at spawn and split");
-                    let leaf =
-                        &source.0.hulls()[piece.chunks.iter().position(|&c| c == chunk.0).unwrap()];
-                    assert_eq!(
-                        leaf.position,
-                        world.get::<Transform>(entity).unwrap().translation
-                    );
-                    assert_eq!(leaf.rotation, Quat::IDENTITY);
-                    assert_eq!(
-                        leaf.hull
-                            .shape_scaled()
-                            .as_convex_polyhedron()
-                            .unwrap()
-                            .points(),
-                        collider
-                            .shape_scaled()
-                            .as_convex_polyhedron()
-                            .unwrap()
-                            .points(),
-                        "the sweep's source is the contact collider's shape"
-                    );
-                }
-
                 assert_eq!(
                     world.get::<Transform>(entity).unwrap().translation,
                     breakage.kind.structure.chunks[usize::from(chunk.0)].centroid - breakage.origin
@@ -5810,7 +4505,7 @@ fn chunk_facts(world: &mut World) -> Vec<ChunkFact> {
     facts
 }
 
-/// Driving and sweeps read these before Avian prepares physics. Every fresh or reused
+/// Driving reads these before Avian prepares physics. Every fresh or reused
 /// departure must already hold its complete occupied properties, including split children.
 fn assert_spawned_group_properties(world: &mut World) {
     let mut chunks = world.query::<(Entity, &ChildOf, &ChunkCollider, Has<Sensor>)>();
@@ -6062,8 +4757,8 @@ fn the_law_installer_reuses_departing_standing_colliders() {
 }
 
 /// The game's environment destruction: removing a middle support frees the crown immediately,
-/// before reconciliation can construct a standing collider for it. Only the swept chunk inherits
-/// the hull's exchange; an unsupported neighbour starts at rest and meets the hull through Avian.
+/// before reconciliation can construct a standing collider for it, and the shared ledger derives
+/// both departures. Mutants: the disconnected crown left standing, a chunk leaving twice.
 #[test]
 fn a_cut_frees_unsupported_matter_without_building_standing_colliders() {
     use bevy::ecs::system::RunSystemOnce;
@@ -6074,16 +4769,11 @@ fn a_cut_frees_unsupported_matter_without_building_standing_colliders() {
     let mut record = Record::default();
     let (departures, sheds) = {
         let mut owner = app.world_mut().get_mut::<Breakage>(root).unwrap();
-        let cut = sweep_intake::cut_fragments(&mut owner, vec![1], 7);
-        sweep_intake::sweep_departure(
+        let cut = bounded::cut(&mut owner, &[1], 7, &mut record);
+        bounded::depart(
             &mut owner,
             Transform::IDENTITY,
-            &cut,
-            sweep_intake::ReleasedMotion {
-                velocity: Vec3::X * 2.0,
-                spin: Vec3::ZERO,
-                centre: Vec3::ZERO,
-            },
+            cut,
             7,
             &mut record,
             &ReusableColliders::Standing(BTreeMap::new()),
@@ -6108,12 +4798,6 @@ fn a_cut_frees_unsupported_matter_without_building_standing_colliders() {
         BTreeSet::from([1, 2]),
         "the cut and the matter it disconnected both leave before reconciliation"
     );
-    let crown = departures
-        .iter()
-        .find(|p| p.departure.group.contains(&2))
-        .expect("the unsupported crown leaves as server rubble");
-    assert_eq!(crown.departure.launch.velocity, Vec3::ZERO);
-    assert_eq!(crown.departure.launch.spin, Vec3::ZERO);
     spawn_departures(&mut app, departures);
     app.world_mut().run_system_once(reconcile).unwrap();
     for (chunk, parent) in app
@@ -6137,61 +4821,6 @@ fn a_cut_frees_unsupported_matter_without_building_standing_colliders() {
         app.world().get::<Breakage>(root).unwrap().live.state.fate,
         "the shared ledger derives every immediate departure"
     );
-}
-
-/// The game's environment destruction: below-floor merging of a moving cut and stationary unsupported
-/// matter preserves their combined momentum without adding kinetic energy. This fixture drives
-/// one of two equal unit cubes; mass and inertia come from the admitted occupied geometry.
-#[test]
-fn absorbed_cut_and_unsupported_matter_keep_their_combined_momentum() {
-    let kind = column_construction();
-    // Fixture translation, rotation and rigid motion exercise both COM and spin terms.
-    let pose = Transform::from_xyz(20.0, 7.0, -13.0).with_rotation(Quat::from_rotation_y(0.37));
-    let group = [1, 2];
-    let driven = BTreeSet::from([1]);
-    let motion = sweep_intake::ReleasedMotion {
-        velocity: Vec3::X * 2.0,
-        spin: Vec3::Z * 0.3,
-        centre: pose.translation,
-    };
-    let merged = sweep_intake::fragment_motion(&kind, &pose, &group, &driven, motion);
-    let centre = merged.centre.as_dvec3();
-    let totals = |after: bool| {
-        let mut p = DVec3::ZERO;
-        let mut l = DVec3::ZERO;
-        let mut energy = 0.0;
-        for c in group {
-            let part = kind.sweep.part(c, &pose);
-            let (v, w) = if after {
-                (
-                    merged.velocity.as_dvec3() + merged.spin.as_dvec3().cross(part.centre - centre),
-                    merged.spin.as_dvec3(),
-                )
-            } else if driven.contains(&c) {
-                (
-                    motion.velocity.as_dvec3()
-                        + motion
-                            .spin
-                            .as_dvec3()
-                            .cross(part.centre - motion.centre.as_dvec3()),
-                    motion.spin.as_dvec3(),
-                )
-            } else {
-                (DVec3::ZERO, DVec3::ZERO)
-            };
-            p += part.mass * v;
-            l += part.inertia * w + (part.centre - centre).cross(part.mass * v);
-            energy += 0.5 * (part.mass * v.length_squared() + w.dot(part.inertia * w));
-        }
-        (p, l, energy)
-    };
-    let (before_p, before_l, before_energy) = totals(false);
-    let (after_p, after_l, after_energy) = totals(true);
-    // Resolution: f32 world-pose and twist rounding; the independent accounting is f64.
-    let tolerance = 1e-5;
-    assert!((after_p - before_p).length() < tolerance * before_p.length());
-    assert!((after_l - before_l).length() < tolerance * before_l.length());
-    assert!(after_energy <= before_energy * (1.0 + tolerance));
 }
 
 /// The game's scenery recorder distinguishes retained collider reassignment from fresh shapes;
@@ -6257,4 +4886,62 @@ fn staged_members_leave_from_the_back_and_the_rest_keep_their_order() {
         (list(old), list(new))
     };
     assert_eq!(rehome(true), rehome(false));
+}
+
+/// THE SOIL HOLDS WHAT THE GROUND COVERS. A chunk of a placed construction is buried exactly
+/// when the ground under it covers every corner of it. The contact law relies on it (a buried
+/// cell is never pressed, `bounded::cell`; a push that runs into one is grounded,
+/// `fracture::bound::Standing::plug`), and so does the support solve (a buried chunk is a fixed
+/// part). Fixture: the shipped house on ground rising 0.25 m per metre along world x through its
+/// root, read against the same plane stated analytically. Judging against the frame's grade
+/// instead leaves the uphill chunks the slope covers unburied and the downhill foundation it
+/// bares buried. A bared chunk stays held: every chunk is still joined to a buried one or to a
+/// ground joint (the support check would otherwise drop it at spawn); a siting that took the
+/// ground joints of the chunks it bares would strand them.
+#[test]
+fn the_ground_under_a_placed_construction_buries_what_it_covers() {
+    const RISE: f32 = 0.25;
+    let kind = shipped_house();
+    let extent = crate::terrain_grid::TerrainExtent {
+        world_size_m: 80.0,
+        ..crate::terrain_grid::FIXTURE_EXTENT
+    };
+    let side = 9_usize;
+    let node = |i: usize| -extent.half_extent() + extent.world_size_m * i as f32 / 8.0;
+    let samples: Vec<f32> = (0..side * side).map(|k| RISE * node(k % side)).collect();
+    let grid = crate::terrain_grid::HeightGrid::new(samples.into(), side as u32, extent);
+    let at = Vec3::new(3.0, 0.0, -2.0);
+    let pose = Isometry3d::new(at.with_y(RISE * at.x), Quat::from_rotation_y(0.4));
+    let sited = Breakage::sited(kind.clone(), 0, Site::Terrain(&grid, pose));
+    let level = Breakage::new(kind.clone(), 0);
+    let (mut covered, mut bared) = (0, 0);
+    for (c, block) in kind.layout.blocks.iter().enumerate() {
+        // Resolution: a corner within a millimetre of the plane is either side of the grid's
+        // triangle arithmetic; the fixture's chunks are judged by the rest.
+        let heights: Vec<f32> = (block.points.iter())
+            .map(|&corner| {
+                let world = pose * corner;
+                world.y - RISE * world.x
+            })
+            .collect();
+        if heights.iter().any(|height| height.abs() < 1e-3) {
+            continue;
+        }
+        let under = heights.iter().all(|&height| height < 0.0);
+        assert_eq!(
+            sited.live.structure.chunks[c].buried, under,
+            "chunk {c}, corners {heights:?} m over the ground"
+        );
+        covered += usize::from(under && !level.live.structure.chunks[c].buried);
+        bared += usize::from(!under && level.live.structure.chunks[c].buried);
+    }
+    assert!(
+        covered > 0 && bared > 0,
+        "the slope must differ from level ground both ways: covered {covered}, bared {bared}"
+    );
+    assert_eq!(
+        fracture::loose_groups(&sited.live.structure, &sited.live.state),
+        Vec::<Vec<usize>>::new(),
+        "every chunk of the sited house is joined to the ground"
+    );
 }

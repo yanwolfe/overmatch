@@ -3,7 +3,6 @@
 //! Forces are on the tank, in N; moments are about its COM, in N m. `normal_n` is the
 //! scalar normal load; `normal[1]` is vertical support. Tangent includes solver friction
 //! or belt traction; rolling is separate. Rigid points use the side of their body-local x.
-//! The sweep's plastic mass exchange has no surface normal and stays body-owned in `exchange`.
 //! This observes motion; its trajectory is deliberately not a pass condition.
 
 use avian3d::dynamics::solver::SolverConfig;
@@ -14,7 +13,6 @@ use avian3d::prelude::*;
 use serde::Serialize;
 
 use super::*;
-use crate::construction::breakage::SweepAccount;
 use crate::track::bump_stop::{BumpStop, SidePlate};
 use crate::track::sim::TrackContacts;
 
@@ -63,14 +61,12 @@ struct ContactAccount {
     dt: f32,
     forward: Vec3,
     sides: [[Load; 5]; 2],
-    exchange: Vec3,
-    exchange_moment: Vec3,
     points: Vec<SolverPoint>,
 }
 
 impl ContactAccount {
     fn force(&self) -> Vec3 {
-        self.sides.iter().flatten().map(Load::force).sum::<Vec3>() + self.exchange
+        self.sides.iter().flatten().map(Load::force).sum::<Vec3>()
     }
 }
 
@@ -80,8 +76,6 @@ fn mount(app: &mut App, body: Entity) {
         dt: 0.0,
         forward: Vec3::ZERO,
         sides: [[Load::default(); 5]; 2],
-        exchange: Vec3::ZERO,
-        exchange_moment: Vec3::ZERO,
         points: Vec::new(),
     })
     .add_systems(
@@ -122,12 +116,9 @@ fn prepare(
     contacts: Res<ContactGraph>,
     bodies: Query<(&Position, &Rotation, &ComputedCenterOfMass, &TrackContacts)>,
     colliders: Query<(Has<SidePlate>, Has<BumpStop>)>,
-    sweep: Res<SweepAccount>,
 ) {
     account.dt = time.delta_secs();
     account.sides = [[Load::default(); 5]; 2];
-    account.exchange = Vec3::ZERO;
-    account.exchange_moment = Vec3::ZERO;
     account.points.clear();
     let (position, rotation, com, belt) = bodies
         .get(account.body)
@@ -144,35 +135,6 @@ fn prepare(
                 contact.point - centre,
             );
         }
-    }
-    for cancelled in &sweep.cancelled_belts {
-        if cancelled.body == account.body {
-            let si = side(rotation.0, cancelled.point - position.0);
-            let load = -cancelled.force.dot(cancelled.normal);
-            let normal = cancelled.normal * load;
-            let original = belt.0[si]
-                .iter()
-                .find(|contact| {
-                    contact.collider == Some(cancelled.structure_collider)
-                        && contact.point == cancelled.point
-                })
-                .expect("a cancelled belt force retains its emitted contact telemetry");
-            account.sides[si][1].add(
-                load,
-                normal,
-                -cancelled.force - normal + original.rolling_force,
-                -original.rolling_force,
-                cancelled.point - centre,
-            );
-        }
-    }
-    for impulse in &sweep.source_impulses {
-        if impulse.body != account.body {
-            continue; // Other bodies have independent accounts.
-        }
-        let dt = account.dt;
-        account.exchange += impulse.linear / dt;
-        account.exchange_moment += impulse.angular / dt;
     }
     for (color, constraints) in graph.colors.iter().enumerate() {
         for (ci, constraint) in constraints.contact_constraints.iter().enumerate() {
@@ -372,7 +334,7 @@ fn contact_account_snag() {
                 "velocity": velocity.to_array(), "momentum_residual": residual.to_array(),
                 "spin": app.world().get::<AngularVelocity>(tank).unwrap().0.to_array(),
                 "mass": mass,
-                "sides": a.sides, "exchange": a.exchange.to_array(), "exchange_moment": a.exchange_moment.to_array(),
+                "sides": a.sides,
             })
         );
     }

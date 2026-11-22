@@ -1731,7 +1731,7 @@ mod tests {
             format: schema::FORMAT,
             foundation_y_m: 0.0,
             materials: vec!["Brick".into()],
-            attachments: Vec::new(),
+            attachments: vec!["mortared".into()],
             components: vec!["wall".into()],
             elements: Vec::new(),
             chunks: Vec::new(),
@@ -1763,6 +1763,30 @@ mod tests {
                 volume_m3: volume,
                 centroid: ((low + high) / 2.0).to_array(),
                 mass_kg: density * volume,
+            });
+        }
+        // The piers and the sill stand on the foundation plane; the lintel is held by the piers.
+        for (chunk, (low, high, _)) in solids.iter().enumerate().take(3) {
+            let span = *high - *low;
+            asset.anchors.push(schema::Anchor {
+                chunk: chunk as u32,
+                attachment: 0,
+                area_m2: span.x * span.z,
+                centroid: ((*low + *high) / 2.0).with_y(0.0).to_array(),
+            });
+        }
+        let lintel = (size.y - opening_high.y) * size.z;
+        for (pier, x, normal) in [
+            (0, opening_low.x, Vec3::X),
+            (1, opening_high.x, Vec3::NEG_X),
+        ] {
+            asset.joints.push(schema::Joint {
+                a: pier,
+                b: 3,
+                area_m2: lintel,
+                centroid: [x, (opening_high.y + size.y) / 2.0, size.z / 2.0],
+                normal: normal.to_array(),
+                bond: schema::Bond::Seam,
             });
         }
         let kind = crate::construction::ConstructionKind::resolve(

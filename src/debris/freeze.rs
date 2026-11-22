@@ -27,7 +27,7 @@
 //!
 //! THAW ([`thaw`], in Avian's step after it places child colliders and before its broad phase: the
 //! last system before the narrow phase reads poses and velocities, after everything else a tick
-//! changes, the sweep included). A frozen island turns dynamic whole. Avian zeroes a body's rest
+//! changes). A frozen island turns dynamic whole. Avian zeroes a body's rest
 //! timer as it rejoins an island (`dynamics/solver/islands/sleeping.rs`,
 //! `wake_on_enable_rigid_body`), so the island rests a full `TimeToSleep` again before it can sleep
 //! and freeze. Four causes:
@@ -61,8 +61,8 @@
 //!   among others), no game code edits a loose piece's collider in place, and anything else that
 //!   writes a pose moves the piece.
 //!
-//! A frozen piece's press on standing construction stays as its sleeping press did
-//! (`contact_transfer`, resting contacts).
+//! A frozen piece presses standing construction as a sleeping one does: no law reads a resting
+//! contact (`contact_transfer`).
 //!
 //! ORDER. Avian finds a switched body's new pairs, and so builds and solves its contacts, in the
 //! order the bodies switched (`collider_tree/update.rs`, `MovedProxies`: insertion order). Freeze

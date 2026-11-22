@@ -287,13 +287,12 @@ fn a_pivoting_track_shoves_a_piece_without_throwing_it_or_touching_terrain() {
     }
 }
 
-/// The game's environment destruction model reads a plate's structure contacts exactly like a
-/// hull proxy's. A low standing element that only the plate reaches must take momentum through
-/// ContactTransfers away from the shoe's exposed face, the one face a plate bears through; a new
-/// layer that misses standing structures, a reader bypassed, or a plate bearing through its inner
-/// face fails.
+/// A side plate meets standing construction in the solver, as a hull proxy does: standing
+/// matter is a real stop for it. A low standing element that only the plate reaches must
+/// take momentum away from the shoe's exposed face, the one face a plate bears through; a new
+/// layer that misses standing structures or a plate bearing through its inner face fails.
 #[test]
-fn side_plate_contacts_reach_the_structure_contact_reader() {
+fn a_side_plate_presses_standing_construction_outward() {
     let geom = super::super::rig_geom::tiger_rig();
     let params = super::super::rig_geom::tiger_spec()
         .track
@@ -339,21 +338,20 @@ fn side_plate_contacts_reach_the_structure_contact_reader() {
         let world = app.world();
         transferred += world
             .resource::<ContactTransfers>()
-            .presses()
-            .filter(|(point, ..)| {
+            .groups()
+            .flatten()
+            .filter(|point| {
                 point.other == tank
                     && point.reference == wall
-                    && point
-                        .other_collider
-                        .is_some_and(|collider| world.get::<SidePlate>(collider).is_some())
+                    && world.get::<SidePlate>(point.other_collider).is_some()
             })
             // The transfer moves `impulse` into the tank; the wall takes its opposite.
-            .map(|(point, ..)| -point.impulse.x * Side::Right.sign())
+            .map(|point| -point.impulse.x * Side::Right.sign())
             .sum::<f32>();
     }
-    println!("MEASURED outward plate momentum read by structure: {transferred:.4} N s");
+    println!("MEASURED outward plate momentum on the structure: {transferred:.4} N s");
     assert!(
         transferred > 0.0,
-        "ordinary plate contacts must reach the structure laws, pressing it outward"
+        "the plate must press the standing element outward"
     );
 }

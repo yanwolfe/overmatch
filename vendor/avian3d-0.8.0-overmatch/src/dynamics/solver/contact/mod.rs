@@ -439,7 +439,10 @@ impl ContactConstraint {
                 * (normal_speed + self.restitution * point.normal_speed);
 
             // Clamp the accumulated impulse.
-            let new_impulse = (point.normal_part.impulse + impulse).max(0.0);
+            // OVERMATCH PATCH: the upper clamp, `max_impulse`.
+            let new_impulse = (point.normal_part.impulse + impulse)
+                .max(0.0)
+                .min(point.normal_part.max_impulse);
             impulse = new_impulse - point.normal_part.impulse;
             point.normal_part.impulse = new_impulse;
 

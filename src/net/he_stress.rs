@@ -370,6 +370,7 @@ mod tests {
                 ordinal,
             },
             Isometry3d::from_translation(offset),
+            crate::construction::breakage::Site::Level,
         );
         app.world_mut().flush();
         app.update();

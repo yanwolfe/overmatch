@@ -10,12 +10,12 @@
 //! The construction design's "Parts decide what stands" and "Standoff blast" own the derivations.
 
 pub(crate) mod bondsolve;
+pub(crate) mod bound;
 pub(crate) mod parts;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::{f32::consts::PI, sync::Arc};
 
-use bevy::ecs::entity::Entity;
 use bevy::math::{DMat3, DVec3, Vec3};
 
 use crate::construction::schema::SurfaceFrame;
@@ -274,24 +274,6 @@ impl Material {
             (Grain::Laid { .. }, _) => panic!("a substance's material is laid once"),
         };
         Ok(Self { grain, ..self })
-    }
-
-    /// The quasi-static compression it bears, Pa, pushed along unit `normal` (construction frame):
-    /// [`Self::compressive_strength`] every way without a grain; with one, Hankinson's formula
-    /// `N = P Q / (P sin²θ + Q cos²θ)` between `P` along the grain and `Q` across it, θ the angle
-    /// from the grain (USDA FPL Wood Handbook FPL-GTR-282, 2021, Chapter 5, Eq. 5–2, p. 5–29, read
-    /// primary; its exponent spans 2–2.5 for compression, and Hankinson's own form is 2).
-    pub(crate) fn bearing(&self, normal: DVec3) -> f64 {
-        let across = self.compressive_strength;
-        match self.grain {
-            Grain::None => across,
-            Grain::Laid { along, axis } => {
-                let cos = normal.dot(axis.as_dvec3()).abs().min(1.0);
-                let sin2 = 1.0 - cos * cos;
-                along * across / (along * sin2 + across * cos * cos)
-            }
-            Grain::Unlaid { .. } => panic!("a chunk's grained material is laid by its element"),
-        }
     }
 }
 
@@ -638,6 +620,16 @@ impl Block {
     }
 }
 
+/// The face of `block` that `joint` lies on, if any: its plane through the joint's centroid,
+/// with the joint's normal.
+pub(crate) fn joint_face(block: &Block, joint: &Joint) -> Option<usize> {
+    block.planes.iter().position(|&(normal, offset)| {
+        // Resolution: a joint's unit normal is its face's, within the bake's f32 rounding.
+        normal.dot(joint.normal).abs() >= 1.0 - 1e-4
+            && (normal.dot(joint.centroid) - offset).abs() <= ON_PLANE
+    })
+}
+
 /// The area a convex shape of faces `faces` ([`Block::face_areas`]) shows a ray along unit `dir`:
 /// its silhouette across the ray, the faces turned toward the ray each projected onto the plane
 /// across it.
@@ -766,6 +758,11 @@ impl Topology {
 }
 
 impl State {
+    /// The joints chunk `c` is a side of, in joint order, parted ones included.
+    pub(crate) fn incident(&self, c: usize) -> &[usize] {
+        &self.topology.incident[c]
+    }
+
     /// Every chunk standing with a full pool, every joint intact.
     pub fn new(structure: &Structure) -> Self {
         Self {
@@ -858,8 +855,8 @@ pub(crate) fn wear(structure: &Structure, state: &mut State, chunk: usize, volum
 
 /// One source at one point in the game's environment destruction model (game state only).
 /// Crushed volume consumes the pool, cavity energy enters [`crack`], and impulse and press enter
-/// [`parts::Assessment`]. Field loads never press; physics contacts supply their resolved
-/// blow and press without cavity energy. The construction design owns their derivations.
+/// [`parts::Assessment`]. Field loads never press; a moving group's landing supplies its press
+/// without cavity energy. The construction design owns their derivations.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Load {
     /// The chunk it enters.
@@ -867,7 +864,7 @@ pub(crate) struct Load {
     /// Where, in the structure's frame, m.
     pub at: Vec3,
     /// Kinetic cavity energy, J: a line's or fragment's source for [`crack`]. Zero for a blast,
-    /// whose pressure and impulse act through the blast laws, and for a body contact.
+    /// whose pressure and impulse act through the blast laws, and for a landing.
     pub energy: f32,
     /// The volume it crushes, m³: a line's or a fragment's energy over its chunk's crush energy
     /// ([`Material::crush`]); a blast's, its rays' Law 1 volumes ([`Material::crushed_by`]), which
@@ -881,22 +878,18 @@ pub(crate) struct Load {
     /// overpressure over the patches its rays load, into the faces ([`Blast::peak`]), its rays
     /// summed as if they arrive together (ASSUMED: one chunk's rays do). `None` where the source
     /// states none: a round's line (its blow is over before a section moves, ASSUMED), a fragment's
-    /// stop (an impulsive blow) and a body's contact (its force is its press). The force solve caps its one-tick average force by this peak.
+    /// stop (an impulsive blow) and a landing (its force is its press). The force solve caps its
+    /// one-tick average force by this peak.
     pub peak: Option<Vec3>,
     pub origin: Origin,
 }
 
-/// Whether a load supplies a field impulse or a contact force already integrated by physics.
+/// Whether a load supplies a field impulse or a landing force already integrated by physics.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Origin {
     /// A field (a round's line, a fragment, a blast): its blow is its own law's, and it has no
     /// mass to share with what it frees.
     Field,
-    /// A body's held contact on a placed construction at this tick: its press only. The body's
-    /// sweep exchanged its blow before physics (`construction::sweep`), so it never undergoes
-    /// another plastic exchange. Joint geometry supplies bearing directions; contacts supply
-    /// applied loads.
-    Contact { other: Entity, step: f32 },
     /// A moving group's own landing: the force its contact put on one of its chunks. Only the
     /// landing's part solve reads it, and a landing launches nothing.
     Landing,
@@ -4198,55 +4191,6 @@ mod tests {
             on_brick.mass != on_wood.mass && on_brick.velocity != on_wood.velocity,
             "a row changes the scab: {on_brick:?} vs {on_wood:?}"
         );
-    }
-
-    /// The game's environment destruction: a grained substance bears its along-grain strength
-    /// pushed along its grain, its across-grain strength pushed across it, and between them moves
-    /// monotonically with the angle (Hankinson's formula), whichever way the grain is laid. Every
-    /// shipped grained substance; `sweep::Geometry::plug`'s bearing limit relies on it.
-    #[test]
-    fn a_grain_bears_along_and_across_at_its_endpoints_and_monotonically_between() {
-        let registry = SubstanceRegistry::shipped_static();
-        let mut grained = 0;
-        for name in registry.keys() {
-            let Some(material) = Material::of(registry, name).ok().flatten() else {
-                continue; // Not breakable matter: no bearing law reads it.
-            };
-            let Grain::Unlaid { along } = material.grain else {
-                continue; // It bears alike every way.
-            };
-            grained += 1;
-            let across = material.compressive_strength;
-            // Fixture: an oblique grain.
-            let axis = Vec3::new(1.0, 2.0, 2.0) / 3.0;
-            let laid = material
-                .laid(crate::construction::schema::SurfaceFrame::Grain(
-                    axis.to_array(),
-                ))
-                .unwrap();
-            let side = axis.cross(Vec3::X).normalize().as_dvec3();
-            let at = |theta: f64| laid.bearing(axis.as_dvec3() * theta.cos() + side * theta.sin());
-            // Resolution: the grain axis is f32 (ulp 6e-8).
-            let close = |a: f64, b: f64| (a - b).abs() <= 1e-6 * b;
-            assert!(close(at(0.0), along), "{name}: along its grain");
-            assert!(
-                close(at(std::f64::consts::PI), along),
-                "{name}: either way along it"
-            );
-            assert!(
-                close(at(std::f64::consts::FRAC_PI_2), across),
-                "{name}: across it"
-            );
-            // Fixture: one-degree steps from the grain to across it.
-            let steps: Vec<f64> = (0..=90).map(|d| at(f64::from(d).to_radians())).collect();
-            assert!(
-                steps
-                    .windows(2)
-                    .all(|pair| (pair[1] - pair[0]) * (across - along) >= 0.0),
-                "{name}: monotonic between: {steps:?}"
-            );
-        }
-        assert!(grained > 0, "a shipped substance bears by its grain");
     }
 
     /// The game's environment destruction: an element that lays a grained substance with no grain,

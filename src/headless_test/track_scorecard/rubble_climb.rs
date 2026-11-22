@@ -191,9 +191,7 @@ fn read(
     let mut structure_up = [0.0; 4];
     for (point, force) in bed.solver_points() {
         let (collider, piece, force) = if point.other == bed.tank {
-            let collider = point
-                .other_collider
-                .expect("a solver contact names both of its colliders");
+            let collider = point.other_collider;
             (collider, point.reference, force)
         } else if point.reference == bed.tank {
             (point.reference_collider, point.other, -force)
@@ -1430,11 +1428,9 @@ fn wedge_read(bed: &mut Bed, tick: usize) -> Vec<Value> {
                     .solver_groups()
                     .flatten()
                     .filter_map(|p| {
-                        if p.reference_collider == other && p.other_collider == Some(collider) {
+                        if p.reference_collider == other && p.other_collider == collider {
                             Some(p.impulse)
-                        } else if p.reference_collider == collider
-                            && p.other_collider == Some(other)
-                        {
+                        } else if p.reference_collider == collider && p.other_collider == other {
                             Some(-p.impulse)
                         } else {
                             None

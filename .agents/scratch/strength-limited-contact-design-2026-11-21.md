@@ -1,10 +1,92 @@
-# Strength-limited contact: design check (2026-11-21)
+# Strength-limited contact
 
 Subject: the game's building model (game state only): what a moving body and a standing, bonded
-structure do to each other in the physics step. Nothing was built or run. Code is cited at `main`
-(`d10f30d9`) unless a lane is named; `bay-1` is `lane/cutter-geo` at `c1380911`. Every number is
+structure do to each other in the physics step. The design check below was written before anything
+was built or run; it cites code at `main` (`d10f30d9`) unless a lane is named; `bay-1` is `lane/cutter-geo` at `c1380911`. Every number is
 MEASURED (with its record), DERIVED (with its inputs) or ASSUMED. The 57.6 t hull, `house_1`,
 `hall_1` and `fir_1` are fixtures, never the spec.
+
+## As built (2026-11-22)
+
+This section is the law the game runs; it owns the narrative. Everything below it is the
+pre-build design check of 2026-11-21, kept as written: where the two differ, this section is the
+code. Measurements and the checkpoint tables are in
+`.agents/scratch/rubble-explore/cutter/mass-limited-build.md` and `commitment-pass.md`.
+
+### The law
+
+A standing cell returns a body no more than its bonds can. Each physics step, after the narrow
+phase, the cells one body presses on one construction are grouped into blocks of connected cells
+(`breakage::bounded`). A block is pushed along the body's travel at the block, along the force
+that persists on the body (drive, weight), and along each face the body presses. For each push
+the block has one way to give, the one that returns the body least this step
+(`fracture::bound`):
+
+- **Shear-out.** The pressed cells and the matter behind them along the push, up to a free face,
+  leave through that face. The price is a sum over the boundary joints of that plug: each opens at
+  its tensile strength and slides at its cohesion plus the friction of its gravity preload, and
+  spends its fracture energy. The work also carries a `StandIn` for the grip of standing matter
+  on a loosened plug, which the solver does not carry: each sliding joint's preload friction over
+  the plug's depth along the slide. Joints inside the plug carry nothing, so a wall is no stronger the
+  finer it is cut. Shut when the push runs into the ground or buried matter.
+- **Shed.** The pressed cells slide out sideways, through the cheapest side whose matter can
+  move. The joints the push closes rub under the push itself, so the bonds' resistance `R` is
+  passed at `P = R / (1 − μ)`. This form is a `StandIn`: it turns the whole push sideways
+  (`κ = 1`). The missing law is the sideways share of a push on a block, by the push's direction
+  and what backs the block.
+
+A price is a force `F` (N) and a work `W` (J); the give `W / F` is never authored. Over a step the
+block returns at most `F · dt`, and at most the work it has left at the speed the solver finds the
+body closing. That second bound holds no `dt`, which is what makes a fast body's loss independent
+of the tick. The bound belongs to the block, not to its points: a seam in `avian_ext`
+(`reaction_bound`) deals it to the block's contact points before every substep, each keeping what
+it carries and the rest going to the points the last solve left wanting, so the points' bounds
+always sum to the block's. The fork carries only the per-point clamp (`OVERMATCH_PATCH.md`,
+"Bounded contact").
+
+After the step, a block that returned all its bound did not stop its body, which crossed a share
+of the give. The share is kept per cell while the block keeps yielding; a cell whose block stopped
+its body, or is no longer pressed, forgets it. When the share reaches one the plug's boundary
+joints part, and it and whatever it alone held up leave at rest as ordinary rubble, routed by
+size. A belt's sampled support on standing matter is bounded by the same price before the step.
+The support check hears no contact: it reads weights.
+
+What stays rigid: an unbreakable element, a buried cell, a face slid along, and a block with no
+way open. `buried` is judged against the terrain at spawn (`Breakage::sited`), and a sited
+construction with a loose group is refused.
+
+### What was tried and lost
+
+- **The hull sweep** (main's law until this lane: a cast before physics, a minimum cut, a plastic
+  exchange). It predicted the body's path and charged a plug's strength over the tick; three
+  builds each stopped the hull on matter a real wall gives up. Deleted with its account, hook,
+  stage and tests.
+- **A crush price** for a boxed-in cell. 99 % of the crush-priced return at the hall junction was
+  pushes into the ground (MEASURED, checkpoint 2): it was a hold, not a way to give.
+- **The shed with a free closed joint** (the draft's literal form). It sheds at 77 kN (p50) and
+  strips the hall to 48 % in place (MEASURED, checkpoint 4): the closed joint's friction is real.
+- **An even share of a block's bound per point** (`EVEN_SHARE`, tried at 0.1, 0.25 and 0.5). Every
+  pass moved with it and not monotonically: the number did a law's work. The block-sum deal
+  replaced it and needs no number.
+- **A soft spring on yielding cells, a cap at the body's weight, turning freed cells to dust.**
+  Each was a rule on one kind of contact; none survived its own run.
+- **Give that is never forgotten.** With it the long wall crosses slower than either arm alone and
+  the junction still does not cross (MEASURED, checkpoint 1).
+- **A slower push-out speed** (0.5 m/s for Avian's 4). The house keeps less and frees twice the
+  pieces; the engine's default stays and the game states no number for it.
+- **Leaving with the pusher's momentum** (a plastic exchange at release) and **shared plugs**
+  (blocks whose plugs share cells answering from one bound). Neither was built: birth at rest is
+  at most 30 % of the worst junction tick (DERIVED from its rows), and shared plugs return 14 to
+  29 % of the stall's load, each group far under its largest bound (MEASURED, checkpoint 6).
+
+### Known and accepted
+
+The hall junction does not cross at any contact speed. It is a strength stall: the pile bears on
+one pier stub, mostly downward, and that block holds under its shed price, whose `1 / (1 − μ)` is
+the stand-in above (MEASURED, checkpoint 6). No number is tuned for it; the sideways share of a
+push is the law that would settle it.
+
+## The design check (2026-11-21)
 
 **Verdict: BUILD IT WITH CHANGES.** The candidate's core is right and is what the engine can carry:
 a standing cell answers through the solver with a bounded reaction, and it breaks loose by a
