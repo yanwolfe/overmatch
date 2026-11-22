@@ -51,8 +51,8 @@ advance(layout, state, timestamped_loads, interval)
     -> state_delta, geometry_edits, body_transfers, receiver_deposits, audit
 ```
 
-Occupied hull sweeps commit geometry and body transfers before contact solving (see Bodies in contact).
-Other sources enter as loads; a hull a cut holds presses through Avian's contacts like any body.
+Bodies meet standing matter through the contact solver, bounded by what its bonds hold (see Bodies in contact).
+Other sources enter as loads.
 The interface requires SI units, stable identities, event ordering and an explicit source budget.
 Its implementation owns local response, structural response, support assessment and representation changes.
 Callers do not decide which chunks fail.
@@ -348,300 +348,32 @@ Existing ring geometry may remain an angular sampling stand-in if it passes the 
 
 ### Bodies in contact
 
-Subject: the game's environment destruction, game state only. A moving body's occupied hull
-makes the hole before the physics contact solver runs (`construction::sweep`). Structural
-collapse remains the part graph's decision. Neither law names a vehicle or construction.
-
-One sweep source per rigid body owns motion, inertia and drive. A query-only binary bounds tree
-holds its convex contact hulls in exact body-local frames. Free groups prepare this tree from
-admitted data synchronously with spawn and split; articulated bodies snapshot their current
-collider frames. Each body makes one spatial query, then traverses each candidate construction's
-bounds tree. Buried matter remains soil-held. The permanent colliders and ordinary Avian contacts
-keep their existing jobs; no enclosing convex hull invents matter between the leaves.
-
-At each target leaf, visit source siblings by lower entry time. Rotation-only envelopes
-translate with the COM, so a slab query gives a conservative entry time. Only an inward exact
-convex hit may prune later source leaves. Every occupied target joins the body's patch once;
-the earliest inward witness supplies its contact response. Parry 0.31.1's
-`CompositeShapeRef::cast_shape_nonlinear` returns the first geometric hit, which can be tangent
-and hide another leaf's later inward hit; its first-hit composite query therefore cannot own this
-patch. Each touched construction resolves its sources in one task, in body entity order, because
-sources can compete for the same standing matter: all of them resolve on the construction's state
-at the tick's start, a released plug's cut commits to its topology at once, and every later
-source resolves again on the topology that cut left, with the gravity field solved on it
-(`parts::Assessment::resolved_on`), so every committed plug is a minimum cut for its own demand on
-the matter it meets. That solve is the owner's one factor for the topology the cut left: the next
-law stage adopts it while that topology stands (`parts::Assessment::next`), and a construction an
-earlier departure round of the tick cut resolves every source on it, with no first pass on the
-state it had. Constructions never meet in this sequence. Each source then exchanges once
-against all its plugs; departures prepare per construction, and their effects commit in (body,
-construction) order.
-
-The patch is the forced source of a directed graph over standing law chunks. Ground endpoints
-and chunks the sweep does not cover (including buried matter) are fixed sinks. Live, unseparated
-joints supply directed capacities for rigid translation along the contact direction `d`. With
-`n` pointing toward the moving side, let `o = n dot d` and `s = |d cross n|`.
-Both opening and compression measure the force resisting that translation:
-`C = R_n |o| + R_s s`. For compression, `R_n = max(B + p, 0)`:
-weaker-side bulk capacity `B = min(sigma_c,a, sigma_c,b) A` minus carried compression,
-plus the tension a closing load first unloads.
-A ground endpoint uses its chunk's strength: the ground is one rigid surface whose settlement is
-not simulated (the one-surface doctrine).
-For opening, `R_n = max(A T - p, 0)`. The shared `bondsolve::JointStrength` law supplies
-`R_s = A cohesion + mu max(-p, 0)` and tensile strength `T`; cracked seams and rests have
-zero cohesion and tension. `p` is existing normal force, positive in tension.
-DERIVED: for unit rigid translation, resistance equals the sum of independently limited
-normal and tangential traction work (Yastrebov, *Numerical Methods in Contact Mechanics*, 2013,
-[Eq. 4.53 and normal/tangential split Eq. 4.56](https://www.yastrebov.fr/LECTURES/Yastrebov_NMCM_Wiley_ISTE.pdf)).
-Both branches tend continuously to `R_s` at grazing. A purely normal translation has no sliding
-term. `sigma_c` is the data's quasi-static compression at the joint normal (`fracture::Material::bearing`),
-not cavity work or the dynamic compaction plateau: `bulk.blast.compressive_strength` for matter
-that bears alike every way; for grained matter, Hankinson's formula between
-`bulk.along_grain_compressive_strength` along its element's grain and that value across it (USDA
-FPL Wood Handbook FPL-GTR-282, 2021, Chapter 5, Eq. 5–2, exponent 2).
-The standing construction's gravity field supplies every joint's preload before optimization:
-part-law interface forces between parts, and `parts::Kernel::hold` under gravity plus those
-interface forces inside each part. The part forces are one more column of the owner's one
-equilibrium: `parts::Assessment` solves gravity alone on its own factor and contact active set
-whenever that factor changes, so contact loads (this body's press included) never enter the
-preload. The column is the structure law's last; the state can run one stage ahead of it (one
-stage per tick): a joint that cracked or opened since reads it at its current strength, and
-matter that left since still loads the interfaces below it. A sweep after an earlier cut in the
-same tick reads the column factored on that cut's topology instead, the factor the next law stage
-adopts.
-Each owner caches the preloads until that column or its standing chunks, cracks or separated
-joints change. Preloads stay fixed during optimization, including on supports beyond the seed
-patch; contact demand does not manufacture one.
-Intact kernels are the design's factored chunk kernels; kernels that differ from their design
-refactor. One interface pass assembles all boundary
-loads; kernels visit their chunks' own joint adjacency, with local hash indices. DERIVED: expected
-`O(chunks + joints)` indexing/traversal work per cold field, plus chunk triangular
-solves/factorisations; unchanged fields need only the linear topology signature.
-The grounded-singleton operation witness counts visits and forbids intact-kernel refactorisation.
-
-Goldberg–Tarjan push-relabel finds the minimum cut, with FIFO discharge and periodic global
-reverse-residual distance updates ([1988 paper](https://doi.org/10.1145/48014.61051)).
-Capacities round down and demand rounds up on a shared power-of-two force grid; push-relabel
-stores residuals and excess as `u128` grid units. Resolution: a 120-bit total capacity budget
-leaves integer headroom for reverse capacities and inlet supply. This chooses numerical
-precision, never material strength. Let `K` count positive finite directed capacities, `M` be
-their maximum, `e = floor(log2(M))`, and `l = ceil(log2(K))`. The quantum is
-`q = 2^max(e + 1 + l - 120, -1074)` N; an all-zero graph uses the smallest positive f64.
-DERIVED: their scaled integer sum is below `2^120`; each capacity loses less than `q`.
-Power-of-two scaling is exact except subnormal underflow, which also loses less than one unit.
-Every residual operation is exact integer arithmetic. One unit above the finite integer sum
-replaces infinity and bounds inlet supply; no finite minimum cut can cross such an arc.
-
-A synthetic inlet supplies the rounded demand, capped by that finite bound for larger
-demands. Sink inflow reaching supply certifies holding against the original demand:
-finite capacities were only lowered, and a cut below the inlet bound exists. Otherwise surplus
-returns to the inlet; residual reachability selects the smallest source-side grid minimum cut
-`S*`. No graph region is omitted. Its capacity is reported by summing original crossing
-capacities, rather than rounded flow. DERIVED tolerance: the chosen cut exceeds the true
-minimum by at most `K q` before reporting roundoff. The held/released uncertainty band is
-at most `(K + 1) q`, always biased toward release; holding has no upward tolerance.
-For comparison against exact decimal fixtures, including their
-input conversion and the reported sum, use `T = (K + 1) q + gamma_(K+1) Sigma`, where `Sigma`
-is the sum of all positive finite directed capacities, `gamma_j = j eps / (1 - j eps)`, and
-`eps = f64::EPSILON`. This bounds numerical resolution relative to the graph's capacities,
-not to an asset-specific force. A held cut's capacity and threshold telemetry remain certified
-lower bounds. The fractional-graph reference and single-ULP deficit witnesses guard both contracts.
-The plug can therefore include chunks beyond the occupied patch: compression transmits the push
-through a back layer or around a corner until perimeter joints or bulk crushing give way.
-Internal joints of `S*` carry no relative motion and contribute no cut capacity. A resting floor
-on anchored joists holds below its remaining bulk crushing reserve; sliding or lifting still reads the
-shared translation-resistance law.
-
-The demand is the peak force of the hull's impact on the patch plus its drive:
-`F = P(m_eff, v_n) + F_drive,n`, with `P` the Hertz peak force (Johnson 1985, §11.4) that
-landings use too (`contact_law::peak_force`): the witness chunk's material and volume-sphere
-radius on one side, the hull rigid and flat on the other (StandIn: no body data carries a hull's
-stiffness). DERIVED: the first inward surface witness supplies the contact mass
-`m_eff = 1 / (1/m + (r cross n) dot I_world^-1 (r cross n))`, as in Avian 0.8.0's
-`ContactNormalPart::generate` against a fixed target. The lever `r` starts at the moving centre
-of mass; inertia is in world coordinates at contact time, with Avian's locked-axis response.
-No physics step enters the demand. The inward drive adds to it: all Avian integrates before
-its contact solve, accumulated and constant forces and gravity, on the body's free axes (a hull
-its belts hold at rest on level ground drives nothing vertically). The cast reads the same
-motion: DERIVED, Avian's `N` substeps carry a body no contact touches `v dt + a dt² (N + 1)/(2N)`,
-which the cast's one velocity reaches at the tick's end; that velocity decides only the reach, the
-contact pose and which motion is inward. The witness's time and speed come from the same motion
-along the contact normal: the cast closes a gap `d` there, and the body closes it at the first `t`
-in the tick with `d = v_n t + ½ a_n t²`, `v_n` the point's closing speed at the tick's start, at
-speed `v_n + a_n t`, never negative. A body resting on matter closes at its rest and loads the cut
-with its drive alone (MEASURED: a 231 kg body on a standing 8 m³ brick chunk read 20.96 kN,
-9.2 times its weight, while the cast's speed stood in for the impact speed, and 2,266.1 to
-2,266.7 N against its 2,266.1 N weight once at rest now); a falling
-one meets matter at the speed its fall reaches there, not at the cast's straight-path time (DERIVED
-in the witness test: 1.265 m/s at 0.632 s, where the cast's time reads 0.8 m/s at 0.4 s). If
-`F > C`, break the minimum cut and
-remove its whole plug `S*` from the standing construction. Otherwise the sweep does nothing to
-the hull: **Avian owns the stop** (owner decision, 2026-11-07). Its contact solver, speculative
-points included, stops the hull at matter whose cut holds as it stops a hull at any obstacle; the
-structure check hears none of it (below). Its reach stops at the cut's, through the collision hook the boundary paragraph
-below states (`sweep_intake::SweepContacts`). Without it Avian's linearised look-ahead
-braked and lifted the hull at standing matter no cut judged: MEASURED on the tracked ram
-(`tracked_ram_sweep_opens_within_two_ticks_and_accounts_for_momentum`, the 57 t hull at
-10.8 m/s), both ticks' cuts released, yet standing chunks outside the cast took 0.77 m/s off the
-hull and lifted it 0.63 m/s at impact +1. With the hook the house moves the hull through no
-unjudged matter, and the hull reads 10.82 m/s at +1 and 10.37 m/s at +2 (playtest fork F19,
-decided by this measurement). The rejected alternative: the sweep stopping the hull itself (a time-of-impact pose, a stop
-impulse and a press of its own), with a collision hook that dropped Avian's look-ahead points
-on covered chunks so the two stops did not meet. That answered one contact with three readings
-of it (the cut's `m_eff`, the press's whole mass and the body's centre-of-mass stop plus a free
-couple).
-
-DERIVED: for a fixed patch, `v_threshold` is the speed whose peak force is `max(0, C - F_drive,n)`:
-`δ = (3P / (4 E* √R))^(2/3)`, `v = √(16 E* √R δ^(5/2) / (15 m_eff))`; it grows as
-`(C - F_drive,n)^(5/6)`. Motion just above it breaks the cut. Strength, mass and drive come from data and
-rigid-body state; no authored speed threshold or construction-specific adjustment enters the law.
-
-All chunks freed by one source in a tick share one plastic rigid-motion exchange, including
-occupied inertia and off-centre torque. DERIVED: with chunk spatial mass matrix `K` about the
-source centre and source inverse response `R`, solve
-`(identity + R*K) * twist_after = twist_before` in six coordinates. Each chunk leaves with
-`v_after + omega_after cross r` and spin `omega_after`; the source takes the opposite total
-linear and angular impulse. DERIVED dissipated energy is half the exchanged spatial impulse
-dotted with the incoming twist. Locked axes route their reactions to the hosting constraint.
-The account exposes removed kinetic energy and outgoing chunk kinetic energy separately.
-
-`breakage::sweep_intake::sweep_departure` is the departure boundary: construction identity,
-chunk identities, world rigid motion and authoritative tick. Internal joints stay intact. The
-cut also frees matter already disconnected from every ground path, before standing refit.
-Swept matter inherits the hull's plastic exchange; an unsupported remainder starts at rest.
-Freed server bodies join the same tick's sweep as sources, from their prepared launch and
-gravity, under the entity each spawns as; a departure that releases more matter exchanges with
-it before it spawns. Rounds repeat until one frees no server body, at most `DEPARTURE_ROUNDS`
-past the first (MEASURED: the tracked ram's busiest tick needs 2); past that cap the newest
-departures are swept from the next tick and, like a body woken during the step, keep Avian's
-contacts this tick: no cast is no verdict. Before this, the freed plug, pushed by the hull, met
-standing remainder in the solver that no cut judged: 84 % of the hull's momentum change at +2.
-Below-floor merging (`crumble::merge_fragments`) projects their combined linear and angular
-momentum onto the merged rigid body.
-All freed fragments use the shared size route described under **Size split**;
-resolved rubble stays on the server and meets the hull through ordinary Avian contacts. The
-standing owner removes the chunks immediately; clients derive the hole from the joint ledger
-at the same presentation tick. Dust-only hull departures are rejected: they remove matter from
-the tank's path.
-A belt reaction staged on matter a cut took away (a chunk that left, or the chunk at its point of
-an element that swapped to chunks) is cancelled on its source before integration. One staged on
-matter that stands keeps its support. A
-sweep never enters the structural pulse/work calculation. Why the cancellation: the track law
-stages a belt's reaction against the surface it read before the sweep runs, and a reaction from
-matter the sweep removed has no surface to come from. Staging belts after the sweep instead would
-move the drive the cut reads into the next tick and reorder the track law's schedule for one
-consumer. Cancelling every reaction on a retiring element collider would take one tick of real
-support, `F dt`, from the matter that stands beside the cut. The drive a cut reads
-keeps the belt reactions staged against its own owner: the floor's traction drives a hull into a
-wall of the same house, so taking out the owner's whole staged set would drop a real press, and
-the plug that would bound the subtraction to the matter cut is what the cut itself decides.
+Subject: the game's environment destruction, game state only. A standing cell returns a body no
+more than its bonds can, through the physics contact solver, and a cell pushed across its give
+leaves at rest as ordinary rubble. Structural collapse remains the part graph's decision. Neither
+law names a vehicle or construction. The law, its terms, what was tried and lost (the hull sweep
+that stood here until 2026-11-22 among them) and what is known and accepted are in
+`.agents/scratch/strength-limited-contact-design-2026-11-21.md`, "As built"; the modules are
+`construction::fracture::bound` (the prices), `construction::breakage::bounded` (the step) and
+`avian_ext::reaction_bound` (the solver seam).
 
 **A standing construction's structure check hears no contact.** It reads its own weight and the
 field impulses of rounds and bursts; no solver transfer from any body, awake or asleep, enters it
-(`a_standing_structure_hears_no_contact`). What a body does to standing matter is the sweep's to
-judge, cell by cell; matter the sweep holds stops the body in the solver and stands. Why: the
-contact reading fed the check a solver reaction, whose size is the solver's stop of the body and
-not a load the body brings, a law stage late; a hull held against a wall felled the building
-behind it through that reading while the sweep held every cell it touched. The price, accepted: a
-body's weight resting on a floor does not load the floor's supports, so a floor fails under its
-own weight or a field, never under what stands on it.
+(`a_standing_structure_hears_no_contact`). What a body does to standing matter is the contact
+law's to judge, block by block. The price, accepted: a body's weight resting on a floor does not
+load the floor's supports, so a floor fails under its own weight or a field, never under what
+stands on it.
 
-Exact sweep membership and Avian's speculative contact envelope differ. The sweep casts admitted
-hulls with the motion Avian integrates before its solve; Avian constrains separated hulls
-against projected contact planes, and a body another body pushes within the solve can close a
-gap its own free motion opens (a freed chunk stands only `LOOSE_GAP_M` off the faces it shared).
-The hook drops those separated points on covered chunks outside the touching body's cast, Avian's
-contact tolerance band included; a body the sweep did not cast keeps every point. The support-gap
-coincidence with gravity reach, and its dependence on tick rate and substeps, is stated at
-`LOOSE_GAP_M`; retaining the pair through Avian's minimum speculative margin does not remove it.
+The gravity preloads the prices read are one more column of the owner's one equilibrium:
+`parts::Assessment` solves gravity alone on its own factor and contact active set whenever that
+factor changes, so contact loads never enter the preload. The column is the structure law's last;
+the state can run one stage ahead of it (one stage per tick): a joint that cracked or opened since
+reads it at its current strength, and matter that left since still loads the interfaces below it.
 
-The game's warm-start matcher treats unknown feature IDs as absent identities: those contacts
-match only by nearby anchors. The fork hook and its class witnesses are recorded in
-`vendor/avian3d-0.8.0-overmatch/OVERMATCH_PATCH.md`, "Warm-start matching".
-
-A cut reads the touching body's own motion and drive, and a pusher reaches it through an
-estimated press from the last step's solver contacts with every body but standing construction.
-At each point, let `Jn = normal · J` and `S = m_eff × max(closing_speed, 0)`. The reading is
-`(J - normal × Jn + normal × max(Jn - S, 0)) / dt`: friction stays whole, and the normal remainder
-cannot pull or exceed the compression the point transferred. An unused speculative point reads
-zero. This is a **StandIn for the missing coupled contact response**, not an exact separation of
-blows from presses (`sweep_intake::pushes`): `S` estimates the momentum that point would need to
-stop the approach alone, while manifolds and separate contacts share the actual stop. It can
-replay part of a blow or under-read a simultaneous press; velocity already holds the blow.
-
-DERIVED bound for a uniform box with equal stopping shares at its four face corners: with face
-sides `a, b` and thickness `c`, `Σ m_eff / m = 4 / (1 + 3a²/(a²+c²) + 3b²/(b²+c²)) ≥ 4/7`.
-Thus at most `3/7` (about 43%) of a pure normal stop remains as press, approached in the thin-box
-limit. Unequal allocations and shared stops have only the pointwise bound
-`0 ≤ Jn_press ≤ max(Jn, 0)`, not that fraction. Tangential stopping momentum is not subtracted;
-soft-contact pushout and restitution can also read as press. Discarding each point's first
-positive substep is not an exact alternative: Avian's speculative response can still allow
-closing. MEASURED on the force-free 2 × 1 × 0.25 m slab fixture, 943 N·s of its 998 N·s transfer
-arrived after those first positive substeps. The steady-force class witness checks that a press
-continues to transmit through one manifold or two supports, with full and halved warm starts.
-
-Without the contact reading a pusher's force reached standing
-matter only through the solver contact the structure check reads, a law stage late, while the cuts
-ahead of the pushed body read that body's own demand: MEASURED on the tracked ram, from +3 the hull
-meets the house only through rubble, which took 150.2 and 105.7 kN·s off the hull at +3 and +4
-while the standing house took 167.7 and 84.7 kN·s from it, all through contacts the rubble's own
-cuts judged. MEASURED before removing approach momentum: the house took 35.7 kN·s from rubble at +4,
-the pushed rubble freed 322 chunks there instead of 146, and the hull ran 4.77 m past first
-contact by +60 instead of 4.33; +3 still held it through rubble, as the hull's push first entered
-at +2 at 4.4 kN·s. The remaining lag is one step: a press that ended last step drives one step
-more, and a press that starts this step waits a step. The input reads every solver constraint
-once, independent of body classification; standing construction's contacts are excluded because
-its cut judges them. `StructureBody` selects structural reporting only, so hull-on-hull and
-rubble-on-hull contacts both transmit drive. Implicit belt contacts already enter as applied
-forces. Per-batch folds run on the compute pool; only their per-body sums merge in batch order
-(DERIVED: two per-body map updates per contact point, then one per batch body entry on merge).
-
-The band is the default for a push's first step, a decision and not a judgement: matter a pushed body is driven into gives way, the
-body overlaps it by at most `Δv dt` for one tick (DERIVED: 3 cm for a 2 m/s shove at 64 Hz), and the next tick's sweep judges it from inside (MEASURED:
-the narrow form left a departure the hull pushed taking about 97 kN·s at one tick from standing
-colliders its own cast never reached). Overlapping points keep the solver's contact on any chunk,
-so "every solver contact against standing matter was judged by a cut" holds by construction only
-for separated points: an overlap moves momentum unjudged while it lasts (a body sliding along a
-face, a piece leaning on a side face, a soft-contact pushout). The tracked ram asserts the stronger
-form every tick of one straight ram, reading "judged" from the sweep's own patches before the laws
-commit; nothing else covers it, and it prints what such contacts move into bodies it did not cast.
-Rejected: casting a
-swept body's overlapping and in-band covered chunks into its patch at closing speed `max(v_n, 0)`,
-so the hook could drop every non-member point. In the band it re-holds the plug the band releases,
-against a demand that omits the pusher behind it (the 97 kN·s departure returns); in an overlap
-`max(v_n, 0) = 0` and the inward drive is nil (an inward drive would have made the chunk a
-member), so the cut holds by construction, `0 ≤ C`. It buys a label at a cut per touching pair per
-tick and changes no outcome. Contingent: casting a source together with the bodies touching it as
-one rigid group, the push's coupled replacement, if the owner's play verdict after removing
-approach momentum is that rubble holds a ram against a house. DERIVED cost: one contact-graph
-grouping pass per tick, O(source contact pairs), with at least the push law's casts at the push
-tick, at the pusher's reach (0.16 m at 10.4 m/s and 64 Hz). One cut per (group, owner) replaces
-one per (piece, owner): 1 against 14 at +3 in the audited ram; its cost relative to the push law
-is UNMEASURED. CLAIMED implementation estimate: 60–100 code lines. It deletes `pushes` and the
-band default, but treats loosely coupled piles as welded. Post-contact speed is the sweep's plastic exchange
-and Avian's contacts: with cast members whose cut held, released bodies, uncovered matter (buried
-or unbreakable), overlaps, and every contact of a body the sweep did not cast.
+A moving group's landings crumble it (`debris::crumble`), from the solver's transfers
+(`contact_transfer`).
 
 Round and field impulse laws retain their own fracture-work and launch accounts.
-
-DERIVED angular bounds: under rotation about a fixed axis, each corner coordinate of a leaf's
-local box is `c + a cos t + b sin t`; its extrema over the tick are the endpoints and the
-stationary phases the turn reaches, whatever the turn count (`sweep::rotation_bounds`). A body's
-query box merges its leaves' rotation envelopes and adds its COM travel. Exact nonlinear casts
-decide occupied membership.
-
-DERIVED sweep work: bounds-tree traversal and exact casts choose the occupied source patch;
-live construction joints build the directed graph only on an occupied contact event. Generic
-push-relabel has a capacity-independent `O(V² E)` work bound and `O(V + E)` storage; monotone
-labels and current-arc scans retain that bound. Global relabelling follows one graph-sized amount
-of discharge scans, amortising its traversal. On the grounded compression chain, routing and
-returning the surplus take linear visits, rather than one whole-graph search per support; the
-operation witness covers up to 32,768 chunks. Independent constructions retain parallel geometry.
-`SweepAccount::work.flow` reports nodes and residual edge pairs (including the synthetic inlet,
-source and anchors), global/local relabels, residual arc scans, and pushes.
-The plastic solve has fixed dimension and exchanges the whole plug's mass. Counts are separate
-from structural-check and decoration work and are not server-time measurements. The owner's
-hole-within-two-contact-ticks gate remains.
 
 **Trees are constructions by the same laws.**
 The prop generator authors one convex trunk element. The common cutter's grain-stretched
@@ -1108,7 +840,7 @@ v = P/M
 
 Use actual surviving geometry in each term.
 A standing structure is rigid to the solver, so no structural response has moved a group before it breaks free.
-The group leaves with its source momentum once: the sweep's resulting velocity field, or the field impulse remaining after fracture work (see Bodies in contact).
+A group a field frees leaves with the field impulse remaining after fracture work; one a body pushes free leaves at rest (see Bodies in contact).
 
 A rigid carrier is acceptable while internal relative motion is negligible.
 Retain unresolved elastic energy and seam history.
@@ -1152,9 +884,9 @@ invented supports.
 
 A failed seam partitions ownership at the same authoritative tick. `PendingSplit` creates children after the law stage and before publication.
 Children inherit `v + omega cross r` at their actual occupied centres of mass and the parent's
-angular velocity; their whole occupied hulls partition the parent’s occupied geometry. A chunk occupies its whole hull standing and freed: the game's rounds and the sweep's targets read it, and the parent body owns its occupied mass, inertia and centre. Only contact is separated: a freed chunk's contact hull, also its sweep source, sets each face carrying one of its joints back `LOOSE_GAP_M` (a `Resolution` against Parry's zero-distance normal noise, its basis beside the constant), and keeps every other face. A freed chunk therefore carries two colliders: its occupied hull, a sensor met only by rounds, and its contact hull. DERIVED: the occupied sensor adds one collider-tree leaf and one AABB refit per chunk per awake step; its empty collision filter creates no contact pair. This adds no kinetic energy. The existing
+angular velocity; their whole occupied hulls partition the parent’s occupied geometry. A chunk occupies its whole hull standing and freed: the game's rounds read it, and the parent body owns its occupied mass, inertia and centre. Only contact is separated: a freed chunk's contact hull sets each face carrying one of its joints back `LOOSE_GAP_M` (a `Resolution` against Parry's zero-distance normal noise, its basis beside the constant), and keeps every other face. A freed chunk therefore carries two colliders: its occupied hull, a sensor met only by rounds, and its contact hull. DERIVED: the occupied sensor adds one collider-tree leaf and one AABB refit per chunk per awake step; its empty collision filter creates no contact pair. This adds no kinetic energy. The existing
 fracture-work criterion is a threshold, not a resolved cohesive dissipation/strain model.
-The sweep exchanges body momentum before physics; field departures retain their field-impulse launch.
+Field departures retain their field-impulse launch.
 
 `Piece` carries birth and retirement ticks (protocol revision **60**, a deliberate wire
 change shared with the module repair snapshot). A retired parent's final pose remains
@@ -1466,7 +1198,7 @@ A quoted spring force alone supplies none of the missing acceleration coupling.
 |---|---|
 | Small-hole fidelity | **Decided:** a hole is a negative volume, drawn only; rounds, mass and strength ignore it (see Local response and holes). |
 | Rubble persistence and mobility | **Provisional (2026-10-31):** retain gameplay-relevant occupied geometry throughout the match; let mass, friction and track contact determine climbing or pushing. Fine presentation debris may fade. |
-| Collision loads | **Decided:** occupied body sweeps make holes by momentum and joint capacity before physics; remaining contacts feed the structural check as forces (see Bodies in contact). |
+| Collision loads | **Decided:** standing matter answers a body through the solver, bounded by its bonds' force and work, and leaves when pushed across its give; the structural check hears no contact (see Bodies in contact). |
 | Contact-damage scope | **Decided (2026-10-31):** wall material never doses a tank, whether it falls, is pushed or is thrown off a hit; walls still fracture on landing and under pushing loads. |
 | Accepted strength-scaled spall | **Decided (2026-10-31):** wall ejecta are debris with no dose; the tanks' strength-scaled spall cone stays (see Spall as ejecta). |
 | Three-property material model | **Provisional (2026-10-31):** keep the summary, add sourced constitutive and attachment profiles; do not infer missing properties from strength. |
