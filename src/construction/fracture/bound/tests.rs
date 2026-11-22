@@ -12,6 +12,7 @@ struct Wall {
     kind: Arc<ConstructionKind>,
     state: State,
     preload: Vec<f64>,
+    work: Vec<f64>,
 }
 
 impl Wall {
@@ -24,6 +25,7 @@ impl Wall {
             .get(&kind.structure, &state, &kind.equilibrium)
             .to_vec();
         Self {
+            work: vec![0.0; kind.structure.chunks.len()],
             kind,
             state,
             preload,
@@ -36,6 +38,7 @@ impl Wall {
             state: &self.state,
             shapes: &self.kind.layout.blocks,
             preload: &self.preload,
+            work: &self.work,
         }
     }
 
@@ -109,10 +112,12 @@ fn a_backed_block_leaves_through_the_free_face_behind_it() {
     );
 }
 
-/// Invariant: a cell returns its strength for no longer than a body takes to cross its give, so
-/// what a fast body loses to it is `W / v` whatever the step, and what a slow one loses is
-/// `F dt`. Relied on by the tick-rate independence of a ram. Mutant: `F dt` alone (the fast
-/// body's loss halves with the step). Fixture price and speeds.
+/// Invariant: a cell returns its strength for no longer than a body takes to do the work its
+/// bonds have left, so what a fast body loses to it is `W / v` whatever the step, what a slow
+/// one loses is `F dt`, and work already taken is not returned again. Relied on by the
+/// tick-rate independence of a ram. Mutants: `F dt` alone (the fast body's loss halves with the
+/// step); the work taken ignored (worked bonds return a fast body the whole `W / v`). Fixture
+/// price and speeds.
 #[test]
 fn a_cell_returns_its_strength_for_no_longer_than_its_give() {
     let price = Price {
@@ -135,13 +140,14 @@ fn a_cell_returns_its_strength_for_no_longer_than_its_give() {
         ));
         assert_eq!(reaction(price, 0.0, 0.0, step), price.force * step);
     }
-    // Give already crossed is not returned again.
     assert!(close(
-        reaction(price, 0.75, fast, dt),
+        reaction(price, 0.75 * price.work, fast, dt),
         0.25 * price.work / fast,
         1e-12
     ));
-    assert!(close(crossed(price, slow, dt), slow * dt / give, 1e-12));
+    // Spent bonds return a closing body nothing, and hold one that is not closing.
+    assert_eq!(reaction(price, 2.0 * price.work, slow, dt), 0.0);
+    assert_eq!(reaction(price, price.work, 0.0, dt), price.force * dt);
 }
 
 /// Invariant: a leaf pressed along its own length sheds the cells pressed, through its face, at
@@ -212,8 +218,8 @@ fn a_push_into_the_ground_sheds_sideways_against_its_own_friction() {
             closing: 5.0,
             lean: 0.0,
         };
-        assert_eq!(standing.give_along(&top, along_the_face, 0.0, dt), None);
-        standing.give_along(&top, down, 0.0, dt).unwrap()
+        assert_eq!(standing.give_along(&top, along_the_face, dt), None);
+        standing.give_along(&top, down, dt).unwrap()
     };
     assert_eq!((given.way, &given.leaves), (Way::Shed, &top));
     // What slides when the cells leave through either face, from the fixture's geometry: the

@@ -4,6 +4,7 @@ use avian3d::prelude::*;
 
 use super::super::tests::composed_kind;
 use super::*;
+use crate::construction::fracture::bound::Price;
 use crate::construction::tests::wall_construction;
 
 /// Fixture: a brick leaf 6 m long, 2.4 m high and 0.25 m thick in 1 m by 0.6 m cells, and a
@@ -12,11 +13,10 @@ const WALL: Vec3 = Vec3::new(6.0, 2.4, 0.25);
 const BOX: Vec3 = Vec3::new(2.0, 1.2, 2.0);
 const START: Vec3 = Vec3::new(0.0, 1.0, -1.3);
 
-/// The box of `mass` kg sent at `speed` m/s, after 2.5 s: where its centre is along z (m), its
-/// speed along z (m/s) and the cells the wall lost.
-fn sent(mass: f32, speed: f32) -> (f32, f32, usize) {
+/// The fixture wall with a box of `mass` kg at `at`, moving at `speed` m/s along +z.
+fn wall_and_box(mass: f32, at: Vec3, speed: f32) -> (App, Entity, Entity) {
     let kind = wall_construction(WALL, [6, 4, 1], "Brick");
-    let (mut app, _) = composed_kind(false, &kind);
+    let (mut app, root) = composed_kind(false, &kind);
     for _ in 0..3 {
         app.update();
     }
@@ -24,7 +24,7 @@ fn sent(mass: f32, speed: f32) -> (f32, f32, usize) {
         .world_mut()
         .spawn((
             RigidBody::Dynamic,
-            Position(START),
+            Position(at),
             Rotation::default(),
             Collider::cuboid(BOX.x, BOX.y, BOX.z),
             Mass(mass),
@@ -34,6 +34,18 @@ fn sent(mass: f32, speed: f32) -> (f32, f32, usize) {
             SleepingDisabled,
         ))
         .id();
+    (app, root, body)
+}
+
+/// The work `root`'s cells have taken, J, per chunk.
+fn work(app: &App, root: Entity) -> Vec<f64> {
+    app.world().get::<Breakage>(root).unwrap().live.work.clone()
+}
+
+/// The box of `mass` kg sent at `speed` m/s, after 2.5 s: where its centre is along z (m), its
+/// speed along z (m/s) and the cells the wall lost.
+fn sent(mass: f32, speed: f32) -> (f32, f32, usize) {
+    let (mut app, _, body) = wall_and_box(mass, START, speed);
     let mut freed = 0;
     for _ in 0..160 {
         app.update();
@@ -66,41 +78,131 @@ fn a_leaf_gives_to_a_body_its_bonds_cannot_stop_and_stops_one_they_can() {
     );
 }
 
-/// Fixture: one force on a belt's body, staged once.
-#[derive(Resource)]
-struct Once(Option<crate::contact_transfer::StagedForce>);
+/// Invariant: a cell's bonds take the work a body does on them and no more, they never give it
+/// back, and a block leaves on the step its cells' work reaches a way's and on no other. The
+/// stall the law replaced was this count lost; every body meeting standing matter relies on it.
+/// The bound on the work is the body's own loss: with no gravity and nothing else touching it,
+/// what its kinetic energy fell by is the most its contacts did on anything. Mutants: the work
+/// counted once per give that holds a point, or at the price in place of what was returned (it
+/// passes the body's loss); the count cleared on a step that frees nothing (a cell's work
+/// falls); a block freed short of its work or kept past it. Fixture: 57 t at 4.5 m/s and at
+/// 0.5 m/s, the energy read until the first cells leave and become bodies of their own.
+#[test]
+fn bonds_take_the_work_done_on_them_once_and_part_when_it_reaches_their_price() {
+    for speed in [4.5_f32, 0.5] {
+        let mass = 57_000.0_f32;
+        let (mut app, root, body) = wall_and_box(mass, START, speed);
+        let lost = |app: &App| {
+            let after = app.world().get::<LinearVelocity>(body).unwrap().0;
+            0.5 * f64::from(mass) * f64::from(speed * speed - after.length_squared())
+        };
+        let mut before = work(&app, root);
+        let mut parted = false;
+        for tick in 0..160 {
+            app.update();
+            let now = work(&app, root);
+            assert!(
+                before.iter().zip(&now).all(|(before, now)| now >= before),
+                "tick {tick}: a cell's work fell"
+            );
+            let account = app.world().resource::<BoundAccount>();
+            let reached = (account.blocks.iter()).any(|block| block.taken >= block.price[1]);
+            assert_eq!(
+                reached,
+                !account.freed.is_empty(),
+                "tick {tick}: cells leave when a block's work reaches its price, and only \
+                 then: {:?}",
+                account.blocks
+            );
+            if !parted {
+                let (taken, lost) = (now.iter().sum::<f64>(), lost(&app));
+                assert!(
+                    // f32 velocities.
+                    taken <= lost * (1.0 + 1e-4),
+                    "tick {tick} at {speed} m/s: the cells took {taken} J of the {lost} J the \
+                     box lost"
+                );
+            }
+            parted |= !account.freed.is_empty();
+            before = now;
+        }
+        assert!(parted, "at {speed} m/s the box frees cells");
+    }
+}
 
-fn press_once(
-    mut once: ResMut<Once>,
+/// Invariant: work is force through an advance, so a body that does not advance does none: one
+/// pushed back out of the cells it overlaps, and one held against them by a force they bear.
+/// Rubble born beside standing matter and rubble resting on it rely on this not to wear a
+/// building away. Mutants: the advance read before the solve, or its sign dropped (the body
+/// pushed out does work); the work counted from the impulse alone (the held body's grows every
+/// step). Fixture: a 1 t box 50 mm inside the leaf's face and at rest; the same box touching the
+/// face under 5 kN, read over 6 s after 1 s to settle.
+#[test]
+fn a_body_pushed_out_or_held_does_no_work() {
+    let face = -WALL.z / 2.0 - BOX.z / 2.0;
+    let (mut app, root, _) = wall_and_box(1000.0, Vec3::new(0.0, 1.0, face + 0.05), 0.0);
+    for _ in 0..64 {
+        app.update();
+        assert!(app.world().resource::<BoundAccount>().freed.is_empty());
+    }
+    assert_eq!(work(&app, root).iter().sum::<f64>(), 0.0);
+
+    let (mut app, root, body) = wall_and_box(1000.0, Vec3::new(0.0, 1.0, face + 0.001), 0.0);
+    (app.world_mut().entity_mut(body)).insert(ConstantForce(Vec3::Z * 5000.0));
+    for _ in 0..64 {
+        app.update();
+    }
+    let settled = work(&app, root).iter().sum::<f64>();
+    for _ in 0..384 {
+        app.update();
+    }
+    let account = app.world().resource::<BoundAccount>();
+    let least = (account.blocks.iter())
+        .map(|block| block.price[1])
+        .fold(f64::INFINITY, f64::min);
+    let grown = work(&app, root).iter().sum::<f64>() - settled;
+    assert!(
+        // The solver leaves a held body a residual speed of f32 rounding.
+        least.is_finite() && grown < 1e-5 * least,
+        "held for 6 s, the cells took {grown} J against a price of {least} J"
+    );
+}
+
+/// Fixture: one force on a belt's body, staged every tick while set.
+#[derive(Resource)]
+struct Staging(Option<crate::contact_transfer::StagedForce>);
+
+fn press(
+    staging: Res<Staging>,
     mut transfers: ResMut<ContactTransfers>,
     mut bodies: Query<Forces>,
 ) {
-    if let Some(force) = once.0.take() {
+    if let Some(force) = staging.0 {
         (bodies.get_mut(force.body).unwrap()).apply_force_at_point(force.force, force.point);
         transfers.stage(force);
     }
 }
 
-/// Invariant: a belt takes from standing matter no more than its bonds return, and the cells it
-/// presses past that leave. `track::rubble::record_static_contacts` stages a belt's whole force
-/// on fixed construction and relies on this to cap it. Mutants: [`bound_belts`] unmounted (the
-/// body keeps the whole force and nothing leaves), the force taken back with its sign flipped
-/// (the body gains more than the force), the pressed cells never queued (nothing leaves).
-/// Fixture: a 1 t body clear of the wall and at rest, pushed off the middle of the wall's face
-/// for one tick with four times what the cell there returns.
-#[test]
-fn a_belt_keeps_what_standing_matter_returns_and_the_rest_leaves() {
+/// Fixture: the cell (3, 2, 0) of the wall's 1 m by 0.6 m cells, which a belt presses at the
+/// centre of its near face.
+const PRESSED: usize = 3 + 6 * 2;
+
+/// What a way of giving holds, and the cells that leave by it.
+type Parting = (Price, Vec<usize>);
+
+/// The fixture wall with [`press`] mounted, a body of `mass` kg without a collider 5 m before
+/// the middle of the face of one cell, and what that cell holds against a push through the
+/// leaf, with the cells that leave: through its far face, and shed sideways. Returns the app, a
+/// force of nothing staged on the cell for the caller to size, the two ways and the step.
+fn wall_and_belt(mass: f32) -> (App, crate::contact_transfer::StagedForce, [Parting; 2], f64) {
     let kind = wall_construction(WALL, [6, 4, 1], "Brick");
     let (mut app, root) = composed_kind(false, &kind);
-    app.insert_resource(Once(None)).add_systems(
-        FixedPostUpdate,
-        press_once.in_set(BeltSet).before(bound_belts),
-    );
+    app.insert_resource(Staging(None))
+        .add_systems(FixedPostUpdate, press.in_set(BeltSet).before(bound_belts));
     for _ in 0..3 {
         app.update();
     }
-    // The cell (3, 2, 0) of the fixture's 1 m by 0.6 m cells, at the centre of its near face.
-    let (pressed, point) = (3 + 6 * 2, Vec3::new(0.5, 1.5, -WALL.z / 2.0));
+    let (pressed, point) = (PRESSED, Vec3::new(0.5, 1.5, -WALL.z / 2.0));
     let dt = f64::from(
         app.world()
             .resource::<Time<Fixed>>()
@@ -108,49 +210,101 @@ fn a_belt_keeps_what_standing_matter_returns_and_the_rest_leaves() {
             .as_secs_f32(),
     );
     let mut intact = Breakage::new(kind, 0);
-    let push = Push {
-        along: DVec3::Z,
-        closing: 0.0,
-        lean: 1.0,
-    };
-    let given = (standing(&mut intact).give_along(&[pressed], push, 0.0, dt))
+    let standing = standing(&mut intact);
+    let through = (standing.shear_out(&standing.plug(&[pressed], DVec3::Z), DVec3::Z))
         .expect("a single leaf gives through its far face");
+    let shed = (standing.shed(&[pressed], DVec3::Z)).expect("a leaf sheds a cell");
     let world = app.world_mut();
     let structure_collider = (world.query_filtered::<(Entity, &ColliderOf), With<Element>>())
         .iter(world)
         .find_map(|(collider, of)| (of.body == root).then_some(collider))
         .unwrap();
-    let mass = 1000.0;
     let body = world
         .spawn((
             RigidBody::Dynamic,
-            Position(Vec3::new(0.0, 1.5, -5.0)),
+            // In line with the force, which then turns nothing.
+            Position(point - Vec3::Z * 5.0),
             Rotation::default(),
             Mass(mass),
             NoAutoMass,
             SleepingDisabled,
         ))
         .id();
-    world.resource_mut::<Once>().0 = Some(crate::contact_transfer::StagedForce {
+    let force = crate::contact_transfer::StagedForce {
         structure: root,
         structure_collider,
         body,
         point,
-        force: Vec3::NEG_Z * (4.0 * given.impulse / dt) as f32,
+        force: Vec3::ZERO,
+    };
+    (app, force, [(through, vec![pressed]), shed], dt)
+}
+
+/// Invariant: a belt takes from standing matter no more than its bonds return, and a belt that
+/// does not advance into the cells frees none. `track::rubble::record_static_contacts` stages a
+/// belt's whole force on fixed construction and relies on this to cap it. Mutants:
+/// [`bound_belts`] unmounted (the body keeps the whole force), the force taken back with its
+/// sign flipped (the body gains more than the force), cells freed by an over-push alone (they
+/// leave under a belt the push drives away). Fixture: a 1 t body clear of the wall and at rest,
+/// pushed off the cell's face for one tick with four times the least force it holds.
+#[test]
+fn a_belt_keeps_what_standing_matter_returns() {
+    let mass = 1000.0;
+    let (mut app, force, ways, dt) = wall_and_belt(mass);
+    let holds = ways[0].0.force.min(ways[1].0.force);
+    app.world_mut().resource_mut::<Staging>().0 = Some(crate::contact_transfer::StagedForce {
+        force: Vec3::NEG_Z * (4.0 * holds) as f32,
+        ..force
     });
     app.update();
-    let kept = -f64::from(app.world().get::<LinearVelocity>(body).unwrap().0.z * mass);
+    let kept = -f64::from(app.world().get::<LinearVelocity>(force.body).unwrap().0.z * mass);
     assert!(
         // f32 integration over the step's substeps.
-        (kept - given.impulse).abs() < 1e-3 * given.impulse,
+        (kept - holds * dt).abs() < 1e-3 * holds * dt,
         "the body keeps {kept} N·s of the {} N·s the cell returns",
-        given.impulse
+        holds * dt
     );
+    assert!(app.world().resource::<BoundAccount>().freed.is_empty());
+}
+
+/// Invariant: a belt's force on standing cells is read as a contact point's is: the cells take
+/// what they returned times the belt's advance into them, and leave when that reaches the work
+/// of a way to give, not before. A hull whose belts ride onto standing matter relies on it; the
+/// staged force has no solver point to be read from. Mutants: the belt's points not counted
+/// (the cells never leave), cells freed by the press alone (they leave on the first tick).
+/// Fixture: a body too heavy for the force to slow, advancing at 2 mm/s under half the least
+/// force the cell holds, so the cell's least work is due after `W / (F v dt)` ticks. The last
+/// step's work is rationed to what is left and a ration is met from below, so the sum lands on
+/// the price a few steps late.
+#[test]
+fn cells_a_belt_advances_into_leave_when_its_work_reaches_their_price() {
+    let (mut app, force, ways, dt) = wall_and_belt(1e9);
+    let pressing = 0.5 * ways[0].0.force.min(ways[1].0.force);
+    let (least, leaves) = (ways.iter())
+        .min_by(|(a, _), (b, _)| a.work.total_cmp(&b.work))
+        .unwrap();
+    let advance = 0.002;
+    (app.world_mut().entity_mut(force.body)).insert(LinearVelocity(Vec3::Z * advance as f32));
+    app.world_mut().resource_mut::<Staging>().0 = Some(crate::contact_transfer::StagedForce {
+        force: Vec3::NEG_Z * pressing as f32,
+        ..force
+    });
+    let due = least.work / (pressing * advance * dt);
+    assert!(due > 8.0, "fixture: the work takes several ticks, {due}");
+    let mut ticks = 0.0;
+    while app.world().resource::<BoundAccount>().freed.is_empty() {
+        app.update();
+        ticks += 1.0;
+        assert!(
+            ticks < due + 6.0,
+            "the cell stands past its work, {due} ticks"
+        );
+    }
     let freed: Vec<usize> = (app.world().resource::<BoundAccount>().freed.iter())
         .map(|&(_, c)| usize::from(c))
         .collect();
-    assert_eq!(
-        freed, given.leaves,
-        "the cells pressed past their bound leave"
+    assert!(
+        ticks >= due.floor() && freed == *leaves,
+        "cells {freed:?} left after {ticks} ticks; the work is due after {due}"
     );
 }

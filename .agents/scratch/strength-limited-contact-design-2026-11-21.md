@@ -44,12 +44,15 @@ it carries and the rest going to the points the last solve left wanting, so the 
 always sum to the block's. The fork carries only the per-point clamp (`OVERMATCH_PATCH.md`,
 "Bounded contact").
 
-After the step, a block that returned all its bound did not stop its body, which crossed a share
-of the give. The share is kept per cell while the block keeps yielding; a cell whose block stopped
-its body, or is no longer pressed, forgets it. When the share reaches one the plug's boundary
-joints part, and it and whatever it alone held up leave at rest as ordinary rubble, routed by
-size. A belt's sampled support on standing matter is bounded by the same price before the step.
-The support check hears no contact: it reads weights.
+After the step, every contact point on a standing cell adds to that cell the normal impulse it
+returned times the speed its body advances into the cell there as the solve left it (a body held
+or parting adds nothing), and nothing removes it: the work is kept per cell on the construction
+(`Live::work`) and leaves with the cell. A block is charged with all the work on its cells,
+whatever body or direction did it. When that reaches the work of a way the block gives, the
+least first, that way's boundary joints part, and its cells and whatever they alone held up leave
+at rest as ordinary rubble. A belt's sampled support on standing matter is bounded by the same
+price before the step and its work is counted the same way, from the force the belt kept and its
+body's advance. The support check hears no contact: it reads weights.
 
 What stays rigid: an unbreakable element, a buried cell, a face slid along, and a block with no
 way open. `buried` is judged against the terrain at spawn (`Breakage::sited`), and a sited
@@ -70,8 +73,11 @@ construction with a loose group is refused.
   replaced it and needs no number.
 - **A soft spring on yielding cells, a cap at the body's weight, turning freed cells to dust.**
   Each was a rule on one kind of contact; none survived its own run.
-- **Give that is never forgotten.** With it the long wall crosses slower than either arm alone and
-  the junction still does not cross (MEASURED, checkpoint 1).
+- **Give counted at the price on the steps a block read as spent**, forgotten on any other step
+  (the law until the work form above) or never forgotten: kept, the long wall crossed slower than
+  either arm alone and the junction still did not cross (MEASURED, checkpoint 1); forgotten, a
+  plain wall held a slowed hull inside cells that never left
+  (`.agents/scratch/rubble-explore/cutter/work-form.md`).
 - **A slower push-out speed** (0.5 m/s for Avian's 4). The house keeps less and frees twice the
   pieces; the engine's default stays and the game states no number for it.
 - **Leaving with the pusher's momentum** (a plastic exchange at release) and **shared plugs**

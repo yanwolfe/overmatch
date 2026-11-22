@@ -2,7 +2,7 @@
 //! "Bounded contact") and the game's seam behind it, `crate::avian_ext::reaction_bound`, in the
 //! game's building model (game state only). A standing cell returns no more than its bonds can
 //! (`construction::fracture::bound`), so a bounded point must return its bound over the step and no more,
-//! say so, and an unbounded or unreached bound must leave the contact rigid.
+//! read what it returned, and an unbounded or unreached bound must leave the contact rigid.
 
 use avian3d::prelude::*;
 use bevy::ecs::system::RunSystemOnce;
@@ -56,29 +56,21 @@ fn hand_over(
     }
 }
 
-/// Whether every group ended the last step spent, and how many there were.
-fn held(bounds: Res<Bounds>, named: Res<Named>) -> (bool, usize) {
-    (
-        named.0.iter().all(|&group| bounds.spent(group)),
-        named.0.len(),
-    )
+/// What the groups' points returned between them over the last step, N·s.
+fn returned(bounds: Res<Bounds>, named: Res<Named>) -> f32 {
+    named.0.iter().map(|&group| bounds.returned(group)).sum()
 }
 
 /// Fixture: a box of `mass` kg closing at `approach` m/s, without gravity, on a slab whose four
 /// face points each take `each`; returns its speed after each of four updates, and what
-/// [`held`] reports.
-fn press(mass: f32, approach: f32, each: Option<Hand>) -> (Vec<f32>, Vec<(bool, usize)>) {
+/// [`returned`] reads.
+fn press(mass: f32, approach: f32, each: Option<Hand>) -> (Vec<f32>, Vec<f32>) {
     press_beside(mass, approach, each, false)
 }
 
 /// [`press`]; with `idle`, a second box rests on the slab beside the first, closing on nothing,
 /// so its face points carry no load.
-fn press_beside(
-    mass: f32,
-    approach: f32,
-    each: Option<Hand>,
-    idle: bool,
-) -> (Vec<f32>, Vec<(bool, usize)>) {
+fn press_beside(mass: f32, approach: f32, each: Option<Hand>, idle: bool) -> (Vec<f32>, Vec<f32>) {
     let mut app = super::avian_child_pose_churn::physics_app();
     app.insert_resource(Gravity(Vec3::ZERO))
         .insert_resource(Each(each))
@@ -115,17 +107,19 @@ fn press_beside(
     for _ in 0..4 {
         app.update();
         speeds.push(app.world().get::<LinearVelocity>(cube).unwrap().0.y);
-        reports.push(app.world_mut().run_system_once(held).unwrap());
+        reports.push(app.world_mut().run_system_once(returned).unwrap());
     }
     (speeds, reports)
 }
 
-/// A bounded point returns its bound over the step, whatever the approach needs, and reports
-/// that it did; a bound the approach does not reach leaves the contact rigid and reports that.
-/// Fixture: a 2 kg box closing on a slab at 1 m/s, which a rigid contact stops with 2 N·s
-/// through its four face points; each bounded at 0.125 N·s, it loses 0.5 N·s a step.
-/// Mutants: the fork's clamp removed (the box stops); the bound given whole to each substep (the
-/// loss is the substep count times larger).
+/// A bounded point returns its bound over the step, whatever the approach needs, and what its
+/// points read as returned is the momentum the body lost; a bound the approach does not reach
+/// leaves the contact rigid. The building model's work account (`breakage::bounded::release`)
+/// relies on the reading. Fixture: a 2 kg box closing on a slab at 1 m/s, which a rigid contact
+/// stops with 2 N·s through its four face points; each bounded at 0.125 N·s, it loses 0.5 N·s a
+/// step. Mutants: the fork's clamp removed (the box stops); the bound given whole to each
+/// substep (the loss is the substep count times larger); the reading taken from the last
+/// substep alone (it reads the substep count times too little).
 #[test]
 fn a_bounded_point_returns_its_bound_over_the_step() {
     let (mass, bound, approach) = (2.0, 0.125, 1.0);
@@ -139,25 +133,21 @@ fn a_bounded_point_returns_its_bound_over_the_step() {
     };
     let (rigid, _) = step(None);
     assert!(rigid[3] >= 0.0, "a rigid contact stops the box: {rigid:?}");
-    let (generous, reports) = step(Some(mass * approach));
+    let (generous, _) = step(Some(mass * approach));
     assert!(
-        generous[3] >= 0.0 && reports[3] == (false, 4),
-        "a bound the approach does not reach stops the box and is not held: {generous:?}, \
-         {reports:?}"
+        generous[3] >= 0.0,
+        "a bound the approach does not reach stops the box: {generous:?}"
     );
-    let (bounded, reports) = step(Some(bound));
-    assert!(
-        // The app's first update runs no physics step.
-        reports[1..].iter().all(|&report| report == (true, 4)),
-        "each of the four points ends every step at its bound: {reports:?}"
-    );
+    let (bounded, returned) = step(Some(bound));
     let losses: Vec<f32> = (bounded.windows(2))
         .map(|pair| (pair[1] - pair[0]) * mass)
         .collect();
-    for loss in &losses {
+    // The app's first update runs no physics step.
+    for (loss, returned) in losses.iter().zip(&returned[1..]) {
         assert!(
-            (loss - 4.0 * bound).abs() < 1e-3 * 4.0 * bound,
-            "each step returns {} N·s: {losses:?} from {bounded:?}",
+            (loss - 4.0 * bound).abs() < 1e-3 * 4.0 * bound
+                && (returned - loss).abs() < 1e-3 * loss,
+            "each step returns {} N·s and reads it: lost {losses:?}, read {returned:?}",
             4.0 * bound
         );
     }
@@ -177,8 +167,7 @@ fn a_work_bounded_point_takes_its_work_at_the_speed_it_is_crossed() {
         ..Bound::RIGID
     }));
     for approach in [4.0, 8.0] {
-        let (speeds, reports) = press(mass, approach, each);
-        assert!(reports[1..].iter().all(|&report| report == (true, 4)));
+        let (speeds, _) = press(mass, approach, each);
         for pair in speeds.windows(2) {
             let taken = 0.5 * mass * (pair[0] * pair[0] - pair[1] * pair[1]);
             // An impulse `W / v` at speed `v` moves the energy `W − W² / (2 m v²)`: the second
@@ -217,7 +206,7 @@ fn a_group_returns_its_bound_over_the_step_whatever_the_split() {
         ..Bound::RIGID
     };
     for idle in [false, true] {
-        let (speeds, reports) = press_beside(mass, approach, Some(Hand::Block(most)), idle);
+        let (speeds, _) = press_beside(mass, approach, Some(Hand::Block(most)), idle);
         let losses: Vec<f32> = (speeds.windows(2))
             .map(|pair| (pair[1] - pair[0]) * mass)
             .collect();
@@ -229,7 +218,7 @@ fn a_group_returns_its_bound_over_the_step_whatever_the_split() {
         // falls; a later step's starts from what the points carried into it. f32 otherwise.
         assert!(
             losses[1..].iter().all(|&loss| loss >= bound * 0.999),
-            "idle {idle}: each later step returns {bound} N·s: {losses:?}, spent {reports:?}"
+            "idle {idle}: each later step returns {bound} N·s: {losses:?}"
         );
     }
 }

@@ -52,10 +52,10 @@ forward over the step (`src/net/ram.rs`, `HullRow`): solver momentum by the othe
 N s. The belts' implicit support and traction and gravity are not channels, so the channels do
 not sum to m·Δv. `blocks` is every block of standing cells the step bounded
 (`construction::breakage::bounded`): the pressing `body` (`hull` when it is the ram's tank), the
-block's `cells`, the `way` it gives soonest, its price (`force_n`, `work_j`), the body's speed
-along the push after the step, the most it could return (`bound_ns`) and what it did
-(`returned_ns`), whether it returned all of it (`yielded`) and the share of its give crossed
-(`spent`; one frees it). `freed` counts the cells the step freed.
+block's `cells`, the `way` its work reaches first, its price (`force_n`, `work_j`), the body's
+speed along the push at the step's start, the most it could return (`bound_ns`) and what it did
+(`returned_ns`), and the work its cells' bonds have taken after the step (`taken_j`; `work_j`
+frees it). `freed` counts the cells the step freed.
 `impact.speed_m_s` is the horizontal speed of the row before first contact. `result.json` adds
 `min_forward_m_s`, `largest_forward_change_m_s`, `crossing_s` and `stall_s`, from the contact tick
 on, each defined in its `definitions`. The server's last line adds `structure`, the struck
