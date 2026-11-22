@@ -28,8 +28,7 @@
 //!   that stops on such a body pushes it the same way, through avian at the point it stops.
 //!   Terrain and other nonstructural surfaces only shade the field.
 //! * **Contacts**: a standing cell returns a body no more than its bonds can, and cells pushed
-//!   across their give leave at rest ([`bounded`]), routed by size
-//!   ([`crate::debris::crumble::route`]). No contact loads a placed construction's structure
+//!   across their give leave at rest ([`bounded`]). No contact loads a placed construction's structure
 //!   check, from a body awake or asleep: it reads the construction's own weight and field
 //!   impulses. A moving group's landings crumble it ([`crate::debris::crumble`]).
 //! * **The order.** Tick intake reads one geometry snapshot. Each owner runs removal and
@@ -116,7 +115,8 @@ const ON_GRADE_M: f32 = 1e-4;
 /// corner: that chunk is buried.
 #[derive(Clone, Copy)]
 pub(crate) enum Site<'a> {
-    /// Level ground at the frame's grade: a fixture's, and what a kind is admitted on.
+    /// Level ground at the frame's grade: a fixture's, and the site a kind's shared structure is
+    /// built for ([`Live::sited`]).
     Level,
     /// The map's ground under a construction placed at this pose.
     Terrain(&'a crate::terrain_grid::HeightGrid, Isometry3d),
@@ -573,8 +573,6 @@ pub(crate) struct Live {
     pub(crate) gravity: fracture::parts::Gravity,
     /// Per law chunk: its holes, in record order (module doc).
     pub(crate) holes: Vec<Vec<Hole>>,
-    /// Parted joints retained only as carrier grouping at rubble resolution, never as strength.
-    pub(crate) rubble_joints: Vec<usize>,
 }
 
 impl Live {
@@ -621,7 +619,6 @@ impl Live {
             assessment: Arc::new(fracture::parts::Assessment::default()),
             gravity: fracture::parts::Gravity::default(),
             holes: vec![Vec::new(); structure.chunks.len()],
-            rubble_joints: Vec::new(),
             structure,
         }
     }
@@ -640,16 +637,6 @@ impl Live {
             assessment: Arc::new(fracture::parts::Assessment::default()),
             gravity: fracture::parts::Gravity::default(),
             holes: self.holes.clone(),
-            rubble_joints: self
-                .rubble_joints
-                .iter()
-                .copied()
-                .filter(|&j| {
-                    let joint = &self.structure.joints[j];
-                    group.binary_search(&joint.a).is_ok()
-                        && matches!(joint.b, Side::Chunk(b) if group.binary_search(&b).is_ok())
-                })
-                .collect(),
         };
         child.state.retain_group(group);
         child
@@ -1145,7 +1132,6 @@ struct DepositParam<'w, 's> {
     clock: Option<Res<'w, ShotClock>>,
     fixed: Res<'w, Time<Fixed>>,
     record: ResMut<'w, Record>,
-    shed: MessageWriter<'w, crate::debris::crumble::Shed>,
     commands: Commands<'w, 's>,
     /// The moving bodies a blast's rays meet ([`moving_near`]) and push.
     spatial: SpatialQuery<'w, 's>,
@@ -1426,7 +1412,6 @@ struct OwnerEffects {
     events: Vec<Event>,
     split: Option<PendingSplit>,
     departures: Vec<PreparedDeparture>,
-    sheds: Vec<crate::debris::crumble::Shed>,
     solves: usize,
 }
 
@@ -1471,93 +1456,12 @@ fn evaluate_owner(
         }))
         .chain(blast)
         .collect();
-    let before = live.state.separated.clone();
-    let mut changes = run_laws(&kind.layout.element_of, live, &loads, holes, spin, step);
-    let parted: Vec<_> = live
-        .state
-        .separated
-        .iter()
-        .enumerate()
-        .filter_map(|(j, &now)| (now && !before[j]).then_some(j))
-        .collect();
-    let (groups, sources): (Vec<_>, Vec<_>) =
-        std::mem::take(&mut changes.groups).into_iter().unzip();
-    let groups = crate::debris::crumble::merge_fragments(
-        &live.structure,
-        groups,
-        &parted,
-        &mut live.rubble_joints,
-    );
-    let owners: HashMap<_, _> = groups
-        .iter()
-        .enumerate()
-        .flat_map(|(g, chunks)| chunks.iter().map(move |&c| (c, g)))
-        .collect();
-    let mut regrouped = vec![Vec::new(); groups.len()];
-    for load in sources.into_iter().flatten() {
-        regrouped[*owners
-            .get(&load.chunk)
-            .expect("each departing load belongs to one departing group")]
-        .push(load);
-    }
-    // A carrier which did not split releases no new fragment. Its existing matter stays with it:
-    // the size split routed it when it formed.
+    let changes = run_laws(&kind.layout.element_of, live, &loads, holes, spin, step);
+    // A carrier which did not split releases no new fragment.
     let unchanged = moving.is_some_and(|owned| {
-        groups.len() == 1
-            && groups[0]
-                .iter()
-                .copied()
-                .eq(owned.iter().map(|&c| usize::from(c)))
+        changes.groups.len() == 1
+            && (changes.groups[0].0.iter().copied()).eq(owned.iter().map(|&c| usize::from(c)))
     });
-    let sheds = if unchanged {
-        changes.groups = groups.into_iter().zip(regrouped).collect();
-        Vec::new()
-    } else {
-        // Groups partition matter, so each one's first chunk names its loads.
-        let mut loads: HashMap<usize, Vec<Load>> =
-            groups.iter().map(|group| group[0]).zip(regrouped).collect();
-        let mut record = Record::default();
-        let (kept, sheds) = crate::debris::crumble::route(
-            &live.structure,
-            (construction, construction_pose),
-            groups,
-            |light| {
-                // One task per decor group: each launch reads only its own chunks and loads.
-                pool.scope(|scope| {
-                    for group in light {
-                        let (kind, structure, loads) = (&kind, &live.structure, &loads[&group[0]]);
-                        scope.spawn(async move {
-                            let launch = launch(kind, structure, group, loads);
-                            let at = construction_pose.transform_point(launch.centre);
-                            ReleasedMotion {
-                                velocity: motion.velocity
-                                    + motion.spin.cross(at - motion.centre)
-                                    + construction_pose.rotation * launch.velocity,
-                                spin: motion.spin + construction_pose.rotation * launch.spin,
-                                centre: at,
-                            }
-                        });
-                    }
-                })
-            },
-            tick,
-            &mut record,
-        );
-        crate::debris::crumble::mark_dust(&mut live.state, &sheds);
-        changes
-            .events
-            .extend(record.entries.into_iter().map(|entry| entry.event));
-        changes.groups = kept
-            .into_iter()
-            .map(|group| {
-                let loads = loads
-                    .remove(&group[0])
-                    .expect("each kept group is one the laws released");
-                (group, loads)
-            })
-            .collect();
-        sheds
-    };
     // Moving matter already has a carrier; only surviving field loads push it.
     let fields = if moving.is_some() {
         field_blows(&loads, &live.state).copied().collect()
@@ -1620,7 +1524,6 @@ fn evaluate_owner(
         solves: changes.solves,
         split,
         departures,
-        sheds,
     }
 }
 
@@ -1785,7 +1688,6 @@ fn apply_deposits(mut p: DepositParam) {
             // Records, source impulses and carrier creation keep source-entity order,
             // independent of worker completion. Every owner commits once after tick intake.
             for effect in effects {
-                p.shed.write_batch(effect.sheds);
                 let frame = frames[&effect.root];
                 if !effect.fields.is_empty() {
                     let (mut body, _) = p
@@ -2944,8 +2846,8 @@ pub(crate) struct PendingSplit {
 
 impl PendingSplit {
     /// A crumble's split of moving group `breakage` into `groups` at `tick`
-    /// ([`crate::debris::crumble`]): each keeps its share of the parent's state, and an owned
-    /// chunk in no group leaves the simulation with the parent's retirement.
+    /// ([`crate::debris::crumble`]), which partition it: each keeps its share of the parent's
+    /// state.
     pub(crate) fn of(breakage: &Breakage, groups: Vec<Vec<usize>>, tick: u32) -> Self {
         let children = groups
             .into_iter()
@@ -3297,8 +3199,7 @@ pub(crate) struct ReplicaSet;
 pub(crate) fn sim_plugin(app: &mut App) {
     crate::collider_rehome::plugin(app);
     bounded::plugin(app);
-    app.add_message::<crate::debris::crumble::Shed>()
-        .init_resource::<Queue>()
+    app.init_resource::<Queue>()
         .init_resource::<Record>()
         .add_observer(read_shell)
         .add_observer(set_off)

@@ -906,8 +906,8 @@ bodies and retained carriers remain for the separate pricing lane to measure.
 ### Crumble on landing
 
 Subject: the game's environment destruction, game state only. A released group cracks where its
-landing's force runs; its light fragments leave the simulation for the players' decoration.
-Code: `src/debris/crumble.rs` (law and size split), `src/debris/decor.rs` (view).
+landing's force runs, and every fragment stays a server body.
+Code: `src/debris/crumble.rs`.
 
 **Law.** A landing is a physics step in which `contact_transfer` delivers a moving group a blow
 past its rest speed (Avian's linear `SleepThreshold`, the split between a blow and a press). The
@@ -940,7 +940,7 @@ the pass. The field is solved again on what is left until it holds (at most 16 p
 `Resolution`); once a joint parts, a touched fragment takes only its share `m_f / M` of the
 landing's force, the momentum a plastic stop of that fragment alone needs (DERIVED). Cracks lie
 where the force runs, and a short drop cracks nothing. The law runs on the authority alone
-(ADR-0037): players receive the dust record, the sheds and the pieces. Everything it builds lives
+(ADR-0037): players receive the record and the pieces. Everything it builds lives
 for the pass, so no sim state is added (ADR-0014).
 
 Energy is conserved, not capped. A crack absorbs its fracture work `G × A`: its seam's fracture
@@ -964,45 +964,15 @@ This replaces the moving group's contact load (the decided **Collision loads** r
 every source" now covers fields and placed constructions only); that reading is the owner's to
 confirm.
 
-**Size split.** A fragment stays a server body when its size, the cube root of its occupied
-volume, reaches `server_rubble_min_size_m` (`crumble::server_body`,
-`assets/ballistics/physical_laws.ron`), whatever its mass, so a long splinter counts as small.
-It is one game-scale `Taste` for every material (which freed matter the player sees stay solid),
-tuned by eye from 0.5 m. The owner decided this on 2026-11-06 and rejected a mass floor, because
-it ties the floor to material: fir at about 450 kg/m³ would need more than 1 m³ to reach 500 kg,
-and boards would never break free. Weight was allowed if it were cheaper for the same result, and
-it is not: server cost follows the number of server bodies and their contacts, not their weight,
-and a weight floor scaled by each material's density selects exactly the pieces this volume floor
-selects, so weight changes the result only where density differs, the case the owner rejected.
-A body serves hulls and rounds at once, so the same number
-decides what both meet. Its server cost is an observation, which #306's price measures: a volume
-V of collapsed matter leaves at most V / size³ bodies (DERIVED). A smaller fragment merges
-through a joint parted in this event into another departing fragment, the largest joint area
-first (ties by joint identity); retained absorption joints preserve grouping without restoring
-strength. A fragment with no such neighbour becomes decor.
-The shared `route` serves hull cuts, structure releases and landings, each fragment with its own
-release motion: resolved fragments stay server bodies; decor writes its chunks as dust at the
-event's tick and sends one `Shed` (construction, chunks, frame pose, velocity, spin, seed, tick)
-to every player on `DebrisChannel`, reliable and unordered. At 0.5 m (DERIVED from the
-construction files), the shipped house keeps as bodies its whole piers, gables, wall plates and
-six of its seven sills; a whole lintel (0.47–0.48 m) or roof board (0.40–0.42 m) is smaller, as is
-every single chunk (0.12–0.42 m). The shipped fir keeps its whole trunk (1.06 m), none of its
-single chunks (0.22–0.44 m).
-A replica refuses a shed whose chunks its map cannot hold or whose
-motion is not finite.
-
-**Decoration.** Each player draws a shed from the event alone at the shared presentation cursor
-(ADR-0037): the chunks' own mesh in the constructions' surface material (holes are not drawn),
-flying the closed form of gravity, velocity and spin, resting where a hull corner first meets the
-terrain height field closing on it, then shrinking away. A piece that starts on the ground (a swept
-ground-floor patch) rests there only if its own motion closes on it; moving away or along, it
-flies on until it next closes. A shed of a world not yet selected (one that outran its Battle's
-identity) waits for that world, and one of a world left behind goes; the world boundary retires
-every drawn piece and every shed still due (`decor::reconstruct`). Its lifetime is seeded within
-`construction_decor.lifetime_s` and its fade is `fade_s` (both `Taste`,
-`assets/vfx/presentation.ron`); at most 256 are drawn at once (`Resolution`, a draw-call bound),
-the oldest going first. It has no body and no collider, so no hull, round or server body meets
-it, and two players drawing one event at one cursor draw one pose.
+**Every fragment is a body.** Matter freed at a contact release, a structure release or a
+landing stays a server body whatever its size, so hulls and rounds meet all of it; only a named
+law removes matter (a crush, the play-area floor). Rejected, and deleted: a size floor
+(`server_rubble_min_size_m`, 0.5 m by the cube root of volume, with smaller fragments merged into
+a neighbour leaving in the same event or sent to the players as collider-less decoration). Under
+the contact law it turned most of the wall in a hull's path into decoration, since that law frees
+a small plug per block per tick; its server cost was never priced (#306). A mass floor was
+rejected before it, because it ties the floor to material. The pricing and the readings behind
+the deletion are in `.agents/scratch/rubble-explore/cutter/brick-account.md`.
 
 **MEASURED** on the shipped house's element with the most internal joints (74 chunks, 1,792 kg),
 landing on the ground on its lowest chunks: it cracks nothing below a 1.1 cm drop (0.46 m/s,
@@ -1010,9 +980,8 @@ DERIVED from the seams' strengths and the two sides' stiffness, `a_short_drop_la
 weakest seam slipping in cohesion-only shear first; at four times that speed it cracks 121 bonds and
 parts 109 joints into 20 fragments, the cracks taking 79 J of 3,081 J. The rest of this paragraph
 was measured on the running-bond bake, whose element was 66 chunks of 0.74–48 kg, 1,712 kg: from
-10 m it cracked 28 bonds, parted 19 joints and stayed one server body. Through one corner chunk, a 1 cm drop (28.6 kN
-peak) cracks nothing; 10 cm (114 kN) cracks 108 bonds into 21 fragments, 3 kept as server bodies;
-10 m, 44 fragments, 1 kept. The cracks absorb 82–117 J of the landing's 1.7–168 kJ. The corner's
+10 m it cracked 28 bonds and parted 19 joints. Through one corner chunk, a 1 cm drop (28.6 kN
+peak) cracks nothing; 10 cm (114 kN) cracks 108 bonds into 21 fragments; 10 m, 44 fragments. The cracks absorb 82–117 J of the landing's 1.7–168 kJ. The corner's
 peak against this ground is close to the step-based force it replaced, so the corner's breakup
 does not come from the solver's step. A landing that cracks nothing costs 1.0 M scalar
 operations, the kernel's factorization included, this element having lost its anchors (DERIVED); a

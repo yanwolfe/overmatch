@@ -474,12 +474,6 @@ pub(super) fn cut(
         live.state.fate[c] = Fate::Fallen;
     }
     fragments.extend(fracture::loose_groups(&live.structure, &live.state));
-    let fragments = crate::debris::crumble::merge_fragments(
-        &live.structure,
-        fragments,
-        &boundary,
-        &mut live.rubble_joints,
-    );
     for &c in fragments.iter().flatten() {
         live.state.fate[c] = Fate::Fallen;
         live.swapped[usize::from(kind.layout.element_of[c])] = true;
@@ -487,30 +481,17 @@ pub(super) fn cut(
     fragments
 }
 
-/// `fragments` of `breakage` ([`cut`]) leaving at rest from `pose`: each routed by size
-/// ([`crate::debris::crumble::route`]) to a prepared body or a decoration.
+/// `fragments` of `breakage` ([`cut`]) leaving at rest from `pose`, each a prepared body.
 pub(super) fn depart(
-    breakage: &mut Breakage,
+    breakage: &Breakage,
     pose: Transform,
     fragments: Vec<Vec<usize>>,
     tick: u32,
-    record: &mut Record,
     reusable: &ReusableColliders,
-) -> (Vec<PreparedDeparture>, Vec<crate::debris::crumble::Shed>) {
-    let rest = ReleasedMotion::at_rest(pose.translation);
-    let (kept, sheds) = crate::debris::crumble::route(
-        &breakage.live.structure,
-        (breakage.construction, pose),
-        fragments,
-        |light| vec![rest; light.len()],
-        tick,
-        record,
-    );
-    // Root state changes only after every worker has finished reading it.
-    let departures = ComputeTaskPool::get().scope(|scope| {
-        let breakage = &*breakage;
+) -> Vec<PreparedDeparture> {
+    ComputeTaskPool::get().scope(|scope| {
         let kind = &breakage.kind;
-        for group in kept {
+        for group in fragments {
             scope.spawn(async move {
                 let launch = launch(kind, &breakage.live.structure, &group, &[]);
                 prepare_group(
@@ -527,9 +508,7 @@ pub(super) fn depart(
                 )
             });
         }
-    });
-    crate::debris::crumble::mark_dust(&mut breakage.live.state, &sheds);
-    (departures, sheds)
+    })
 }
 
 #[derive(bevy::ecs::system::SystemParam)]
@@ -546,7 +525,6 @@ struct Release<'w, 's> {
     clock: Option<Res<'w, ShotClock>>,
     record: ResMut<'w, Record>,
     queue: ResMut<'w, Queue>,
-    shed: MessageWriter<'w, crate::debris::crumble::Shed>,
     commands: Commands<'w, 's>,
     stages: Option<Res<'w, Stages>>,
 }
@@ -623,10 +601,8 @@ fn release(mut p: Release) {
         let fragments = cut(&mut owner, &plug, tick, &mut p.record);
         // A construction without children has no chunk collider to rehome.
         let reusable = reusable_colliders(p.children.get(root).ok(), &p.chunk_entities);
-        let (departures, sheds) =
-            depart(&mut owner, pose, fragments, tick, &mut p.record, &reusable);
+        let departures = depart(&owner, pose, fragments, tick, &reusable);
         (p.account.freed).extend(plug.iter().map(|&c| (construction, c as u16)));
-        p.shed.write_batch(sheds);
         p.queue.0.push(RawDeposit {
             changed: vec![root],
             ..default()

@@ -10,19 +10,13 @@
 //! index is its `MapInstance.ordinal` (bound into the map digest the handshake compares); a chunk's
 //! and a joint's are the bake's, read from the same construction file on both ends.
 //!
-//! A fallen group rides its own carrier (`debris_stress::Carrier`), its chunks on it once. A
-//! fragment a crumble shed goes to every player once, reliably, tagged with its world
-//! ([`WorldShed`]) and held until that world is selected ([`HeldSheds`]); a late joiner takes
-//! none, since decoration is presentation only.
+//! A fallen group rides its own carrier (`debris_stress::Carrier`), its chunks on it once.
 
 use super::view_clock::ViewClock;
 use crate::debris::PresentationClock;
-use crate::debris::crumble::Shed;
 use bevy::ecs::error::Result;
 use bevy::prelude::*;
 use bevy_replicon::prelude::{DiffIndex, Diffable, EntityCommandsDiffExt};
-use lightyear::link::prelude::Endpoint;
-use lightyear::prelude::server::Server;
 use lightyear::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -116,18 +110,11 @@ impl Diffable for Ledger {
     }
 }
 
-/// A shed fragment on the wire, with the world it was shed in.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub(crate) struct WorldShed {
-    pub(crate) world: WorldGeneration,
-    pub(crate) shed: Shed,
-}
-
 pub(super) fn install_server(app: &mut App) {
     super::world_reset::register_constructor(app, spawn_ledger);
-    app.add_message::<Shed>().add_systems(
+    app.add_systems(
         FixedPostUpdate,
-        (publish_record, publish_sheds)
+        publish_record
             .after(LawSet)
             .in_set(crate::state::SimPhase::Publish),
     );
@@ -136,17 +123,14 @@ pub(super) fn install_server(app: &mut App) {
 pub(super) fn install_client(app: &mut App) {
     app.init_resource::<CurrentWorld>()
         .insert_resource(PresentationClock::Waiting)
-        .init_resource::<HeldSheds>()
         .add_message::<ConstructionRefusal>()
         .add_message::<super::matchmaking::ServerGone>()
-        .add_message::<Shed>()
         .add_systems(
             Update,
             (
                 publish_presentation_clock,
                 receive_ledger,
                 receive_pieces,
-                receive_sheds,
                 refuse_duplicate_owners,
                 refuse_peer_record,
             )
@@ -154,116 +138,6 @@ pub(super) fn install_client(app: &mut App) {
                 .before(super::client::RefusalHandling)
                 .before(ReplicaSet),
         );
-}
-
-/// Authority: every shed the crumble wrote this tick goes to every player once.
-fn publish_sheds(
-    mut sheds: MessageReader<Shed>,
-    world: Option<Res<AuthorityWorld>>,
-    servers: Query<&Endpoint, With<Server>>,
-    mut sender: ServerMultiMessageSender,
-) {
-    if sheds.is_empty() {
-        return;
-    }
-    let world = world
-        .expect("a crumble sheds only in a Battle's world, which installs its generation")
-        .0;
-    let server = servers
-        .single()
-        .expect("shed transport is installed with exactly one authority server");
-    for shed in sheds.read() {
-        let sent = WorldShed {
-            world,
-            shed: shed.clone(),
-        };
-        sender
-            .send::<WorldShed, super::protocol::DebrisChannel>(&sent, server, &NetworkTarget::All)
-            .expect("a registered shed serializes into each live link's unbounded transport queue");
-    }
-}
-
-/// Sheds received for a world this player has not selected yet: a next Battle's shed can outrun
-/// its Battle identity (the `DebrisChannel` and replication are separate streams), so each waits
-/// until world selection reaches its world or passes it. Battle numbers rise within one
-/// authority's run (`world_reset::start_next`).
-#[derive(Resource, Default)]
-struct HeldSheds(Vec<WorldShed>);
-
-/// The sheds of world `selected` among `held`, in arrival order: one of a later world stays held,
-/// and one of an earlier world goes, a stale cosmetic of a world this player has left. With no
-/// world selected (before the first Battle) every one waits.
-fn select_sheds(held: &mut Vec<WorldShed>, selected: Option<WorldGeneration>) -> Vec<Shed> {
-    let Some(selected) = selected else {
-        return Vec::new();
-    };
-    let mut due = Vec::new();
-    for WorldShed { world, shed } in std::mem::take(held) {
-        match world.0.cmp(&selected.0) {
-            std::cmp::Ordering::Less => {}
-            std::cmp::Ordering::Equal => due.push(shed),
-            std::cmp::Ordering::Greater => held.push(WorldShed { world, shed }),
-        }
-    }
-    due
-}
-
-/// Replica: a shed of the selected world, admitted against its map, becomes the decoration's; one
-/// of a world not yet selected waits for it ([`HeldSheds`]). A malformed one refuses the match
-/// before any view reads it.
-fn receive_sheds(
-    mut receivers: Query<&mut MessageReceiver<WorldShed>>,
-    generation: Res<CurrentWorld>,
-    constructions: Query<(Entity, &Breakage), Without<Piece>>,
-    mut held: ResMut<HeldSheds>,
-    mut admitted: MessageWriter<Shed>,
-    mut refused: MessageWriter<ConstructionRefusal>,
-) {
-    for mut receiver in &mut receivers {
-        held.0.extend(receiver.receive());
-    }
-    for shed in select_sheds(&mut held.0, generation.0) {
-        match admit_shed(shed, &constructions) {
-            Ok(shed) => {
-                admitted.write(shed);
-            }
-            Err(refusal) => {
-                refused.write(refusal);
-            }
-        }
-    }
-}
-
-/// A peer's shed checked against the selected map: its chunks a valid group of a placed
-/// construction, its motion finite and its rotation a unit quaternion.
-fn admit_shed(
-    shed: Shed,
-    constructions: &Query<(Entity, &Breakage), Without<Piece>>,
-) -> Result<Shed, ConstructionRefusal> {
-    let selected = constructions
-        .iter()
-        .find(|(_, breakage)| breakage.construction == shed.construction);
-    let piece = Piece {
-        construction: shed.construction,
-        chunks: shed.chunks.clone(),
-        born: shed.tick,
-        retired: None,
-    };
-    piece
-        .admitted(selected)
-        .map_err(ConstructionRefusal::Piece)?;
-    let finite = [shed.at, shed.velocity, shed.spin]
-        .iter()
-        .flatten()
-        .chain(&shed.rotation)
-        .all(|x| x.is_finite());
-    if !finite
-        || !Quat::from_array(shed.rotation).is_normalized()
-        || !crate::debris::decor::representable(&shed)
-    {
-        return Err(ConstructionRefusal::Shed(shed.construction));
-    }
-    Ok(shed)
 }
 
 fn publish_presentation_clock(
@@ -402,14 +276,9 @@ pub(super) enum ConstructionRefusal {
     UntaggedPiece,
     RewrittenLedger,
     MisplacedEntry(Misplaced),
-    ShrunkLedger {
-        copied: usize,
-        received: usize,
-    },
+    ShrunkLedger { copied: usize, received: usize },
     Entry(EntryError),
     Piece(PieceError),
-    /// A shed fragment of this construction moves by a non-finite or unnormalized pose or motion.
-    Shed(u16),
 }
 
 impl std::fmt::Display for ConstructionRefusal {
@@ -426,10 +295,6 @@ impl std::fmt::Display for ConstructionRefusal {
             }
             Self::Entry(error) => error.fmt(f),
             Self::Piece(error) => error.fmt(f),
-            Self::Shed(c) => write!(
-                f,
-                "a shed fragment of construction {c} has a non-finite or unnormalized motion"
-            ),
         }
     }
 }
@@ -557,49 +422,6 @@ mod tests {
             1,
         ));
         app
-    }
-
-    /// A NEXT WORLD'S SHED WAITS FOR ITS BATTLE: a shed that arrives before the Battle identity
-    /// selects its world is held, and shown once when that world is selected; one of a world left
-    /// behind goes. A mutant treating every other world's shed as stale loses it, and every player
-    /// it reached first draws a different world. Fixture: the house's first two chunks shed at
-    /// tick 40 in world 2.
-    #[test]
-    fn a_next_worlds_shed_is_shown_once_in_its_world() {
-        let mut app = replica();
-        app.world_mut().resource_mut::<CurrentWorld>().0 = Some(WorldGeneration(1));
-        let shed = Shed {
-            construction: 1,
-            chunks: vec![0, 1],
-            at: [0.0; 3],
-            rotation: Quat::IDENTITY.to_array(),
-            velocity: [0.0; 3],
-            spin: [0.0; 3],
-            seed: 0,
-            tick: 40,
-        };
-        let held = |world: u32| WorldShed {
-            world: WorldGeneration(world),
-            shed: shed.clone(),
-        };
-        app.world_mut().resource_mut::<HeldSheds>().0.push(held(2));
-        let mut cursor = app.world().resource::<Messages<Shed>>().get_cursor();
-        let mut shown = |app: &mut App| {
-            app.update();
-            cursor
-                .read(app.world().resource::<Messages<Shed>>())
-                .count()
-        };
-        assert_eq!(shown(&mut app), 0, "world 2's shed waits for its Battle");
-        app.world_mut().resource_mut::<CurrentWorld>().0 = Some(WorldGeneration(2));
-        assert_eq!(shown(&mut app), 1, "and shows in it");
-        assert_eq!(shown(&mut app), 0, "once");
-        app.world_mut().resource_mut::<HeldSheds>().0.push(held(1));
-        assert_eq!(shown(&mut app), 0);
-        assert!(
-            app.world().resource::<HeldSheds>().0.is_empty(),
-            "a stale shed goes"
-        );
     }
 
     fn admitted_ledger() -> (App, Entity, Record) {
@@ -1054,89 +876,6 @@ mod tests {
         let clock = *app.world().resource::<PresentationClock>();
         for tick in [0, 1, 100, u32::MAX] {
             assert_eq!(clock.since(tick), None);
-        }
-    }
-
-    /// A PEER'S SHED REACHES THE DECORATION ONLY AS A DRAWABLE GROUP WITH A FINITE MOTION THE
-    /// LANDING SEARCH RESOLVES: the decoration indexes the chunks' layout and poses the mesh from
-    /// the motion unchecked, so a mutant that skipped a check would panic, draw NaN, or search a
-    /// touch finer than f32 holds on a peer's word. Fixture: 2 km/s and 100 km lie past the
-    /// decoration's contract.
-    #[test]
-    fn a_peer_shed_the_map_cannot_draw_is_refused() {
-        use bevy::ecs::system::RunSystemOnce;
-        let good = Shed {
-            construction: 1,
-            chunks: vec![0, 1],
-            at: [0.0; 3],
-            rotation: Quat::IDENTITY.to_array(),
-            velocity: [1.0, 2.0, 0.0],
-            spin: [0.0; 3],
-            seed: 9,
-            tick: 4,
-        };
-        let cases = [
-            (good.clone(), None),
-            (
-                Shed {
-                    chunks: vec![1, 0],
-                    ..good.clone()
-                },
-                Some(ConstructionRefusal::Piece(PieceError::Unordered(1))),
-            ),
-            (
-                Shed {
-                    construction: 7,
-                    ..good.clone()
-                },
-                Some(ConstructionRefusal::Piece(PieceError::UnknownConstruction(
-                    7,
-                ))),
-            ),
-            (
-                Shed {
-                    velocity: [f32::NAN, 0.0, 0.0],
-                    ..good.clone()
-                },
-                Some(ConstructionRefusal::Shed(1)),
-            ),
-            (
-                Shed {
-                    rotation: [0.0, 0.0, 0.0, 2.0],
-                    ..good.clone()
-                },
-                Some(ConstructionRefusal::Shed(1)),
-            ),
-            (
-                Shed {
-                    velocity: [2.0e3, 0.0, 0.0],
-                    ..good.clone()
-                },
-                Some(ConstructionRefusal::Shed(1)),
-            ),
-            (
-                Shed {
-                    at: [0.0, 0.0, 1.0e5],
-                    ..good
-                },
-                Some(ConstructionRefusal::Shed(1)),
-            ),
-        ];
-        let mut app = replica();
-        for (shed, refusal) in cases {
-            let sent = shed.clone();
-            let admitted = app
-                .world_mut()
-                .run_system_once(
-                    move |constructions: Query<(Entity, &Breakage), Without<Piece>>| {
-                        admit_shed(sent.clone(), &constructions)
-                    },
-                )
-                .expect("the admission runs");
-            match refusal {
-                None => assert_eq!(admitted, Ok(shed)),
-                Some(refusal) => assert_eq!(admitted, Err(refusal)),
-            }
         }
     }
 

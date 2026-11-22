@@ -101,7 +101,12 @@ fn a_belt_keeps_what_standing_matter_returns_and_the_rest_leaves() {
     }
     // The cell (3, 2, 0) of the fixture's 1 m by 0.6 m cells, at the centre of its near face.
     let (pressed, point) = (3 + 6 * 2, Vec3::new(0.5, 1.5, -WALL.z / 2.0));
-    let dt = 1.0 / 64.0;
+    let dt = f64::from(
+        app.world()
+            .resource::<Time<Fixed>>()
+            .timestep()
+            .as_secs_f32(),
+    );
     let mut intact = Breakage::new(kind, 0);
     let push = Push {
         along: DVec3::Z,

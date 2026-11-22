@@ -33,12 +33,11 @@ use crate::{CombatantId, CombatantLife, ShotId};
 /// Each tick carries its frame-start time and departure offset on the global scoreboard.
 /// Every wire change bumps this revision and re-pins the affected manifest hashes (ADR-0018).
 /// The game's environment destruction model carries shared causes and chunk-addressed groups;
-/// replacement and departure derive from the admitted graph on each peer; a crumble's light
-/// fragments reach players as decoration events. The construction ledger reaches a client as the
-/// diffs past its acknowledged cursor (bevy_replicon 0.45.5), each naming the position it lands
-/// at, and a whole copy only to a client without one or behind the retained history; the hull
-/// marks replicate whole.
-pub const PROTOCOL_REV: u32 = 107;
+/// replacement and departure derive from the admitted graph on each peer. The construction ledger
+/// reaches a client as the diffs past its acknowledged cursor (bevy_replicon 0.45.5), each naming
+/// the position it lands at, and a whole copy only to a client without one or behind the retained
+/// history; the hull marks replicate whole.
+pub const PROTOCOL_REV: u32 = 108;
 
 /// The compatibility record's wire term: the pinned wire manifest, [`PROTOCOL_REV`] and the crate
 /// version.
@@ -368,12 +367,6 @@ pub struct ShotExplanationChannel;
 /// The authority keeps the last received choice, so order must preserve clicks A-then-B;
 /// unordered delivery could settle on the stale A. Low rate makes head-of-line blocking negligible.
 pub struct SpawnChannel;
-
-/// Public reliable channel for the fragments a crumble sheds to the players' decoration
-/// (`net::construction::WorldShed`), in the game's environment destruction model. Reliable:
-/// the record already writes a shed chunk as dust, so a lost shed would leave a gap where it
-/// flew. Unordered: each shed carries its own tick.
-pub struct DebrisChannel;
 
 /// The game's damage model: one `TankVolumes` filter/order for publishing and applying
 /// [`NetCrew`] and mapping its indices to world-space hit-feel cues (`net::hit_feel`).
@@ -810,14 +803,12 @@ const WIRE_SURFACE: &[&str] = &[
     "DamageChannel|UnorderedReliable|ServerToClient",
     "ShotExplanationChannel|UnorderedReliable|ServerToClient",
     "SpawnChannel|OrderedReliable|ClientToServer",
-    "DebrisChannel|UnorderedReliable|ServerToClient",
     "FireVisualBatch",
     "FireEvent",
     "FlightOutcome",
     "DamageConfirm",
     "ShotExplanation",
     "SetSpawnPoint",
-    "WorldShed",
     "TankInputChannel|SequencedUnreliable|ClientToServer",
     "InputAnswerChannel|SequencedUnreliable|ServerToClient",
     "TankInput",
@@ -835,7 +826,7 @@ const WIRE_SURFACE: &[&str] = &[
 ];
 
 /// Pinned hash for the ordered wire surface and a direct handshake-fingerprint input.
-const WIRE_SURFACE_HASH: u64 = 0xb35d6c7c3c7bbe9e;
+const WIRE_SURFACE_HASH: u64 = 0xe0c58ef85843197d;
 
 // Wire coverage: `plugin_registrations_match_wire_surface` binds registration order and channel
 // semantics to `WIRE_SURFACE`; `wire_surface_is_pinned` binds that list to the handshake. Neither
@@ -850,7 +841,7 @@ const WIRE_SURFACE_HASH: u64 = 0xb35d6c7c3c7bbe9e;
 /// The pinned hash of the OWN wire-facing type DEFINITIONS (field layout, not just names). Re-pin it
 /// whenever a wire-facing struct/enum definition changes; house process also bumps
 /// [`PROTOCOL_REV`]. The tripwire prints the new value. See the block above for the coverage model.
-const WIRE_TYPES_HASH: u64 = 0xb12be3bccccba258;
+const WIRE_TYPES_HASH: u64 = 0xb293a73aca5427a8;
 
 /// The pinned `Cargo.lock` versions of the external crates whose types ride the wire (avian's
 /// replicated physics components; lightyear's wire framing; replicon's
@@ -945,11 +936,6 @@ pub(crate) fn plugin(app: &mut App) {
         ..default()
     })
     .add_direction(NetworkDirection::ClientToServer);
-    app.add_channel::<DebrisChannel>(ChannelSettings {
-        mode: ChannelMode::UnorderedReliable(ReliableSettings::default()),
-        ..default()
-    })
-    .add_direction(NetworkDirection::ServerToClient);
 
     app.register_message::<FireVisualBatch>()
         .add_map_entities()
@@ -971,9 +957,6 @@ pub(crate) fn plugin(app: &mut App) {
     // client-named entity.
     app.register_message::<SetSpawnPoint>()
         .add_direction(NetworkDirection::ClientToServer);
-    // No entity references: a shed names its construction by map ordinal and its chunks by index.
-    app.register_message::<super::construction::WorldShed>()
-        .add_direction(NetworkDirection::ServerToClient);
 
     app.add_channel::<TankInputChannel>(ChannelSettings {
         mode: ChannelMode::SequencedUnreliable,
@@ -1693,9 +1676,6 @@ mod tests {
         ("src/net/protocol.rs", "DamageChannel"),
         ("src/net/protocol.rs", "ShotExplanationChannel"),
         ("src/net/protocol.rs", "SpawnChannel"),
-        ("src/net/protocol.rs", "DebrisChannel"),
-        ("src/net/construction.rs", "WorldShed"),
-        ("src/debris/crumble.rs", "Shed"),
         ("src/net/protocol.rs", "FireVisualBatch"),
         ("src/net/protocol.rs", "FireVisualFact"),
         ("src/net/protocol.rs", "FireEvent"),

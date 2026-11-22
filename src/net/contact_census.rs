@@ -33,7 +33,8 @@ use crate::tank::Tank;
 use crate::track::soft_run::SoftRun;
 
 /// Resolution: a pair whose normal impulse over the step is at most this does no work. DERIVED:
-/// the weight of 6.5 g over a 64 Hz tick, three orders under a piece at the size floor.
+/// the weight of 6.5 g over a 64 Hz tick, two orders under the lightest chunk of the shipped house
+/// bake (0.74 kg, MEASURED).
 const SEAM_IMPULSE_NS: f32 = 1.0e-3;
 /// Resolution: the separation bands the study asked for, metres.
 const SEAM_NEAR_M: f32 = 2.0e-3;

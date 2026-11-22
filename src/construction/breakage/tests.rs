@@ -349,105 +349,34 @@ fn spawn_departures(app: &mut App, departures: Vec<PreparedDeparture>) {
     queue.apply(app.world_mut());
 }
 
-/// Above-ground matter of `structure` grown from its first above-ground chunk across bonded
-/// joints, ascending, until it stays a server body: the fixture's choice by class. `None` when
-/// its connected matter never reaches one.
-fn resolved_group(structure: &Structure) -> Option<Vec<usize>> {
-    let first = structure
-        .chunks
-        .iter()
-        .position(|chunk| !chunk.buried)
-        .expect("the caller found above-ground matter");
-    let (mut group, mut frontier) = (Vec::new(), BTreeSet::from([first]));
-    while let Some(c) = frontier.pop_first() {
-        group.push(c);
-        group.sort_unstable();
-        if crate::debris::crumble::server_body(structure, &group) {
-            return Some(group);
-        }
-        for joint in &structure.joints {
-            let Side::Chunk(b) = joint.b else { continue }; // The ground grows no group.
-            let other = if joint.a == c {
-                b
-            } else if b == c {
-                joint.a
-            } else {
-                continue;
-            };
-            if joint.seam().is_some()
-                && !structure.chunks[other].buried
-                && group.binary_search(&other).is_err()
-            {
-                frontier.insert(other);
-            }
-        }
-    }
-    None
-}
-
-/// The game's environment destruction routes unsupported matter to centroid-local server bodies
-/// or to decor and the dust ledger. The Driver and presentation rely on these contracts for every
-/// admitted kind whose data reaches that route; fixture constructions guarantee both routes.
-/// A mutant dropping a body's local colliders or a decoration's dust record fails here.
+/// The game's environment destruction: matter that leaves a structure stays in the world as a
+/// body unless a named law removes it (a crush, the play-area floor). The smallest above-ground
+/// chunk of every admitted kind, and of a fixture far smaller than any, freed alone, is one
+/// dynamic piece with centroid-local colliders, and the ledger writes no dust for it. The Driver
+/// and presentation rely on this for all freed matter. Mutants: a size or mass floor on a
+/// released fragment (it goes to dust and no piece owns it); a body's local colliders dropped.
 #[test]
-fn admitted_map_kinds_detach_with_common_centroid_local_colliders() {
-    let floor = crate::physical_laws::PhysicalLaws::shipped().server_rubble_min_size_m;
-    // Fixture: each large cube exceeds the floor; the entire small column stays below it.
-    let body = scaled_column(2.0 * floor);
-    let decoration = scaled_column(0.25 * floor);
-    assert!(resolved_group(&body.structure).is_some());
-    assert!(resolved_group(&decoration.structure).is_none());
-    let mut kinds = vec![
-        ("server_body_fixture".to_owned(), body),
-        ("decoration_fixture".to_owned(), decoration),
-    ];
+fn freed_matter_of_any_size_stays_a_body_with_centroid_local_colliders() {
+    // Fixture: the unit column scaled to 2 cm cells.
+    let mut kinds = vec![("small_fixture".to_owned(), scaled_column(0.02))];
     kinds.extend(admitted_kinds());
     for (asset, kind) in kinds {
         let kind = &kind;
         let structure = &kind.structure;
-        if structure.chunks.iter().all(|chunk| chunk.buried) {
+        let Some(chunk) = (0..structure.chunks.len())
+            .filter(|&c| !structure.chunks[c].buried)
+            .min_by(|&a, &b| {
+                structure.chunks[a]
+                    .volume
+                    .total_cmp(&structure.chunks[b].volume)
+            })
+        else {
             continue; // A valid construction can have no above-ground matter to release.
-        }
-        let group = resolved_group(structure);
-        let start = || {
-            let (mut app, root) = composed_kind(false, kind);
-            app.init_resource::<Sheds>()
-                .add_systems(FixedPostUpdate, keep_sheds.after(LawSet));
-            app.update();
-            app.update();
-            (app, root)
         };
-        let decor = (0..structure.chunks.len()).find(|&c| {
-            !structure.chunks[c].buried && !crate::debris::crumble::server_body(structure, &[c])
-        });
-        if let Some(chunk) = decor {
-            let (mut app, root) = start();
-            isolate(&mut app, root, &[chunk]);
-            app.update();
-            assert_eq!(
-                app.world().get::<Breakage>(root).unwrap().live.state.fate[chunk],
-                Fate::Dust
-            );
-            assert!(
-                app.world()
-                    .resource::<Sheds>()
-                    .0
-                    .iter()
-                    .any(|shed| shed.chunks.contains(&(chunk as u16)))
-            );
-            assert!(
-                !app.world_mut()
-                    .query::<&Piece>()
-                    .iter(app.world())
-                    .any(|piece| piece.chunks.contains(&(chunk as u16)))
-            );
-            println!("MEASURED {asset}: chunk {chunk} releases as dust with a decoration shed");
-        }
-        let Some(group) = group else {
-            continue; // This component is valid decoration below the server-body floor.
-        };
-        let (mut app, root) = start();
-        let chunk = group[0];
+        let group = vec![chunk];
+        let (mut app, root) = composed_kind(false, kind);
+        app.update();
+        app.update();
         let mass: f32 = group.iter().map(|&c| structure.chunks[c].mass).sum();
         let at = group
             .iter()
@@ -550,8 +479,10 @@ fn admitted_map_kinds_detach_with_common_centroid_local_colliders() {
             app.world().get::<Breakage>(root).unwrap().live.state.fate[chunk],
             Fate::Fallen
         );
-        println!(
-            "MEASURED {asset}: common detachment retains chunks {group:?} (decor witness {decor:?}), direct contact hulls, moving bounds and the belt's soft run"
+        assert!(
+            !(app.world().resource::<Record>().entries.iter())
+                .any(|entry| entry.event == Event::Dust(chunk as u16)),
+            "{asset}: the ledger writes no dust for freed matter"
         );
     }
 }
@@ -2443,28 +2374,12 @@ fn landing_slab() -> (Arc<ConstructionKind>, Vec<usize>) {
     (Arc::new(kind), group)
 }
 
-/// The sheds the authority wrote, in order.
-#[derive(Resource, Default)]
-struct Sheds(Vec<crate::debris::crumble::Shed>);
-
-fn keep_sheds(mut written: MessageReader<crate::debris::crumble::Shed>, mut kept: ResMut<Sheds>) {
-    kept.0.extend(written.read().cloned());
-}
-
 /// [`landing_slab`]'s group released tilted, its lowest corner 3 m over flat ground (fixture
 /// placement), and run 3 s on the shipped sim with the crumble mounted: the group, the live pieces
-/// then, the sheds and the record.
-fn drop_slab() -> (
-    Arc<ConstructionKind>,
-    Vec<usize>,
-    Vec<Piece>,
-    Vec<crate::debris::crumble::Shed>,
-    Record,
-) {
+/// then and the record.
+fn drop_slab() -> (Vec<usize>, Vec<Piece>, Record) {
     let (mut app, construction) = composed_kind(false, &geometry_fixture(&shipped_house()));
     crate::debris::crumble::sim_plugin(&mut app);
-    app.init_resource::<Sheds>()
-        .add_systems(FixedPostUpdate, keep_sheds.after(LawSet));
     app.insert_resource(Gravity(Vec3::NEG_Y * crate::physical_laws::gravity_mps2()));
     let (kind, group) = landing_slab();
     {
@@ -2500,7 +2415,7 @@ fn drop_slab() -> (
         spawn_group(
             &mut commands,
             Departure {
-                kind: kind.clone(),
+                kind,
                 group: group.clone(),
                 root,
                 live,
@@ -2521,60 +2436,27 @@ fn drop_slab() -> (
         .cloned()
         .collect();
     assert!(app.world().get_entity(construction).is_ok());
-    let sheds = std::mem::take(&mut app.world_mut().resource_mut::<Sheds>().0);
-    (
-        kind,
-        group,
-        pieces,
-        sheds,
-        app.world().resource::<Record>().clone(),
-    )
+    (group, pieces, app.world().resource::<Record>().clone())
 }
 
-/// A RELEASED PART LANDS, CRUMBLES AND SHEDS ITS SMALL FRAGMENTS, end to end on the authority's
-/// shipped plugins and real Avian contacts: the live bodies and the sheds partition the part,
-/// each live body reaches the cut-off and each shed falls short of it, and the record writes
-/// every shed chunk as dust at its shed's tick, so every player's view hands the parent's chunks
-/// over. A mutant that drops the sheds, keeps a below-floor fragment as a body or leaves a shed chunk
-/// standing in the record breaks it. Which fragments form is the law's (its own tests); this
-/// witness asserts no count.
+/// A RELEASED PART LANDS AND CRUMBLES INTO BODIES, end to end on the authority's shipped plugins
+/// and real Avian contacts: the live bodies partition the part, more than one of them, and the
+/// record writes none of its chunks as dust. A mutant that drops a fragment at the split, or
+/// routes one out of simulation by its size, breaks it. Which fragments form is the law's (its
+/// own tests); this witness asserts no count beyond a split.
 #[test]
-fn a_released_part_lands_crumbles_and_sheds_its_small_fragments() {
-    let (kind, group, pieces, sheds, record) = drop_slab();
-    let server = |chunks: &[u16]| {
-        let chunks: Vec<_> = chunks.iter().map(|&c| usize::from(c)).collect();
-        crate::debris::crumble::server_body(&kind.structure, &chunks)
-    };
-    let mut owned: Vec<usize> = pieces
-        .iter()
+fn a_released_part_lands_and_crumbles_into_bodies() {
+    let (group, pieces, record) = drop_slab();
+    let mut owned: Vec<usize> = (pieces.iter())
         .flat_map(|piece| &piece.chunks)
-        .chain(sheds.iter().flat_map(|shed| &shed.chunks))
         .map(|&c| usize::from(c))
         .collect();
     owned.sort_unstable();
-    assert_eq!(
-        owned, group,
-        "the bodies and sheds partition the released part"
-    );
-    for piece in &pieces {
-        assert!(server(&piece.chunks), "a kept body {:?}", piece.chunks);
-    }
-    for shed in &sheds {
-        assert!(!server(&shed.chunks), "a shed {:?}", shed.chunks);
-        for &c in &shed.chunks {
-            assert!(record.entries.contains(&Entry {
-                construction: 3,
-                event: Event::Dust(c),
-                tick: shed.tick,
-            }));
-        }
-    }
-    println!(
-        "MEASURED landing: {} bodies {:?}, {} sheds {:?}",
-        pieces.len(),
-        pieces.iter().map(|piece| &piece.chunks).collect::<Vec<_>>(),
-        sheds.len(),
-        sheds.iter().map(|shed| &shed.chunks).collect::<Vec<_>>()
+    assert_eq!(owned, group, "the bodies partition the released part");
+    assert!(pieces.len() > 1, "the landing split the part");
+    assert!(
+        !(record.entries.iter()).any(|entry| matches!(entry.event, Event::Dust(_))),
+        "a landing sends no matter to dust"
     );
 }
 
@@ -4327,15 +4209,6 @@ fn owners_share_initial_equilibrium_until_their_first_changed_load() {
     assert!(!second.assessment.needs_tick());
 }
 
-/// Fixture: keep unit-column proportions while each chunk exceeds the authored rubble floor.
-fn resolved_column() -> Arc<ConstructionKind> {
-    let scale = crate::physical_laws::PhysicalLaws::shipped()
-        .server_rubble_min_size_m
-        .max(1.0)
-        * 2.0;
-    scaled_column(scale)
-}
-
 /// Fixture: a column scaled uniformly, with geometry, mass and joint areas kept consistent.
 fn scaled_column(scale: f32) -> Arc<ConstructionKind> {
     let column = column_construction().asset.clone();
@@ -4347,7 +4220,7 @@ fn scaled_column(scale: f32) -> Arc<ConstructionKind> {
 /// tick. Mutants: a body weighed by its contact hulls, the block's own seams parted, a launch.
 #[test]
 fn a_freed_block_leaves_at_rest_with_its_occupied_mass() {
-    let kind = resolved_column();
+    let kind = column_construction();
     let (mut app, root) = composed_kind(false, &kind);
     crate::headless_test::start_fixed_clock(&mut app);
     app.update(); // Bevy's first real-time update initializes its clock with zero delta.
@@ -4356,21 +4229,15 @@ fn a_freed_block_leaves_at_rest_with_its_occupied_mass() {
     let mut record = Record::default();
     // Fixture: the upper pair leaves.
     let group = vec![1, 2];
-    assert!(crate::debris::crumble::server_body(
-        &owner.live.structure,
-        &group
-    ));
     let expected_mass: f32 = group.iter().map(|&c| kind.hulls.occupied(c).1.mass).sum();
     let cut = bounded::cut(&mut owner, &group, 7, &mut record);
-    let (departures, sheds) = bounded::depart(
-        &mut owner,
+    let departures = bounded::depart(
+        &owner,
         Transform::IDENTITY,
         cut,
         7,
-        &mut record,
         &ReusableColliders::Standing(BTreeMap::new()),
     );
-    assert!(sheds.is_empty());
     assert_eq!(departures.len(), 1);
     let launched = &departures[0].departure;
     assert_eq!(launched.group, group);
@@ -4729,7 +4596,7 @@ fn departure_and_split_preserve_each_chunks_collider_contract() {
 /// standing collider before reconciliation can delete it; direct helper coverage is insufficient.
 #[test]
 fn the_law_installer_reuses_departing_standing_colliders() {
-    let kind = resolved_column();
+    let kind = column_construction();
     let (mut app, root) = composed_kind(false, &kind);
     install_standing_colliders(&mut app, root);
     // Fixture: the upper member is free when its sole support seam separates.
@@ -4758,41 +4625,33 @@ fn the_law_installer_reuses_departing_standing_colliders() {
 
 /// The game's environment destruction: removing a middle support frees the crown immediately,
 /// before reconciliation can construct a standing collider for it, and the shared ledger derives
-/// both departures. Mutants: the disconnected crown left standing, a chunk leaving twice.
+/// both departures. Fixture: the column at 0.02 scale, so each freed chunk is far smaller than any
+/// chunk a bake ships. Mutants: the disconnected crown left standing, a chunk leaving twice, a
+/// fragment dropped at departure for its size.
 #[test]
 fn a_cut_frees_unsupported_matter_without_building_standing_colliders() {
     use bevy::ecs::system::RunSystemOnce;
-    let kind = column_construction();
+    let kind = scaled_column(0.02);
     let (mut app, root) = composed_kind(false, &kind);
     app.update();
     app.update();
     let mut record = Record::default();
-    let (departures, sheds) = {
+    let departures = {
         let mut owner = app.world_mut().get_mut::<Breakage>(root).unwrap();
         let cut = bounded::cut(&mut owner, &[1], 7, &mut record);
         bounded::depart(
-            &mut owner,
+            &owner,
             Transform::IDENTITY,
             cut,
             7,
-            &mut record,
             &ReusableColliders::Standing(BTreeMap::new()),
         )
     };
     let freed: Vec<_> = departures
         .iter()
         .flat_map(|p| p.departure.group.iter().copied())
-        .chain(
-            sheds
-                .iter()
-                .flat_map(|shed| shed.chunks.iter().map(|&c| usize::from(c))),
-        )
         .collect();
-    assert_eq!(
-        freed.len(),
-        2,
-        "every freed chunk leaves exactly once through the size route"
-    );
+    assert_eq!(freed.len(), 2, "every freed chunk leaves exactly once");
     assert_eq!(
         freed.into_iter().collect::<BTreeSet<_>>(),
         BTreeSet::from([1, 2]),
