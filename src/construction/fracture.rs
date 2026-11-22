@@ -286,9 +286,9 @@ pub(crate) struct Chunk {
     /// kg.
     pub mass: f32,
     pub material: Material,
-    /// Held by the soil: its hull lies wholly below grade, the plane its construction stands on. The
-    /// soil bears it as an anchor does and no crack frees it, so a group still joined to it stands
-    /// and no body is ever released inside the ground.
+    /// Held by the soil: the ground its construction stands on covers its centroid
+    /// (`breakage::Site`). The soil bears it as an anchor does and no crack frees it, so a group
+    /// still joined to it stands and no body is ever released with its centroid under the ground.
     pub buried: bool,
 }
 

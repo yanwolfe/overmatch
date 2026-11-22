@@ -108,11 +108,9 @@ const STOP_TOLERANCE_M: f32 = 0.01;
 /// meets it at (a construction spawns with its frame's origin on the ground, its foundation
 /// below).
 pub(crate) const GRADE_M: f32 = 0.0;
-/// Resolution: on-grade tolerance, m, for baked corners rounded off the cutting plane.
-const ON_GRADE_M: f32 = 1e-4;
 
-/// The ground a construction stands on. The soil holds a chunk it covers wholly, corner for
-/// corner: that chunk is buried.
+/// The ground a construction stands on. The soil holds a chunk whose centroid is under the
+/// ground: that chunk is buried.
 #[derive(Clone, Copy)]
 pub(crate) enum Site<'a> {
     /// Level ground at the frame's grade: a fixture's, and the site a kind's shared structure is
@@ -123,15 +121,15 @@ pub(crate) enum Site<'a> {
 }
 
 impl Site<'_> {
-    /// Whether the ground covers every one of `corners`, given in the construction frame.
-    fn covers(self, mut corners: impl Iterator<Item = Vec3>) -> bool {
-        corners.all(|corner| match self {
-            Site::Level => corner.y <= GRADE_M + ON_GRADE_M,
+    /// Whether the ground covers `centroid`, given in the construction frame.
+    fn covers(self, centroid: Vec3) -> bool {
+        match self {
+            Site::Level => centroid.y <= GRADE_M,
             Site::Terrain(grid, pose) => {
-                let world = pose * corner;
-                world.y <= grid.height_at(world.x, world.z) + ON_GRADE_M
+                let world = pose * centroid;
+                world.y <= grid.height_at(world.x, world.z)
             }
-        })
+        }
     }
 }
 
@@ -351,7 +349,7 @@ impl Layout {
                         centroid: Vec3::from_array(chunk.centroid),
                         mass: chunk.mass_kg,
                         material,
-                        buried: Site::Level.covers(chunk.hull.iter().map(|&p| Vec3::from_array(p))),
+                        buried: Site::Level.covers(Vec3::from_array(chunk.centroid)),
                     }
                 })
                 .collect(),
@@ -585,8 +583,8 @@ impl Live {
     /// `kind` standing on `site`. A site that buries what level ground does shares the kind's
     /// structure and equilibrium; any other holds its own.
     fn sited(kind: &ConstructionKind, site: Site) -> Self {
-        let buried: Vec<bool> = (kind.layout.blocks.iter())
-            .map(|block| site.covers(block.points.iter().copied()))
+        let buried: Vec<bool> = (kind.structure.chunks.iter())
+            .map(|chunk| site.covers(chunk.centroid))
             .collect();
         let shared = (kind.structure.chunks.iter())
             .zip(&buried)
