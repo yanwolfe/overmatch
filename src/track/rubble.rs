@@ -14,7 +14,7 @@
 //! - **Every other solid** (standing construction, map blocks, another tank's hull; terrain is the
 //!   field): the sampled support carries the belt. A dynamic body takes the whole opposite reaction
 //!   as an impulse ([`reactions`]); fixed construction's structure check reads no contact, and
-//!   its force is only staged for the sweep ([`RubbleBodies::record_static_contacts`]). The
+//!   its force is only staged for the contact law ([`RubbleBodies::record_static_contacts`]). The
 //!   dynamic bodies here are the hulls and a launched turret, on `Layer::Vehicle`. The explicit
 //!   spring is stable for a body while `dt² k / m + 2 dt c / m` stays under 4 (the shipped margin:
 //!   `.agents/docs/design/track-model/track-contact.md`, "The boundary, one rule").
@@ -475,8 +475,8 @@ impl RubbleBodies<'_> {
             .map_or(0.0, |motion| motion.tangent_mobility(point, normal))
     }
 
-    /// Stage the force each contact takes from fixed structural construction, which ceases if
-    /// this tick's sweep frees that matter (`construction::breakage`). The field has no collider
+    /// Stage the force each contact takes from fixed structural construction, which the contact
+    /// law bounds by what that matter holds (`construction::breakage::bounded`). The field has no collider
     /// contact, dynamic bodies take [`reactions`], and permanent surfaces never leave.
     pub(crate) fn record_static_contacts(
         &self,
@@ -1101,8 +1101,8 @@ mod tests {
     }
 
     /// Fixed construction supports the belt, and what the belt takes from it is staged whole: the
-    /// sweep cancels a staged force when it frees that matter, so a share staged short would leave
-    /// the tank standing on matter that left. Subdividing the footprint must not multiply it.
+    /// contact law bounds a staged force by what its matter holds, so a share staged short would
+    /// leave the tank standing on matter that gave. Subdividing the footprint must not multiply it.
     /// FIXTURE DATA: a surface topped at 0.6 m and a small source body clear above it.
     fn fixed_surface_reaction(shape: Collider, closing: f32) {
         let mut app = physics();

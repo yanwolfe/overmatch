@@ -27,7 +27,7 @@
 //!
 //! THAW ([`thaw`], in Avian's step after it places child colliders and before its broad phase: the
 //! last system before the narrow phase reads poses and velocities, after everything else a tick
-//! changes, the sweep included). A frozen island turns dynamic whole. Avian zeroes a body's rest
+//! changes). A frozen island turns dynamic whole. Avian zeroes a body's rest
 //! timer as it rejoins an island (`dynamics/solver/islands/sleeping.rs`,
 //! `wake_on_enable_rigid_body`), so the island rests a full `TimeToSleep` again before it can sleep
 //! and freeze. Four causes:

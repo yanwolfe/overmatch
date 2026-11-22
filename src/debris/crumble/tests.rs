@@ -114,11 +114,7 @@ impl Part {
     /// `transfers` on the part, as a moving group at rest speed zero, against the ground.
     fn read(&self, transfers: &ContactTransfers) -> (Vec<Touch>, f32) {
         let ids: BTreeMap<Entity, usize> = self.group.iter().map(|&c| (collider(c), c)).collect();
-        let landings = landings(
-            transfers,
-            |body| (body == entity(GROUP)).then_some(0.0),
-            false,
-        );
+        let landings = landings(transfers, |body| (body == entity(GROUP)).then_some(0.0));
         let landing = &landings[&entity(GROUP)];
         touches(
             &self.structure,
@@ -383,11 +379,7 @@ fn two_groups_colliding_spend_one_collisions_energy() {
         ],
         1.0 / 64.0,
     );
-    let landings = landings(
-        &transfers,
-        |body| (body == a || body == b).then_some(0.0),
-        false,
-    );
+    let landings = landings(&transfers, |body| (body == a || body == b).then_some(0.0));
     assert_eq!(landings.len(), 2, "each side lands");
     let spent: Vec<f32> = landings
         .values()

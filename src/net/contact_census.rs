@@ -27,10 +27,7 @@ use serde_json::{Value, json};
 use crate::contact_transfer::ContactTransfers;
 use crate::cost::stages::{Capture, Stage, Stages};
 
-use crate::construction::{
-    Body,
-    breakage::{Piece, SweepAccount},
-};
+use crate::construction::{Body, breakage::Piece};
 use crate::debris::{DebrisPiece, freeze::Frozen};
 use crate::tank::Tank;
 use crate::track::soft_run::SoftRun;
@@ -221,22 +218,6 @@ pub(crate) struct Islands {
     with_tank: u32,
 }
 
-/// Sweep sources by whether their swept bounds met a standing owner.
-#[derive(Clone, Default, Serialize)]
-pub(crate) struct SweepSplit {
-    sources_no_owner: u32,
-    sources_owner_met: u32,
-    sources_prepared: u32,
-    /// Source-owner cuts committed to the deposit queue.
-    deposits: u32,
-    /// Shape casts; a source that met no owner casts none.
-    casts: u32,
-    /// Casts of the source that cast the most.
-    max_casts_per_source: u32,
-    /// One entry per source, zero-cast sources included, summed across all its owners.
-    casts_per_source: Vec<u32>,
-}
-
 /// Tanks that loose pieces hold up through their soft runs, each as of its latest awake step: a
 /// sleeping tank's contacts leave the solver, so it keeps the reading it fell asleep with, and a
 /// wake reads afresh. `scripts/perf/pile_park.py` gates a parked tank's pile on it.
@@ -256,7 +237,6 @@ pub(crate) struct ContactTick {
     airborne: Airborne,
     islands: Islands,
     piece_lift: PieceLift,
-    sweep: SweepSplit,
 }
 
 /// One piece's rest history, on the census's tick numbers (the trace's row numbers).
@@ -539,22 +519,12 @@ fn install_reading(app: &mut App) {
         );
 }
 
-/// Attach the pre-physics sweep account to the completed step, without re-reading its graph.
-pub(super) fn finish(snapshot: &mut StepSnapshot, sweep: &SweepAccount) -> ContactTick {
-    let mut row = snapshot
+/// The completed step's census row, taken once.
+pub(super) fn finish(snapshot: &mut StepSnapshot) -> ContactTick {
+    snapshot
         .row
         .take()
-        .expect("an active capture snapshots every completed physics step");
-    row.sweep = SweepSplit {
-        sources_no_owner: sweep.sources_no_owner as u32,
-        sources_owner_met: (sweep.sources - sweep.sources_no_owner) as u32,
-        sources_prepared: sweep.sources_prepared as u32,
-        deposits: sweep.deposits as u32,
-        casts: sweep.work.casts as u32,
-        max_casts_per_source: sweep.max_casts_per_source as u32,
-        casts_per_source: sweep.casts_per_source.iter().map(|&n| n as u32).collect(),
-    };
-    row
+        .expect("an active capture snapshots every completed physics step")
 }
 
 enum Reach {
@@ -1031,8 +1001,7 @@ mod tests {
         ))
         .init_asset::<Mesh>()
         .insert_resource(Gravity(gravity))
-        .init_resource::<PieceRecords>()
-        .init_resource::<SweepAccount>();
+        .init_resource::<PieceRecords>();
         app.init_resource::<Stages>();
         install_reading(&mut app);
         app.world_mut().resource_mut::<Capture>().active = true;
@@ -1081,11 +1050,7 @@ mod tests {
             app.update();
         }
         app.world_mut()
-            .run_system_cached(
-                |mut snapshot: ResMut<StepSnapshot>, sweep: Res<SweepAccount>| {
-                    finish(&mut snapshot, &sweep)
-                },
-            )
+            .run_system_cached(|mut snapshot: ResMut<StepSnapshot>| finish(&mut snapshot))
             .unwrap()
     }
 

@@ -847,13 +847,6 @@ impl Signature {
                 .collect(),
         }
     }
-
-    /// This topology once the `parted` joints separate.
-    fn parting(mut self, parted: &[Failure]) -> Self {
-        self.joints
-            .retain(|(j, _)| !parted.iter().any(|failure| failure.joint == *j));
-        self
-    }
 }
 
 /// The game's environment destruction: gravity-only joint preloads, in N (positive tension), from
@@ -863,9 +856,8 @@ impl Signature {
 /// one stage per tick): a joint that cracked or opened since reads the field at its current
 /// strength, and matter that left since carries no load inside its part but still loads the
 /// interfaces below it. Until an instance's first law stage commits its design's at-rest verdict,
-/// the field is that verdict's, a stage ahead of the state. A sweep after an earlier cut this tick
-/// reads the field [`Assessment::resolved_on`] solves on that cut's topology, which the next law
-/// stage adopts. Cached until the field or the state's topology changes.
+/// the field is that verdict's, a stage ahead of the state. Cached until the field or the state's
+/// topology changes.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Gravity {
     cached: Option<((u64, Signature), Vec<f64>)>,
@@ -938,8 +930,8 @@ impl Gravity {
                         let mut solved = PartPreload::default();
                         let loads: Vec<_> = chunks.iter().map(|&c| boundary[c]).collect();
                         let design = equilibrium.kernels.get(part.element).expect(
-                            "a sweep owner's assessment carries its design's kernels: pieces, \
-                             whose assessments start empty, are never sweep owners",
+                            "a placed owner's assessment carries its design's kernels: pieces, \
+                             whose assessments start empty, read no preload",
                         );
                         let intact = design.current(structure, state, chunks).then_some(design);
                         #[cfg(test)]
@@ -960,8 +952,8 @@ impl Gravity {
                             }
                             &changed
                         };
-                        // Only the carried loads are the sweep's: the kernel's failures are the
-                        // law's to commit at its next stage.
+                        // Only the carried loads are read: the kernel's failures are the law's
+                        // to commit at its next stage.
                         let hold = kernel.hold(structure, &loads);
                         for (j, carried) in hold.carried {
                             let joint = &structure.joints[j];
@@ -1042,13 +1034,6 @@ pub(crate) struct Assessment {
     pub(crate) support: Vec<Vec<usize>>,
     /// Scalar operations of the last tick's factorization and solves, a DERIVED count.
     pub(crate) work: u64,
-    /// The factor and gravity column a hull sweep solved on this owner's topology after a cut
-    /// this tick ([`Self::resolved_on`]): the next law stage adopts it while that topology
-    /// stands, and factors its own otherwise.
-    pub(crate) next: Option<Box<Assessment>>,
-    /// The joints [`Self::resolved_on`]'s rebuild parted in its copy of the state, which the law
-    /// stage that adopts it commits.
-    parted: Vec<Failure>,
 }
 
 impl Assessment {
@@ -1111,47 +1096,12 @@ impl Assessment {
         assessment
     }
 
-    /// The game's environment destruction: this owner's gravity field solved on `state`'s own
-    /// topology between law stages, for a hull sweep after an earlier cut this tick, and the
-    /// owner's [`Self::next`] factor. Its rebuild parts a mechanism's joints only in its own copy
-    /// of `state`, since the sweep commits no law verdict; it keeps them, and the law stage that
-    /// adopts it commits them ([`Self::adopt`]).
-    pub(crate) fn resolved_on(&self, structure: &Structure, state: &State) -> Self {
-        let mut current = Self {
-            slipping: self.slipping.clone(),
-            kernels: self.kernels.clone(),
-            ..Self::default()
-        };
-        current.parted = current.rebuild(structure, &mut state.clone());
-        current
-    }
-
     /// Rebuild the part graph and factor it. A mechanism separates the slipping rests that leave
     /// it without a tangential hold or, where it reaches none, the joints its free motion moves
     /// ([`Mechanism::carriers`]); returns those failures.
     fn rebuild(&mut self, structure: &Structure, state: &mut State) -> Vec<Failure> {
         self.graph = Graph::of(structure, state, &self.slipping);
         self.refactor(structure, state)
-    }
-
-    /// Take `next`'s factor and gravity column as this stage's rebuild: [`Self::rebuild`] on the
-    /// same topology and slips, solved earlier in the tick, whose operations stay that stage's.
-    /// Returns the joints that rebuild parted, parted on `state` as the rebuild would.
-    fn adopt(&mut self, mut next: Self, state: &mut State) -> Vec<Failure> {
-        let parted = std::mem::take(&mut next.parted);
-        for failure in &parted {
-            state.cracked[failure.joint] = true;
-            state.separated[failure.joint] = true;
-        }
-        *self = Self {
-            revision: self.revision + 1,
-            work: self.work,
-            last_spin: self.last_spin,
-            removed: std::mem::take(&mut self.removed),
-            support: std::mem::take(&mut self.support),
-            ..next
-        };
-        parted
     }
 
     /// Factor the part graph, removing the interfaces of every mechanism each factorization
@@ -1332,7 +1282,6 @@ impl Assessment {
             "the part solve has a positive numerical tick"
         );
         let pending = !std::mem::take(&mut self.initial_verdict).is_empty();
-        let next = self.next.take();
         self.last_spin = spin;
         self.work = 0;
         let topology = !self.initialized
@@ -1343,15 +1292,7 @@ impl Assessment {
             let before = std::mem::take(&mut self.signature.members);
             self.removed
                 .extend(before.into_iter().filter(|&c| !state.standing(c)));
-            match next {
-                // A sweep already solved this topology, its partings included.
-                Some(next)
-                    if next.signature == Signature::of(structure, state).parting(&next.parted) =>
-                {
-                    self.adopt(*next, state)
-                }
-                _ => self.rebuild(structure, state),
-            }
+            self.rebuild(structure, state)
         } else {
             Vec::new()
         };

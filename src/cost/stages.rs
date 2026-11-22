@@ -31,11 +31,9 @@ labelled!(Stage, NAMES, COUNT {
     Refit = "refit_us",
     Publish = "publish_us",
     Contacts = "contacts_us",
-    Sweep = "sweep_us",
     // The contact law: pricing pressed cells inside the step, and freeing what gave after it.
     Bound = "bound_us",
     Release = "release_us",
-    SweepCensus = "sweep_census_us",
     ContactCensus = "contact_census_us",
     Crumble = "crumble_us",
     ChildColliderWriteback = "child_collider_writeback_us",
@@ -284,10 +282,9 @@ impl Stages {
                 .then(|| stages.2.lock().expect("belt timing lock is not poisoned"));
             let start = Edge::now();
             stages.add(Work::ProcessCpuReads, 1);
-            // A leaf another leaf runs inside is debited from it: the sweep's census, and the
-            // piece census a body's spawn or retirement observer records.
+            // A leaf another leaf runs inside is debited from it: the piece census a body's
+            // spawn or retirement observer records.
             let nested = match stage {
-                Stage::Sweep => Some(Stage::SweepCensus),
                 Stage::PieceBody | Stage::PieceRetire => Some(Stage::ContactCensus),
                 _ => None,
             };
@@ -456,33 +453,6 @@ impl Bracket {
 mod tests {
     use super::*;
     use std::time::Instant;
-
-    /// The census reader must be subtractable exactly once even though collection runs inside
-    /// the gameplay sweep. A parent bracket that retains the nested leaf double-counts it.
-    #[test]
-    fn sweep_excludes_its_census_leaf() {
-        let stages = Stages::default();
-        // Fixture: an earlier census consumed 11 ns; this sweep's census consumes 30 of 100 ns.
-        stages.0[Stage::SweepCensus as usize].store(11, Ordering::Relaxed);
-        stages.5[Stage::SweepCensus as usize].store(13, Ordering::Relaxed);
-        let parent = Stages::start(Some(&stages), Stage::Sweep).unwrap();
-        stages.5[Stage::SweepCensus as usize].fetch_add(60, Ordering::Relaxed);
-        stages.0[Stage::SweepCensus as usize].fetch_add(30, Ordering::Relaxed);
-        parent.record_ns([100, 200]);
-        std::mem::forget(parent); // The fixture supplied the elapsed time; do not sample it again.
-        let values = stages.take_us();
-        assert_eq!(values[Stage::Sweep as usize], 0.070);
-        assert_eq!(values[Stage::SweepCensus as usize], 0.041);
-        let cpu = stages.take_cpu_us().values;
-        assert_eq!(cpu[Stage::Sweep as usize], 0.140);
-        assert_eq!(cpu[Stage::SweepCensus as usize], 0.073);
-        let wall = serde_json::to_value(NamedTimes::new(&NAMES, values)).unwrap();
-        let cpu = serde_json::to_value(NamedTimes::new(&NAMES, cpu)).unwrap();
-        assert_eq!(
-            wall.as_object().unwrap().keys().collect::<Vec<_>>(),
-            cpu.as_object().unwrap().keys().collect::<Vec<_>>()
-        );
-    }
 
     /// Parallel tank reads share one wall interval: publishing the first reader's span would
     /// let the phase consumer subtract overlapping work twice.

@@ -19,8 +19,8 @@
 //! - after restitution ([`SolverSystems::Restitution`]): its increment.
 //!
 //! Avian builds a constraint only where at least one body is dynamic. Each structure side
-//! reads a signed view of the same record; the sweep reads every solver constraint once,
-//! independently of [`StructureBody`], through [`ContactTransfers::solver_groups`]. The other side
+//! reads a signed view of the same record; [`ContactTransfers::solver_groups`] reads every solver
+//! constraint once, independently of [`StructureBody`]. The other side
 //! may be fixed ground or another moving body. `ContactPoint::normal_impulse` is not this reading:
 //! Avian adds the whole accumulated impulse into it on every solve call, twice per substep, and
 //! keeps the friction impulse only as the last substep's, in a basis it does not store.
@@ -32,8 +32,8 @@
 //!
 //! STAGED BELT FORCES. The belt applies support and traction before physics without collider
 //! constraints. Each force it takes from fixed construction is staged
-//! ([`ContactTransfers::stage`]) for the tick, so a sweep that frees that matter can cancel it
-//! ([`ContactTransfers::cancel_staged`]); the next physics step clears the stage.
+//! ([`ContactTransfers::stage`]) for the tick, where the contact law bounds it
+//! (`construction::breakage::bounded`); the next physics step clears the stage.
 //!
 //! Filled on the authority only, where the destruction laws run; a replica's stays empty.
 
@@ -238,24 +238,6 @@ impl ContactTransfers {
         self.staged.push(force);
     }
 
-    /// A pre-physics sweep removes occupied matter. The staged belt forces on matter that left,
-    /// flagged in `departed` in staging order, cease with it; the caller cancels each returned
-    /// force on its source before integration.
-    pub(crate) fn cancel_staged(&mut self, departed: &[bool]) -> Vec<StagedForce> {
-        assert_eq!(
-            departed.len(),
-            self.staged.len(),
-            "a sweep judges every staged force once"
-        );
-        let mut flags = departed.iter();
-        let (cancelled, retained) = self
-            .staged
-            .drain(..)
-            .partition(|_| *flags.next().expect("one flag per staged force"));
-        self.staged = retained;
-        cancelled
-    }
-
     /// The source inertia recorded with this step's contacts, shared across all its points.
     #[cfg(test)]
     pub(crate) fn inertia(&self, body: Entity) -> BodyInertia {
@@ -399,7 +381,7 @@ fn prepare_constraint(
 }
 
 /// Before the substeps: record each solver constraint once, and clear the tick's staged forces,
-/// which the sweep has read. `time` is the physics clock Avian runs its schedule on.
+/// which the contact law has read. `time` is the physics clock Avian runs its schedule on.
 fn keep(
     stages: Option<Res<crate::cost::stages::Stages>>,
     graph: Res<ConstraintGraph>,
@@ -724,182 +706,10 @@ mod tests {
         (momentum(app) - before, transfer, dt, structure_first)
     }
 
-    /// Fixture: frictionless boxes with no restitution or gravity, approaching one broad support
-    /// or two separate supports. All dimensions, gaps, speeds and density are fixture data.
-    fn landing(size: Vec3, supports: usize, gap: f32, speed: f32) -> (App, Entity) {
-        let mut app = world(1.0);
-        for support in 0..supports {
-            let (x, width) = if supports == 1 {
-                (0.0, 4.0)
-            } else {
-                (-0.75 + support as f32 * 1.5, 0.5)
-            };
-            app.world_mut().spawn((
-                Transform::from_xyz(x, -0.1, 0.0),
-                RigidBody::Static,
-                Collider::cuboid(width, 0.2, 4.0),
-                Friction::new(0.0),
-                Restitution::new(0.0),
-            ));
-        }
-        let body = app
-            .world_mut()
-            .spawn((
-                Transform::from_xyz(0.0, size.y / 2.0 + gap, 0.0),
-                RigidBody::Dynamic,
-                Collider::cuboid(size.x, size.y, size.z),
-                ColliderDensity(1000.0),
-                Friction::new(0.0),
-                Restitution::new(0.0),
-                LinearVelocity(Vec3::NEG_Y * speed),
-                SleepingDisabled,
-            ))
-            .id();
-        (app, body)
-    }
-
-    /// The game's environment destruction casts need unilateral presses even when multiple
-    /// points or pairs share a stop, and no force from an unused speculative point. The normal
-    /// stop estimate can retain some compression; these bounds are not an exact blow/press split.
-    #[test]
-    fn solver_press_is_unilateral_for_shared_stops_and_unused_points() {
-        use crate::construction::breakage::pushes;
-        // DERIVED: a symmetric four-corner thin-box face stop retains at most 3/7 of its
-        // normal impulse. Shared stops have only the pointwise [0, transferred compression]
-        // bound. A column's solo-stop estimates exceed its shares; an unused point moves zero.
-        for (name, size, supports, gap, speed, replay_bound) in [
-            (
-                "flat four-point landing",
-                Vec3::new(2.0, 0.25, 1.0),
-                1,
-                0.01,
-                2.0,
-                3.0 / 7.0,
-            ),
-            (
-                "two-contact landing",
-                Vec3::new(2.0, 0.25, 1.0),
-                2,
-                0.01,
-                2.0,
-                1.0,
-            ),
-            ("column end-on", Vec3::new(0.5, 2.0, 0.5), 1, 0.01, 2.0, 0.0),
-            (
-                "separated speculative point",
-                Vec3::ONE,
-                1,
-                0.004,
-                0.001,
-                0.0,
-            ),
-        ] {
-            let (mut app, body) = landing(size, supports, gap, speed);
-            let mut observed = false;
-            // Resolution: f32 iterative-solver allowance, relative to fixture incoming momentum.
-            let tolerance = 0.01 * size.element_product() * 1000.0 * speed;
-            for _ in 0..4 {
-                app.update();
-                let reading = app.world().resource::<ContactTransfers>();
-                let groups: Vec<_> = reading.solver_groups().collect();
-                if groups.is_empty() {
-                    continue;
-                } // Free approach before narrow-phase admission.
-                if !observed {
-                    assert_eq!(
-                        groups.len(),
-                        supports,
-                        "{name}: every support shares the stop"
-                    );
-                    assert!(
-                        groups.iter().all(|points| points.len() == 4),
-                        "{name}: flat manifolds"
-                    );
-                    observed = true;
-                }
-                for &point in groups.iter().flat_map(|points| points.iter()) {
-                    // Isolate a real solver point so opposing errors cannot cancel in the sum.
-                    let single = ContactTransfers::fixture(vec![vec![point]], reading.dt());
-                    let normal =
-                        pushes(&single, |_| false)[&point.other].dot(point.normal) * reading.dt();
-                    assert!(
-                        normal >= -tolerance,
-                        "{name}: a point cannot pull: {normal}"
-                    );
-                    assert!(
-                        normal <= point.impulse.dot(point.normal).max(0.0) + tolerance,
-                        "{name}: a point cannot invent compression"
-                    );
-                }
-                let force = pushes(reading, |_| false)[&body];
-                let received: Vec3 = groups
-                    .iter()
-                    .flat_map(|points| points.iter())
-                    .map(|point| {
-                        if point.other == body {
-                            point.impulse
-                        } else {
-                            -point.impulse
-                        }
-                    })
-                    .sum();
-                println!("MEASURED {name}: impulse={received:?}, press={force:?}");
-                assert!(
-                    force.length() * reading.dt() <= replay_bound * received.length() + tolerance,
-                    "{name}: normal stop estimate exceeds its stated bound: {force:?}"
-                );
-                if speed < 0.01 {
-                    assert_eq!(received, Vec3::ZERO, "the speculative point stays unused");
-                    assert_eq!(force, Vec3::ZERO, "an unused contact supplies no drive");
-                    assert!(
-                        app.world().get::<Position>(body).unwrap().y > size.y / 2.0,
-                        "the speculative body remains separated"
-                    );
-                }
-            }
-            assert!(
-                observed,
-                "{name}: the solver must admit the fixture's contacts"
-            );
-        }
-    }
-
-    /// The game's environment destruction casts must retain a sustained press after removing
-    /// the approach estimate. Both a four-point manifold and two separate supports transmit the
-    /// applied force, independent of warm-start scaling; velocity carries no continuing blow.
-    #[test]
-    fn solver_press_transmits_a_steady_force() {
-        use crate::construction::breakage::pushes;
-        // Fixture: a flat slab held against its supports by 5 kN, kept awake as a driven body.
-        let force = 5000.0;
-        for supports in [1, 2] {
-            for warm_start in [1.0, 0.5] {
-                let (mut app, body) = landing(Vec3::new(2.0, 0.25, 1.0), supports, 0.0, 0.0);
-                app.world_mut()
-                    .resource_mut::<SolverConfig>()
-                    .warm_start_coefficient = warm_start;
-                app.world_mut()
-                    .entity_mut(body)
-                    .insert(ConstantForce::new(0.0, -force, 0.0));
-                for tick in 0..60 {
-                    app.update();
-                    if tick >= 20 {
-                        let reading = app.world().resource::<ContactTransfers>();
-                        let press = pushes(reading, |_| false)[&body];
-                        // Resolution: 1% relative allowance for iterative solver convergence.
-                        assert!(
-                            (press - Vec3::Y * force).length() <= 0.01 * force,
-                            "{supports} supports, w {warm_start}, tick {tick}: {press:?} against {force}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// The game's environment destruction sweep relies on every solver contact, independently
-    /// of structural reporting. Missing plain-body contacts or counting both structural sides
-    /// twice breaks the equality with the source's actual momentum change.
+    /// The whole-solver stream ([`ContactTransfers::solver_groups`]) holds every solver contact,
+    /// independently of structural reporting; the ram and census instruments rely on it. Missing
+    /// plain-body contacts or counting both structural sides twice breaks the equality with the
+    /// source's actual momentum change.
     #[test]
     fn solver_inputs_do_not_depend_on_structure_markers() {
         for structural in [false, true] {
@@ -955,7 +765,7 @@ mod tests {
     /// in every step, the transfer summed into a body that touches only a structure equals the
     /// body's momentum change less its applied force's `F·dt`, normal and friction together, with
     /// the warm start whole or halved; and a body pressed on the structure by a steady force reads
-    /// `F·dt` a step. A landing's crumble and the sweep's drive read rely on it. A reading of
+    /// `F·dt` a step. A landing's crumble relies on it. A reading of
     /// `ContactPoint::normal_impulse` (2.000 × `F·dt` under this press at the whole warm start,
     /// 4.000 × at the halved one, MEASURED where the reading holds 1.000 ×), of the normal part alone
     /// (the oblique strike's friction), without restitution's increment (the strike's rebound),
@@ -1038,7 +848,7 @@ mod tests {
     }
 
     /// The game's environment destruction readers need every structural side's whole manifold,
-    /// while the sweep needs each solver constraint once. Reversing a side changes only its
+    /// while the whole-solver stream holds each solver constraint once. Reversing a side changes only its
     /// body/collider addresses and impulse/normal signs, never its point order or scalars.
     #[test]
     fn structural_views_match_each_solver_constraint_in_both_body_orders() {
@@ -1081,7 +891,7 @@ mod tests {
                     assert_eq!(
                         canonical.len(),
                         constraints.len(),
-                        "the sweep reads each constraint once"
+                        "the solver stream holds each constraint once"
                     );
                     let contacts = app.world().resource::<ContactGraph>();
                     let mut expected = Vec::new();

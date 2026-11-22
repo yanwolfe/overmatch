@@ -31,8 +31,7 @@ spawns, at a time the run never reaches, so it fells nothing. The window is the 
 whose `elapsed_s` lies in [lead + --settle-s, lead + --settle-s + --park-s], where lead is the
 throttle's end (the harness's lead-in, `RUN_LEAD`, plus --throttle-ticks, at the fixed tick) and
 --settle-s covers the braking; every condition uses the same window. `tick_us` includes the
-contact census leaves the trace adds (`contact_census_us`, `sweep_census_us`); `net_us` subtracts
-them. The collector runs outside `tick_us`.
+contact census leaf the trace adds (`contact_census_us`); `net_us` subtracts it. The collector runs outside `tick_us`.
 
 Gates per run (a failed one marks it INVALID in summary.json and leaves the pooled tables): the
 server listened, the client was released and both were alive at the window's close; the window holds
@@ -77,15 +76,15 @@ ENDPOINT = ("127.0.0.1", 5888)
 WINDOW_SHARE = 0.95
 # The recorder's never-fired event: a construction far from both spawns, after any run's end.
 IDLE_RECORDER = {"tanks": 1, "events": [{"at_s": 1.0e6, "instances": ["house_0037"]}]}
-CENSUS_LEAVES = ("contact_census_us", "sweep_census_us")
+CENSUS_LEAVES = ("contact_census_us",)
 COUNTS = ("awake", "avian.pairs", "avian.touching_pairs", "avian.points", "avian.constraints",
           "avian.colors", "avian.broad_phase_candidates", "work.contact_points",
           "work.belt_near_colliders", "work.belt_candidates", "work.belt_slab_checks",
           "work.belt_slab_aabb_passes", "work.belt_overlaps", "work.belt_dynamic_contacts",
           "work.belt_dispatches", "work.belt_partition_faces", "work.belt_partition_cells",
-          "work.belt_partition_patches", "work.belt_terrain_samples", "sweep_casts")
+          "work.belt_partition_patches", "work.belt_terrain_samples")
 TIMES = ("tick_us", "net_us", "physics_us", "sleep_us", "tick_cpu_us", "belt_contacts_us",
-         "contacts_us", "sweep_us", "contact_census_us", "phases_us.driving_us",
+         "contacts_us", "bound_us", "contact_census_us", "phases_us.driving_us",
          "phases_us.physics_step_us", "phases_us.post_physics_us", "phases_us.fixed_update_us",
          "phases_us.fixed_gameplay_us", "avian.narrow_phase_us", "avian.broad_phase_us",
          "avian.prepare_constraints_us", "avian.solve_constraints_us", "avian.warm_start_us",

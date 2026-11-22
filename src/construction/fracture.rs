@@ -108,10 +108,9 @@ pub(crate) struct Compaction {
     /// plateau: the law supplies no per-pulse strain rate; applicability is a validation limit
     /// recorded in the construction design's material-data section.
     pub strength: f32,
-    /// The volumetric strain to lock-up, `ε_v = 1 − ρ / ρ_s`, at the row's fully dense density
-    /// `ρ_s` (DERIVED: the locking idealization compacts the pores shut and no further).
-    pub lock_up: f32,
-    /// The slowest compaction front's speed `u_c = √(σ_c,d ε_v / ρ)`, m/s.
+    /// The slowest compaction front's speed `u_c = √(σ_c,d ε_v / ρ)`, m/s, `ε_v = 1 − ρ / ρ_s` the
+    /// volumetric strain to lock-up at the row's fully dense density `ρ_s` (DERIVED: the locking
+    /// idealization compacts the pores shut and no further).
     pub front_speed: f32,
     /// The volume the fractured zone about a crushed volume spans, per volume crushed
     /// ([`BlastFacts::fractured_zone`]). StandIn: the static elastic estimate stands in for a
@@ -156,7 +155,6 @@ impl Compaction {
         let lock_up = 1.0 - density / facts.solid_density;
         Self {
             strength: strength as f32,
-            lock_up: lock_up as f32,
             front_speed: (strength * lock_up / density).sqrt() as f32,
             zone: facts.fractured_zone(tensile, across) as f32,
         }
@@ -276,24 +274,6 @@ impl Material {
             (Grain::Laid { .. }, _) => panic!("a substance's material is laid once"),
         };
         Ok(Self { grain, ..self })
-    }
-
-    /// The quasi-static compression it bears, Pa, pushed along unit `normal` (construction frame):
-    /// [`Self::compressive_strength`] every way without a grain; with one, Hankinson's formula
-    /// `N = P Q / (P sin²θ + Q cos²θ)` between `P` along the grain and `Q` across it, θ the angle
-    /// from the grain (USDA FPL Wood Handbook FPL-GTR-282, 2021, Chapter 5, Eq. 5–2, p. 5–29, read
-    /// primary; its exponent spans 2–2.5 for compression, and Hankinson's own form is 2).
-    pub(crate) fn bearing(&self, normal: DVec3) -> f64 {
-        let across = self.compressive_strength;
-        match self.grain {
-            Grain::None => across,
-            Grain::Laid { along, axis } => {
-                let cos = normal.dot(axis.as_dvec3()).abs().min(1.0);
-                let sin2 = 1.0 - cos * cos;
-                along * across / (along * sin2 + across * cos * cos)
-            }
-            Grain::Unlaid { .. } => panic!("a chunk's grained material is laid by its element"),
-        }
     }
 }
 
@@ -778,6 +758,11 @@ impl Topology {
 }
 
 impl State {
+    /// The joints chunk `c` is a side of, in joint order, parted ones included.
+    pub(crate) fn incident(&self, c: usize) -> &[usize] {
+        &self.topology.incident[c]
+    }
+
     /// Every chunk standing with a full pool, every joint intact.
     pub fn new(structure: &Structure) -> Self {
         Self {
@@ -4206,55 +4191,6 @@ mod tests {
             on_brick.mass != on_wood.mass && on_brick.velocity != on_wood.velocity,
             "a row changes the scab: {on_brick:?} vs {on_wood:?}"
         );
-    }
-
-    /// The game's environment destruction: a grained substance bears its along-grain strength
-    /// pushed along its grain, its across-grain strength pushed across it, and between them moves
-    /// monotonically with the angle (Hankinson's formula), whichever way the grain is laid. Every
-    /// shipped grained substance; `sweep::Geometry::plug`'s bearing limit relies on it.
-    #[test]
-    fn a_grain_bears_along_and_across_at_its_endpoints_and_monotonically_between() {
-        let registry = SubstanceRegistry::shipped_static();
-        let mut grained = 0;
-        for name in registry.keys() {
-            let Some(material) = Material::of(registry, name).ok().flatten() else {
-                continue; // Not breakable matter: no bearing law reads it.
-            };
-            let Grain::Unlaid { along } = material.grain else {
-                continue; // It bears alike every way.
-            };
-            grained += 1;
-            let across = material.compressive_strength;
-            // Fixture: an oblique grain.
-            let axis = Vec3::new(1.0, 2.0, 2.0) / 3.0;
-            let laid = material
-                .laid(crate::construction::schema::SurfaceFrame::Grain(
-                    axis.to_array(),
-                ))
-                .unwrap();
-            let side = axis.cross(Vec3::X).normalize().as_dvec3();
-            let at = |theta: f64| laid.bearing(axis.as_dvec3() * theta.cos() + side * theta.sin());
-            // Resolution: the grain axis is f32 (ulp 6e-8).
-            let close = |a: f64, b: f64| (a - b).abs() <= 1e-6 * b;
-            assert!(close(at(0.0), along), "{name}: along its grain");
-            assert!(
-                close(at(std::f64::consts::PI), along),
-                "{name}: either way along it"
-            );
-            assert!(
-                close(at(std::f64::consts::FRAC_PI_2), across),
-                "{name}: across it"
-            );
-            // Fixture: one-degree steps from the grain to across it.
-            let steps: Vec<f64> = (0..=90).map(|d| at(f64::from(d).to_radians())).collect();
-            assert!(
-                steps
-                    .windows(2)
-                    .all(|pair| (pair[1] - pair[0]) * (across - along) >= 0.0),
-                "{name}: monotonic between: {steps:?}"
-            );
-        }
-        assert!(grained > 0, "a shipped substance bears by its grain");
     }
 
     /// The game's environment destruction: an element that lays a grained substance with no grain,

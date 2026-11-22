@@ -198,13 +198,10 @@ pub struct TrackContacts(pub [Vec<BeltContact>; 2]);
 /// pass and where no pass runs: nothing has risen. Sleep never changes what the band admits, and
 /// a solver step reads a stale band only in the step that wakes its tank, whatever changed while
 /// the tank rested. While it rests no solver step runs its pairs, a moving body's candidate
-/// contact with one of its faces wakes it (`stop_contacts::WorldContacts`), and a sweep reads no
-/// resting source's. Every awake tank's pass rewrites the band in `FixedUpdate` before Avian's step
+/// contact with one of its faces wakes it (`stop_contacts::WorldContacts`). Every awake tank's pass rewrites the band in `FixedUpdate` before Avian's step
 /// in `FixedPostUpdate`, a tank at rest but awake included. So the one stale step is a wake's that
-/// lands after the tick's pass and before its solver: the support index's or the sweep's before
-/// the step, or the narrow phase's (Avian's contact wake or the hook's), which applies at the
-/// sync point before the solver. That step runs on the band and belt the last pass left, hook and
-/// sweep alike, and the tank also runs it without its sampled support's forces, as in every
+/// lands after the tick's pass and before its solver: the support index's before the step, or the narrow phase's (Avian's contact wake or the hook's), which applies at the
+/// sync point before the solver. That step runs on the band and belt the last pass left, and the tank also runs it without its sampled support's forces, as in every
 /// mid-step wake. A wake at a step's end (an impulse, Avian's sleep pass) leaves the next pass to
 /// rewrite the band first. Never hashed, never rolled back.
 #[derive(Component, Clone, Debug, Default)]
@@ -2277,6 +2274,7 @@ mod tests {
                     (
                         observe_substep
                             .after(prepare_surface_speeds)
+                            .before(crate::avian_ext::reaction_bound::deal)
                             .before(SubstepSolverSystems::WarmStart),
                         observe_surface_exchange
                             .after(collect_surface_speeds)
@@ -2479,6 +2477,7 @@ mod tests {
                                     SubstepSchedule,
                                     clear_friction_cache
                                         .after(prepare_surface_speeds)
+                                        .before(crate::avian_ext::reaction_bound::deal)
                                         .before(SubstepSolverSystems::WarmStart),
                                 );
                             }

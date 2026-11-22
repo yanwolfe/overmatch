@@ -73,7 +73,7 @@ impl BeltFace {
         }
     }
 
-    /// The represented contact surface in the hull frame, shared by solver and sweep witnesses.
+    /// The represented contact surface in the hull frame.
     pub(crate) fn accepts_normal(&self, outward: Vec3) -> bool {
         match self.bears {
             Bearing::Whole => true,
@@ -147,11 +147,10 @@ impl BeltFace {
     }
 }
 
-/// Avian 0.8 permits one hook set. The construction sweep judges speculative points first;
-/// surviving shoe contacts carry the field's grip. Substep preparation owns surface velocity.
+/// The world's one contact hook set (Avian 0.8 permits one): shoe contacts carry the field's
+/// grip. Substep preparation owns surface velocity.
 #[derive(SystemParam)]
 pub(crate) struct WorldContacts<'w, 's> {
-    sweep: crate::construction::breakage::SweepContacts<'w, 's>,
     faces: Query<'w, 's, (&'static BeltFace, &'static ColliderOf)>,
     belts: Query<
         'w,
@@ -170,9 +169,6 @@ pub(crate) struct WorldContacts<'w, 's> {
 
 impl CollisionHooks for WorldContacts<'_, '_> {
     fn modify_contacts(&self, contacts: &mut ContactPair, commands: &mut Commands) -> bool {
-        if !self.sweep.modify_contacts(contacts, commands) {
-            return false;
-        }
         // Avian's relative surface velocity is collider 2 minus collider 1.
         for (collider, other, body, sign) in [
             (contacts.collider1, contacts.collider2, contacts.body2, -1.0),
@@ -185,8 +181,8 @@ impl CollisionHooks for WorldContacts<'_, '_> {
                 .belts
                 .get(of.body)
                 .expect("a moving shoe face hangs on its spawn-built driving body");
-            // A resting tank's band may be stale (`TrackRise`). Past the construction sweep's
-            // filter, the hook runs for each fresh candidate (recycling is disabled by the shared
+            // A resting tank's band may be stale (`TrackRise`). The hook runs for each fresh
+            // candidate (recycling is disabled by the shared
             // physics policy). NarrowPhaseSystems::Update's ParallelCommands flush at the automatic
             // ApplyDeferred sync point before PhysicsStepSystems::Solver: removing Sleeping
             // queues WakeBody through its on-remove hook, waking the island before solver bodies
@@ -563,8 +559,7 @@ mod tests {
     }
 
     /// A side slice bears only lateral contact through its exposed face ([`Bearing::Exposed`]): its
-    /// rest-height radial planes would bypass suspension travel and duplicate the stop's limit. The
-    /// sweep's witnesses rely on the same admission (`construction::sweep::source`). Fails if a slice
+    /// rest-height radial planes would bypass suspension travel and duplicate the stop's limit. Fails if a slice
     /// bears a radial normal or a lateral one of either sign, or ignores its collider's pair order.
     #[test]
     fn a_side_slice_bears_only_lateral_contact_through_its_exposed_face() {

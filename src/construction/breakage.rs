@@ -27,11 +27,11 @@
 //!   bodies (a hull, a launched turret) and every other surface (the ground); one
 //!   that stops on such a body pushes it the same way, through avian at the point it stops.
 //!   Terrain and other nonstructural surfaces only shade the field.
-//! * **Contacts**: [`sweep_intake::run`] frees intersected patches before physics, handing each to
-//!   [`sweep_intake::sweep_departure`] with velocity and tick, which routes what stays connected of
-//!   it by size ([`crate::debris::crumble::route`]). No contact loads a placed construction's
-//!   structure check, from a body awake or asleep: it reads the construction's own weight and
-//!   field impulses. A moving group's landings crumble it ([`crate::debris::crumble`]).
+//! * **Contacts**: a standing cell returns a body no more than its bonds can, and cells pushed
+//!   across their give leave at rest ([`bounded`]), routed by size
+//!   ([`crate::debris::crumble::route`]). No contact loads a placed construction's structure
+//!   check, from a body awake or asleep: it reads the construction's own weight and field
+//!   impulses. A moving group's landings crumble it ([`crate::debris::crumble`]).
 //! * **The order.** Tick intake reads one geometry snapshot. Each owner runs removal and
 //!   cavity cracks ([`fracture::strike`]), the part-scale verdict
 //!   ([`fracture::parts::Assessment`]), then connectivity on change. Independent owners
@@ -77,9 +77,9 @@ use std::sync::Arc;
 
 use avian3d::collider_tree::{ColliderTrees, update_moved_collider_aabbs};
 use avian3d::prelude::{
-    ActiveCollisionHooks, AngularVelocity, Collider, ColliderAabb, ColliderOf, CollisionLayers,
-    Forces, LayerMask, LinearVelocity, Position, ReadRigidBodyForces, RigidBody, Rotation, Sensor,
-    SpatialQuery, SpatialQueryFilter, WriteRigidBodyForces,
+    AngularVelocity, Collider, ColliderAabb, ColliderOf, CollisionLayers, Forces, LayerMask,
+    LinearVelocity, Position, ReadRigidBodyForces, RigidBody, Rotation, Sensor, SpatialQuery,
+    SpatialQueryFilter, WriteRigidBodyForces,
 };
 
 use bevy::ecs::entity::EntityHashMap;
@@ -906,7 +906,7 @@ impl RayDeposit {
     }
 }
 
-/// The deposits the march and the sweep raised this tick.
+/// The deposits the march and the contact law raised this tick.
 #[derive(Resource, Default)]
 struct Queue(Vec<RawDeposit>);
 
@@ -924,10 +924,24 @@ type Colliders<'w, 's> = Query<
 
 pub(crate) mod bounded;
 pub(crate) mod felling;
-mod sweep_intake;
-#[cfg(test)]
-pub(crate) use sweep_intake::pushes;
-pub(crate) use sweep_intake::{ReleasedMotion, SweepAccount, SweepCast, SweepContacts};
+
+/// A rigid velocity field: `velocity + spin × (x − centre)`, in the frame its user names.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ReleasedMotion {
+    pub(crate) velocity: Vec3,
+    pub(crate) spin: Vec3,
+    pub(crate) centre: Vec3,
+}
+
+impl ReleasedMotion {
+    pub(crate) fn at_rest(centre: Vec3) -> Self {
+        Self {
+            velocity: Vec3::ZERO,
+            spin: Vec3::ZERO,
+            centre,
+        }
+    }
+}
 
 /// AUTHORITY: a charge set off at `at` (world), its blast fed to the blast field at the next
 /// deposits, as a burst's is.
@@ -1724,7 +1738,7 @@ fn apply_deposits(mut p: DepositParam) {
                 .batching_strategy(bevy::ecs::batching::BatchingStrategy::fixed(1))
                 .for_each(|candidate| {
                     let (root, transform, mut breakage, piece) = candidate.expect(
-                        "sweep_intake queues changed roots for LawSet in the same tick, before retirement",
+                        "a root is queued as changed for LawSet in the same tick, before retirement",
                     );
                     let taken = &batch[&root];
                     let construction = breakage.physics_frame(transform);
@@ -2473,9 +2487,9 @@ type OccupiedCollider = (
 type ContactCollider = (Collider, avian3d::prelude::Friction, ChunkCollider);
 
 fn occupied_collider(kind: &ConstructionKind, c: usize, rotation: Quat) -> OccupiedCollider {
-    let hull = kind.sweep.occupied(c).0.clone();
+    let hull = kind.hulls.occupied(c).0.clone();
     (
-        super::sweep::posed(hull, rotation),
+        super::hulls::posed(hull, rotation),
         kind.chunk_friction(c),
         chunk_volume(kind, c),
         ChunkCollider(c as u16),
@@ -2484,10 +2498,7 @@ fn occupied_collider(kind: &ConstructionKind, c: usize, rotation: Quat) -> Occup
 
 fn freed_contact(kind: &ConstructionKind, c: usize, rotation: Quat) -> ContactCollider {
     (
-        with_insertion_mass(super::sweep::posed(
-            kind.sweep.contact_hull(c).clone(),
-            rotation,
-        )),
+        with_insertion_mass(super::hulls::posed(kind.hulls.contact(c).clone(), rotation)),
         kind.chunk_friction(c),
         ChunkCollider(c as u16),
     )
@@ -2626,7 +2637,6 @@ struct PreparedChunk {
 struct PreparedDeparture {
     departure: Departure,
     chunks: Vec<PreparedChunk>,
-    source: super::sweep::SourceShape,
 }
 
 /// Move `owner`'s members named in `leaving` to the back of its list, the first to leave last.
@@ -2738,14 +2748,7 @@ fn prepare_group(departure: Departure, reusable: &ReusableColliders) -> Prepared
             }
         })
         .collect();
-    let source = kind
-        .sweep
-        .source(&departure.group, departure.launch.centroid, rotation);
-    PreparedDeparture {
-        departure,
-        chunks,
-        source,
-    }
+    PreparedDeparture { departure, chunks }
 }
 
 /// Occupied free-group geometry and motion from its field impulses, in construction coordinates.
@@ -2767,7 +2770,7 @@ pub(crate) fn launch(
     let total = group
         .iter()
         .map(|&c| {
-            let (_, props) = kind.sweep.occupied(c);
+            let (_, props) = kind.hulls.occupied(c);
             props.transformed_by(Isometry3d::from_translation(chunks[c].centroid - centroid))
         })
         .fold(MassProperties3d::default(), |sum, part| sum + part);
@@ -2810,17 +2813,7 @@ fn spawn_group(commands: &mut Commands, departure: Departure) {
 /// Commit a group from its synchronous, independently prepared construction state.
 fn spawn_prepared(commands: &mut Commands, prepared: PreparedDeparture) {
     let piece = commands.spawn_empty().id();
-    spawn_prepared_as(commands, piece, prepared);
-}
-
-/// [`spawn_prepared`] onto `piece`, an entity reserved for it: the sweep names a departure's body
-/// before it spawns.
-fn spawn_prepared_as(commands: &mut Commands, piece: Entity, prepared: PreparedDeparture) {
-    let PreparedDeparture {
-        departure,
-        chunks,
-        source,
-    } = prepared;
+    let PreparedDeparture { departure, chunks } = prepared;
     let Departure {
         kind,
         construction,
@@ -2841,7 +2834,6 @@ fn spawn_prepared_as(commands: &mut Commands, piece: Entity, prepared: PreparedD
     // `Position`/`Rotation` before the body: it never flushes with avian's placeholder pose.
     let body = (
         Name::new("Piece"),
-        source,
         Piece {
             construction,
             chunks: group.iter().map(|&c| c as u16).collect(),
@@ -2868,7 +2860,7 @@ fn spawn_prepared_as(commands: &mut Commands, piece: Entity, prepared: PreparedD
         avian3d::prelude::RigidBodyColliders::default(),
         avian3d::AncestorMarker::<avian3d::prelude::ColliderMarker>::default(),
         // The whole group owns its occupied properties at spawn. Child rehoming cannot
-        // expose a partial aggregate to driving or sweeps before Avian's prepare phase.
+        // expose a partial aggregate to driving before Avian's prepare phase.
         (
             avian3d::prelude::Mass(launch.mass_properties.mass),
             avian3d::prelude::AngularInertia::new_with_local_frame(
@@ -3201,10 +3193,7 @@ fn prepare_reconcile(
                     ChildOf(root),
                     Transform::from_translation(kind.structure.chunks[c].centroid),
                     (with_insertion_mass(hull), friction, volume, chunk),
-                    (
-                        super::element_layers(),
-                        ActiveCollisionHooks::MODIFY_CONTACTS,
-                    ),
+                    super::element_layers(),
                     (
                         Position::PLACEHOLDER,
                         Rotation::PLACEHOLDER,
@@ -3295,7 +3284,7 @@ fn refit_systems() -> bevy::ecs::schedule::ScheduleConfigs<bevy::ecs::system::Sc
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct LawSet;
 
-/// Hull sweep and its reconciliation, before physics consumes the changed colliders.
+/// The belts' forces on standing matter bounded ([`bounded`]), before physics applies them.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct BeltSet;
 
@@ -3313,18 +3302,10 @@ pub(crate) struct LandingSet;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ReplicaSet;
 
-/// AUTHORITY: the hull sweep ([`sweep_intake::run`]), timed as its own stage.
-fn sweep(intake: sweep_intake::Intake, stages: Option<Res<Stages>>) {
-    let _sweep = Stages::start(stages.as_deref(), Stage::Sweep);
-    sweep_intake::run(intake);
-}
-
 pub(crate) fn sim_plugin(app: &mut App) {
     crate::collider_rehome::plugin(app);
     bounded::plugin(app);
-    app.init_resource::<SweepAccount>()
-        .init_resource::<SweepCast>()
-        .add_message::<crate::debris::crumble::Shed>()
+    app.add_message::<crate::debris::crumble::Shed>()
         .init_resource::<Queue>()
         .init_resource::<Record>()
         .add_observer(read_shell)

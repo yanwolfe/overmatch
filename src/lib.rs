@@ -50,7 +50,7 @@ pub mod construction;
 /// See the module doc.
 mod construction_surface;
 /// What the physics solver moved through each contact, per step (the game's environment
-/// destruction): the reading landings and the sweep take. Mounted by `SimPlugin`.
+/// destruction): the reading landings take. Mounted by `SimPlugin`.
 mod contact_law;
 mod contact_transfer;
 /// Fixed-tick wall clock/server stats and `SPIKE_COST_TRACE=<path>` JSONL recorder:

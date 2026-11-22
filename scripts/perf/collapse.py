@@ -606,7 +606,7 @@ def read_tick_samples(batches, tanks, ticks=None, sends=None):
                 raise RuntimeError("missing, duplicated or reordered instrument tick")
             if tick["tanks"] != tanks:
                 raise RuntimeError("tick population differs from requested tanks")
-            required = {"tick_us", "physics_us", "sleep_us", "intake_us", "structure_us", "refit_us", "publish_us", "contacts_us", "sweep_us", "crumble_us", "collector_us", "dt_s", "phases_us", "phases_cpu_us", "stages_cpu_us", "tick_cpu_us"}
+            required = {"tick_us", "physics_us", "sleep_us", "intake_us", "structure_us", "refit_us", "publish_us", "contacts_us", "bound_us", "release_us", "crumble_us", "collector_us", "dt_s", "phases_us", "phases_cpu_us", "stages_cpu_us", "tick_cpu_us"}
             if missing := required - tick.keys():
                 raise ValueError(f"missing tick timing fields: {sorted(missing)}")
             for field in {name for name in tick if name.endswith("_us") and name not in {"phases_us", "phases_cpu_us", "stages_cpu_us"}} | {"dt_s"}:

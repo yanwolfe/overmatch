@@ -12,8 +12,6 @@ struct Wall {
     kind: Arc<ConstructionKind>,
     state: State,
     preload: Vec<f64>,
-    /// The instrument's arm ([`Standing::bare`]).
-    bare: bool,
 }
 
 impl Wall {
@@ -29,7 +27,6 @@ impl Wall {
             kind,
             state,
             preload,
-            bare: false,
         }
     }
 
@@ -39,7 +36,6 @@ impl Wall {
             state: &self.state,
             shapes: &self.kind.layout.blocks,
             preload: &self.preload,
-            bare: self.bare,
         }
     }
 
@@ -191,7 +187,7 @@ fn a_leaf_pressed_along_its_length_sheds_the_pressed_cells_through_its_face() {
 /// head joints' price).
 #[test]
 fn a_push_into_the_ground_sheds_sideways_against_its_own_friction() {
-    let mut wall = Wall::new(WALL, [16, 12, 1]);
+    let wall = Wall::new(WALL, [16, 12, 1]);
     let top = wall.within(Vec3::new(-0.5, 2.2, -1.0), Vec3::new(0.5, 2.4, 1.0));
     let down = Push {
         along: DVec3::NEG_Y,
@@ -205,8 +201,8 @@ fn a_push_into_the_ground_sheds_sideways_against_its_own_friction() {
         material.friction,
     ));
     assert!(friction < 1.0, "fixture: the pair slides");
+    let standing = wall.standing();
     let given = {
-        let standing = wall.standing();
         let plug = standing.plug(&top, down.along);
         assert!(plug.grounded && plug.cells.len() == top.len() * 12);
         assert_eq!(standing.shear_out(&plug, down.along), None);
@@ -219,12 +215,13 @@ fn a_push_into_the_ground_sheds_sideways_against_its_own_friction() {
         standing.give(&top, &[down], 0.0, dt).unwrap()
     };
     assert_eq!((given.way, &given.leaves), (Way::Shed, &top));
-    wall.bare = true;
-    let bare = wall.standing().give(&top, &[down], 0.0, dt).unwrap();
+    let beside = [DVec3::Z, DVec3::NEG_Z]
+        .into_iter()
+        .map(|side| standing.boundary(&top, side, None).0.force)
+        .fold(f64::INFINITY, f64::min);
     assert!(
-        given.price.force * (1.0 - friction) > bare.price.force,
-        "{:?} against the joints beside alone, {:?}, at friction {friction}",
-        given.price,
-        bare.price
+        beside.is_finite() && given.price.force * (1.0 - friction) >= beside * (1.0 - 1e-9),
+        "{:?} against the joints beside alone, {beside} N, at friction {friction}",
+        given.price
     );
 }

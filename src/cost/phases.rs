@@ -27,7 +27,7 @@ enum Phase {
     FixedGameplay,
     Servos,
     FixedTail,
-    SweepEcs,
+    BoundEcs,
     PhysicsPrepare,
     PhysicsMass,
     PhysicsStep,
@@ -58,7 +58,7 @@ pub(crate) const NAMES: [&str; 21] = [
     "fixed_gameplay_us",
     "servos_us",
     "fixed_tail_us",
-    "sweep_ecs_us",
+    "bound_ecs_us",
     "physics_prepare_us",
     "physics_mass_us",
     "physics_step_us",
@@ -140,7 +140,7 @@ pub(crate) fn install(app: &mut App) {
     app.init_resource::<Stages>().init_resource::<Phases>();
     before_schedule(app, FixedPreUpdate, Phase::FixedPre);
     before_schedule(app, FixedUpdate, Phase::FixedUpdate);
-    before_schedule(app, FixedPostUpdate, Phase::SweepEcs);
+    before_schedule(app, FixedPostUpdate, Phase::BoundEcs);
     before_schedule(app, FixedLast, Phase::FixedLast);
     app.add_systems(
         FixedUpdate,
@@ -361,7 +361,7 @@ mod tests {
             .add_systems(FixedFirst, commands_in(Phase::FixedFirst))
             .add_systems(
                 FixedPostUpdate,
-                commands_in(Phase::SweepEcs).in_set(BeltSet),
+                commands_in(Phase::BoundEcs).in_set(BeltSet),
             )
             .add_systems(
                 FixedPostUpdate,

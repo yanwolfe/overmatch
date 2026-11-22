@@ -287,8 +287,8 @@ fn a_pivoting_track_shoves_a_piece_without_throwing_it_or_touching_terrain() {
     }
 }
 
-/// A side plate meets standing construction in the solver, as a hull proxy does: matter the
-/// sweep holds is a real stop for it. A low standing element that only the plate reaches must
+/// A side plate meets standing construction in the solver, as a hull proxy does: standing
+/// matter is a real stop for it. A low standing element that only the plate reaches must
 /// take momentum away from the shoe's exposed face, the one face a plate bears through; a new
 /// layer that misses standing structures or a plate bearing through its inner face fails.
 #[test]

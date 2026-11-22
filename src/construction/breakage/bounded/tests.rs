@@ -1,4 +1,4 @@
-//! The contact law wired into the step, on generic wall fixtures (game state only).
+//! The contact law wired into the step, on a generic wall fixture (game state only).
 
 use avian3d::prelude::*;
 
@@ -6,109 +6,62 @@ use super::super::tests::composed_kind;
 use super::*;
 use crate::construction::tests::wall_construction;
 
-/// Fixture: a wall 6 m long and 2.4 m high, and a rigid box 2 m wide, 1.2 m high and 2 m long
-/// driven at its middle along +z from 0.175 m short of a 0.25 m leaf.
+/// Fixture: a brick leaf 6 m long, 2.4 m high and 0.25 m thick in 1 m by 0.6 m cells, and a
+/// rigid box 2 m wide, 1.2 m high and 2 m long sent at its middle along +z from 0.175 m short.
 const WALL: Vec3 = Vec3::new(6.0, 2.4, 0.25);
 const BOX: Vec3 = Vec3::new(2.0, 1.2, 2.0);
 const START: Vec3 = Vec3::new(0.0, 1.0, -1.3);
 
-struct Ram {
-    app: App,
-    root: Entity,
-    body: Entity,
+/// The box of `mass` kg sent at `speed` m/s, after 2.5 s: where its centre is along z (m), its
+/// speed along z (m/s) and the cells the wall lost.
+fn sent(mass: f32, speed: f32) -> (f32, f32, usize) {
+    let kind = wall_construction(WALL, [6, 4, 1], "Brick");
+    let (mut app, _) = composed_kind(false, &kind);
+    for _ in 0..3 {
+        app.update();
+    }
+    let body = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Position(START),
+            Rotation::default(),
+            Collider::cuboid(BOX.x, BOX.y, BOX.z),
+            Mass(mass),
+            NoAutoMass,
+            piece_layers(),
+            LinearVelocity(Vec3::Z * speed),
+            SleepingDisabled,
+        ))
+        .id();
+    let mut freed = 0;
+    for _ in 0..160 {
+        app.update();
+        freed += app.world().resource::<BoundAccount>().freed.len();
+    }
+    (
+        app.world().get::<Position>(body).unwrap().0.z,
+        app.world().get::<LinearVelocity>(body).unwrap().0.z,
+        freed,
+    )
 }
 
-struct Outcome {
-    /// The body's speed along +z after the run, its least during it and its largest loss over
-    /// one tick, m/s.
-    end: f32,
-    least: f32,
-    worst: f32,
-    /// Where it ended along z, m.
-    reached: f32,
-    freed: usize,
-    standing: usize,
-}
-
-impl Ram {
-    fn new(kind: &Arc<ConstructionKind>, mass: f32, speed: f32, force: f32) -> Self {
-        let (mut app, root) = composed_kind(false, kind);
-        for _ in 0..3 {
-            app.update();
-        }
-        let body = app
-            .world_mut()
-            .spawn((
-                RigidBody::Dynamic,
-                Position(START),
-                Rotation::default(),
-                Collider::cuboid(BOX.x, BOX.y, BOX.z),
-                Mass(mass),
-                NoAutoMass,
-                piece_layers(),
-                LinearVelocity(Vec3::Z * speed),
-                ConstantForce(Vec3::Z * force),
-                SleepingDisabled,
-            ))
-            .id();
-        Self { app, root, body }
-    }
-
-    fn speed(&self) -> f32 {
-        self.app
-            .world()
-            .get::<LinearVelocity>(self.body)
-            .unwrap()
-            .0
-            .z
-    }
-
-    fn run(&mut self, ticks: usize) -> Outcome {
-        let mut last = self.speed();
-        let (mut least, mut worst, mut freed) = (last, 0.0_f32, 0);
-        for _ in 0..ticks {
-            self.app.update();
-            let speed = self.speed();
-            freed += self.app.world().resource::<BoundAccount>().freed.len();
-            least = least.min(speed);
-            worst = worst.max(last - speed);
-            last = speed;
-        }
-        let owner = self.app.world().get::<Breakage>(self.root).unwrap();
-        Outcome {
-            end: last,
-            least,
-            worst,
-            reached: self.app.world().get::<Position>(self.body).unwrap().0.z,
-            freed,
-            standing: (0..owner.live.structure.chunks.len())
-                .filter(|&c| owner.live.state.standing(c))
-                .count(),
-        }
-    }
-}
-
+/// Invariant: the law reaches the solver and the release. A body whose momentum the leaf's bonds
+/// cannot take crosses it still moving, and the cells in its way leave; a body they can stop
+/// does not pass the same leaf. Every body that meets standing matter relies on it. Mutants: no
+/// bound handed to the solver (the heavy box stops dead on a rigid wall), a block bounded at
+/// nothing or freed by any touch (the light box passes).
 #[test]
-fn explore() {
-    for (material, size, cells, mass, speed, force) in [
-        ("Brick", WALL, [6, 4, 1], 57_000.0, 4.5, 0.0),
-        ("Brick", WALL, [12, 8, 1], 57_000.0, 4.5, 0.0),
-        ("Brick", WALL.with_z(0.5), [6, 4, 2], 57_000.0, 4.5, 0.0),
-        ("Brick", WALL, [6, 4, 1], 57_000.0, 2.8, 0.0),
-        ("Brick", WALL, [12, 8, 1], 57_000.0, 2.8, 0.0),
-        ("Brick", WALL, [6, 4, 1], 57_000.0, 9.4, 0.0),
-        ("Brick", WALL, [12, 8, 1], 57_000.0, 9.4, 0.0),
-        ("Brick", WALL, [6, 4, 1], 57_000.0, 0.0, 300_000.0),
-        ("Brick", WALL, [6, 4, 1], 57_000.0, 0.0, 30_000.0),
-        ("Brick", WALL, [6, 4, 1], 20.0, 4.5, 0.0),
-        ("Brick", WALL, [6, 4, 1], 500.0, 4.5, 0.0),
-    ] {
-        let kind = wall_construction(size, cells, material);
-        let mut ram = Ram::new(&kind, mass, speed, force);
-        let o = ram.run(160);
-        println!(
-            "ROW {material} {size} {cells:?} mass {mass} speed {speed} force {force}: end {:.3} least {:.3} worst tick {:.3} reached {:.2} freed {} standing {}",
-            o.end, o.least, o.worst, o.reached, o.freed, o.standing
-        );
-    }
+fn a_leaf_gives_to_a_body_its_bonds_cannot_stop_and_stops_one_they_can() {
+    // Fixture: 57 t and 20 kg, each at 4.5 m/s.
+    let (reached, speed, freed) = sent(57_000.0, 4.5);
+    assert!(
+        reached - BOX.z / 2.0 > WALL.z && speed > 0.0 && freed > 0,
+        "the heavy box crosses: at {reached} m, {speed} m/s, {freed} cells freed"
+    );
+    let (reached, ..) = sent(20.0, 4.5);
+    assert!(
+        reached + BOX.z / 2.0 < WALL.z,
+        "the light box does not pass: at {reached} m"
+    );
 }

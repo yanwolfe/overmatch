@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use avian3d::prelude::{ActiveCollisionHooks, Collider, CollisionLayers, LayerMask, RigidBody};
+use avian3d::prelude::{Collider, CollisionLayers, LayerMask, RigidBody};
 use bevy::prelude::*;
 
 use crate::Layer;
@@ -38,8 +38,8 @@ use crate::substances::SubstanceRegistry;
 pub mod attachments;
 pub(crate) mod breakage;
 pub(crate) mod fracture;
+pub(crate) mod hulls;
 pub mod schema;
-pub(crate) mod sweep;
 pub(crate) mod view;
 
 use attachments::Attachments;
@@ -74,7 +74,7 @@ pub(crate) struct ConstructionKind {
     /// Checked geometry and initial gravity, shared until an instance changes.
     pub(crate) structure: Arc<fracture::Structure>,
     pub(crate) equilibrium: Arc<fracture::parts::Assessment>,
-    pub(crate) sweep: sweep::Geometry,
+    pub(crate) hulls: hulls::Hulls,
 }
 
 impl ConstructionKind {
@@ -147,7 +147,7 @@ impl ConstructionKind {
         let structure = Arc::new(layout.checked_structure(&asset)?);
         let equilibrium = Arc::new(fracture::parts::Assessment::at_rest(&structure));
         let kind = Self {
-            sweep: sweep::Geometry::new(&layout.blocks, &structure)?,
+            hulls: hulls::Hulls::new(&layout.blocks, &structure)?,
             dressing: view::Dressing::bare(&layout)?,
             asset,
             materials,
@@ -288,7 +288,6 @@ fn element_bundle(kind: &ConstructionKind, k: usize) -> impl Bundle {
             substance: kind.asset.materials[material].clone(),
         },
         Element(u16::try_from(k).expect("the schema bounds the element count")),
-        ActiveCollisionHooks::MODIFY_CONTACTS, // `breakage::SweepContacts`.
     )
 }
 

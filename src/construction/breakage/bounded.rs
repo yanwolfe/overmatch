@@ -10,7 +10,7 @@
 //!   unbreakable element, a buried cell, a face slid along) stays rigid.
 //! * [`release`], after the step: a block that returned all its bound was not enough to stop
 //!   the body, which crossed [`crossed`] of its give; the share is remembered per cell while the
-//!   block keeps yielding ([`Give`]) and the cells leave when it reaches one.
+//!   block keeps yielding ([`Give`]) and the cells leave, at rest, when it reaches one.
 //! * [`bound_belts`], before the step: the force a belt takes from standing matter is bounded by
 //!   the same price; over it, the belt keeps what the cells can return and they leave.
 //!
@@ -28,7 +28,6 @@ use avian3d::prelude::{
 };
 
 use super::fracture::bound::{Push, Standing, Way, Yield, crossed, reaction};
-use super::sweep_intake::{ReleasedMotion, cut_fragments, sweep_departure};
 use super::*;
 use crate::avian_ext::reaction_bound::{Bound, Bounds, Member};
 use bevy::tasks::ParallelSlice;
@@ -54,10 +53,6 @@ pub(crate) struct Block {
 #[derive(Resource, Default, Debug)]
 pub(crate) struct Pressed {
     blocks: Vec<Block>,
-    held: Vec<HeldRow>,
-    /// Every contact point on standing matter: its pair, manifold and point, the pressing body,
-    /// the construction, how it answers, and the unit from the body into the matter, world.
-    ends: Vec<((u32, usize, usize), Entity, u16, End, Vec3)>,
     /// Cells a belt over-pushed before the step, by owner.
     belts: Vec<(Entity, Vec<usize>)>,
 }
@@ -66,16 +61,6 @@ pub(crate) struct Pressed {
 /// its body, or is no longer pressed, is forgotten: its bonds held.
 #[derive(Resource, Default, Debug)]
 pub(crate) struct Give(BTreeMap<(Entity, usize), f64>);
-
-/// The ram instrument's relay arm (`net::ram::relay`): while present, a cell's crossed share is
-/// never forgotten.
-#[derive(Resource)]
-pub(crate) struct KeepGive;
-
-/// The ram instrument's relay arm (`net::ram::relay`): while present, a joint the push closes
-/// resists a sideways shed with nothing ([`Standing::bare`]).
-#[derive(Resource)]
-pub(crate) struct BareShed;
 
 /// One block's step, for the operator's instruments.
 #[derive(Debug, Clone, PartialEq)]
@@ -92,73 +77,16 @@ pub(crate) struct BlockRow {
     pub(crate) bound: f64,
     /// It returned all its bound: the block did not stop the body.
     pub(crate) yielded: bool,
-    /// A point of the way that gave ended the step at its bound, yielded or not.
-    pub(crate) wanting: bool,
-    /// The share of the way's force bound its points carried in the step's last substep.
-    pub(crate) used: f32,
     /// The share of its give crossed after the step; one or more frees it.
     pub(crate) spent: f64,
-    /// The push, unit, in the owner's frame.
-    pub(crate) along: DVec3,
-    /// The push runs into the ground or buried matter.
-    pub(crate) grounded: bool,
     /// What its points returned along the push over the step, N·s.
     pub(crate) returned: f32,
-    /// The pressed cells and the cells that leave if it gives, ordered.
-    pub(crate) pressed: Vec<usize>,
-    pub(crate) leaves: Vec<usize>,
-}
-
-/// How a contact point on standing matter answers, for the operator's instruments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum End {
-    /// Bounded with its block.
-    Priced,
-    /// On a priced block, leaning along none of its pushes: rigid.
-    Slid,
-    /// Rigid, by [`Held`].
-    Held(Held),
-}
-
-/// What the points of one kind returned one body from one construction over a step.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct EndRow {
-    pub(crate) body: Entity,
-    pub(crate) construction: u16,
-    pub(crate) end: End,
-    /// Into the body, world: the points' stored normal impulses (Avian sums them over every
-    /// solve, so they read about twice the momentum; shares between ends are exact).
-    pub(crate) impulse: Vec3,
-    pub(crate) points: usize,
-}
-
-/// Why pressed standing matter answers rigidly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Held {
-    /// A buried cell.
-    Buried,
-    /// An element that does not break.
-    Unbreakable,
-    /// No way to give is open along any push.
-    NoWay,
-}
-
-/// Standing matter one body pressed that the step left rigid, for the operator's instruments.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct HeldRow {
-    pub(crate) body: Entity,
-    pub(crate) construction: u16,
-    /// Cells for [`Held::NoWay`], contact points otherwise.
-    pub(crate) cells: usize,
-    pub(crate) why: Held,
 }
 
 /// The last step's account, for headless witnesses and operator instruments.
 #[derive(Resource, Default, Debug)]
 pub(crate) struct BoundAccount {
     pub(crate) blocks: Vec<BlockRow>,
-    pub(crate) held: Vec<HeldRow>,
-    pub(crate) ends: Vec<EndRow>,
     /// Freed cells: construction and chunk.
     pub(crate) freed: Vec<(u16, u16)>,
     /// Freed fragments shed to the players as decoration.
@@ -242,8 +170,6 @@ struct Touch {
     at: Vec3,
     /// Unit, from the body into the cell, in the owner's frame.
     into: DVec3,
-    /// The same, world.
-    world: Vec3,
 }
 
 /// The ways a body moving at `velocity` under `acceleration` (both in the owner's frame) pushes
@@ -276,139 +202,152 @@ fn pushes(velocity: DVec3, acceleration: DVec3, touches: &[&Touch]) -> Vec<Push>
 }
 
 /// One body's blocks on one owner, each with its gives' groups of points and their bounds in
-/// the order of its gives, and the cell counts of the blocks no way is open for.
-type Priced = (
-    Vec<(Block, Vec<(Vec<Member>, Bound)>)>,
-    Vec<usize>,
-    Vec<((u32, usize, usize), End, Vec3)>,
-);
+/// the order of its gives.
+type Priced = Vec<(Block, Vec<(Vec<Member>, Bound)>)>;
 
-/// Prices the cells `body` presses on `root` at `touches` ([`bound_contacts`]).
-fn price(
-    (root, body): (Entity, Entity),
-    touches: &[Touch],
-    standing: Standing,
+/// One owner as [`bound_contacts`] prices the bodies on it.
+#[derive(Clone, Copy)]
+struct Pricing<'a, 'w, 's> {
+    root: Entity,
+    standing: Standing<'a>,
+    /// The world's rotation into the owner's frame.
     to_owner: Quat,
-    movers: &Movers,
+    movers: &'a Movers<'w, 's>,
     gravity: Vec3,
-    give: &Give,
+    give: &'a Give,
     dt: f64,
-) -> Priced {
-    let (_, at, facing, linear, angular, centre, increment, local, scale, constant) =
-        movers.get(body).expect("the body was read from this query");
-    let (mass, force, local_force, steady, local_steady) = constant;
-    // What Avian integrates before its contact solve: the forces applied to the body, its
-    // constant ones and gravity (`pre_process_velocity_increments`).
-    let acceleration = increment.map_or(Vec3::ZERO, |data| data.linear_increment)
-        + force.map_or(Vec3::ZERO, |force| force.0 * mass.inverse())
-        + steady.map_or(Vec3::ZERO, |steady| steady.0)
-        + facing.0
-            * (local.map_or(Vec3::ZERO, |local| local.linear)
-                + local_force.map_or(Vec3::ZERO, |force| force.0 * mass.inverse())
-                + local_steady.map_or(Vec3::ZERO, |steady| steady.0))
-        + gravity * scale.map_or(1.0, |scale| scale.0);
-    let mut cells: Vec<usize> = touches.iter().map(|touch| touch.cell).collect();
-    cells.sort_unstable();
-    cells.dedup();
-    let (mut blocks, mut held, mut ends) = (Vec::new(), Vec::new(), Vec::new());
-    for cells in standing.connected(&cells) {
-        let on: Vec<&Touch> = (touches.iter())
-            .filter(|touch| cells.binary_search(&touch.cell).is_ok())
-            .collect();
-        let met = on.iter().map(|touch| touch.at).sum::<Vec3>() / on.len() as f32;
-        let arm = met - (at.0 + facing.0 * centre.0);
-        let velocity = linear.0 + angular.0.cross(arm);
-        let spent = (cells.iter())
-            .map(|&c| give.0.get(&(root, c)).copied().unwrap_or(0.0))
-            .sum::<f64>()
-            / cells.len() as f64;
-        let pushes = pushes(
-            (to_owner * velocity).as_dvec3(),
-            (to_owner * acceleration).as_dvec3(),
-            &on,
-        );
-        // Every push bounds the points that lean its way, between them, at what the cells hold
-        // and at the work they take before they let go (`Bounds::group`); a point in several
-        // groups takes the least, which is the cheapest way at whatever speed the solve finds
-        // the body closing.
-        let gives: Vec<Yield> = (pushes.iter())
-            .filter(|push| push.lean > 0.0)
-            .filter_map(|&push| standing.give_along(&cells, push, spent, dt))
-            .collect();
-        if gives.is_empty() {
-            held.push(cells.len());
-            ends.extend(
-                on.iter()
-                    .map(|touch| (touch.point, End::Held(Held::NoWay), touch.world)),
+}
+
+impl Pricing<'_, '_, '_> {
+    /// Prices the cells `body` presses at `touches`. A block no way is open for gets no bound:
+    /// its cells hold whatever presses them.
+    fn price(&self, body: Entity, touches: &[Touch]) -> Priced {
+        let Self {
+            root,
+            standing,
+            to_owner,
+            dt,
+            ..
+        } = *self;
+        let (_, at, facing, linear, angular, centre, increment, local, scale, constant) =
+            (self.movers.get(body)).expect("the body was read from this query");
+        let (mass, force, local_force, steady, local_steady) = constant;
+        // What Avian integrates before its contact solve: the forces applied to the body, its
+        // constant ones and gravity (`pre_process_velocity_increments`).
+        let acceleration = increment.map_or(Vec3::ZERO, |data| data.linear_increment)
+            + force.map_or(Vec3::ZERO, |force| force.0 * mass.inverse())
+            + steady.map_or(Vec3::ZERO, |steady| steady.0)
+            + facing.0
+                * (local.map_or(Vec3::ZERO, |local| local.linear)
+                    + local_force.map_or(Vec3::ZERO, |force| force.0 * mass.inverse())
+                    + local_steady.map_or(Vec3::ZERO, |steady| steady.0))
+            + self.gravity * scale.map_or(1.0, |scale| scale.0);
+        let mut cells: Vec<usize> = touches.iter().map(|touch| touch.cell).collect();
+        cells.sort_unstable();
+        cells.dedup();
+        let mut blocks = Vec::new();
+        for cells in standing.connected(&cells) {
+            let on: Vec<&Touch> = (touches.iter())
+                .filter(|touch| cells.binary_search(&touch.cell).is_ok())
+                .collect();
+            let met = on.iter().map(|touch| touch.at).sum::<Vec3>() / on.len() as f32;
+            let arm = met - (at.0 + facing.0 * centre.0);
+            let velocity = linear.0 + angular.0.cross(arm);
+            let spent = (cells.iter())
+                .map(|&c| self.give.0.get(&(root, c)).copied().unwrap_or(0.0))
+                .sum::<f64>()
+                / cells.len() as f64;
+            let pushes = pushes(
+                (to_owner * velocity).as_dvec3(),
+                (to_owner * acceleration).as_dvec3(),
+                &on,
             );
-            continue; // No way is open: the cells hold whatever presses them.
-        }
-        let groups = (gives.iter())
-            .map(|given| {
-                let members = (on.iter())
-                    .filter_map(|touch| {
-                        let lean = touch.into.dot(given.push.along) as f32;
-                        let (contact, manifold, point) = touch.point;
-                        (lean > 0.0).then_some(Member {
-                            contact: ContactId(contact),
-                            manifold,
-                            point,
-                            lean,
+            // Every push bounds the points that lean its way, between them, at what the cells
+            // hold and at the work they take before they let go (`Bounds::group`); a point in
+            // several groups takes the least, which is the cheapest way at whatever speed the
+            // solve finds the body closing.
+            let gives: Vec<Yield> = (pushes.iter())
+                .filter(|push| push.lean > 0.0)
+                .filter_map(|&push| standing.give_along(&cells, push, spent, dt))
+                .collect();
+            if gives.is_empty() {
+                continue;
+            }
+            let groups = (gives.iter())
+                .map(|given| {
+                    let members = (on.iter())
+                        .filter_map(|touch| {
+                            let lean = touch.into.dot(given.push.along) as f32;
+                            let (contact, manifold, point) = touch.point;
+                            (lean > 0.0).then_some(Member {
+                                contact: ContactId(contact),
+                                manifold,
+                                point,
+                                lean,
+                            })
                         })
-                    })
-                    .collect();
-                let most = Bound {
-                    impulse: (given.price.force * dt) as f32,
-                    work: ((1.0 - spent) * given.price.work) as f32,
-                };
-                (members, most)
-            })
-            .collect();
-        ends.extend(on.iter().map(|touch| {
-            let leans = (gives.iter()).any(|given| touch.into.dot(given.push.along) as f32 > 0.0);
-            let end = if leans { End::Priced } else { End::Slid };
-            (touch.point, end, touch.world)
-        }));
-        blocks.push((
-            Block {
-                root,
-                body,
-                cells,
-                spent,
-                arm,
-                to_owner,
-                gives: gives.into_iter().map(|given| (given, usize::MAX)).collect(),
-            },
-            groups,
-        ));
+                        .collect();
+                    let most = Bound {
+                        impulse: (given.price.force * dt) as f32,
+                        work: ((1.0 - spent) * given.price.work) as f32,
+                    };
+                    (members, most)
+                })
+                .collect();
+            blocks.push((
+                Block {
+                    root,
+                    body,
+                    cells,
+                    spent,
+                    arm,
+                    to_owner,
+                    gives: gives.into_iter().map(|given| (given, usize::MAX)).collect(),
+                },
+                groups,
+            ));
+        }
+        blocks
     }
-    (blocks, held, ends)
+}
+
+/// `owner`'s structure as the law reads it. The gravity field it fills is a cache of the
+/// state, so the caller passes the owner past change detection.
+fn standing(owner: &mut Breakage) -> Standing<'_> {
+    let live = &mut *owner.live;
+    Standing {
+        structure: &live.structure,
+        state: &live.state,
+        shapes: &owner.kind.layout.blocks,
+        preload: live
+            .gravity
+            .get(&live.structure, &live.state, &live.assessment),
+    }
+}
+
+#[derive(bevy::ecs::system::SystemParam)]
+struct BoundContacts<'w, 's> {
+    contacts: Res<'w, ContactGraph>,
+    owned: Owned<'w, 's>,
+    owners: Owners<'w, 's>,
+    movers: Movers<'w, 's>,
+    gravity: Res<'w, Gravity>,
+    time: Res<'w, Time>,
+    give: Res<'w, Give>,
+    bounds: ResMut<'w, Bounds>,
+    pressed: ResMut<'w, Pressed>,
+    stages: Option<Res<'w, Stages>>,
 }
 
 /// Inside the physics step, between the narrow phase and the solver's constraints (module doc).
 /// Each body's cells are priced from the owner's state and its own motion alone, so the bodies
 /// on one owner are priced in parallel; their bounds are handed over in owner and body order.
-fn bound_contacts(
-    contacts: Res<ContactGraph>,
-    owned: Owned,
-    mut owners: Owners,
-    movers: Movers,
-    gravity: Res<Gravity>,
-    time: Res<Time>,
-    give: Res<Give>,
-    mut bounds: ResMut<Bounds>,
-    mut pressed: ResMut<Pressed>,
-    stages: Option<Res<Stages>>,
-    bare: Option<Res<BareShed>>,
-) {
-    let _bound = Stages::start(stages.as_deref(), Stage::Bound);
-    pressed.blocks.clear();
-    pressed.held.clear();
-    pressed.ends.clear();
-    let mut rigid = BTreeMap::<(Entity, u16, Held), usize>::new();
-    let dt = f64::from(time.delta_secs());
+fn bound_contacts(mut p: BoundContacts) {
+    let _bound = Stages::start(p.stages.as_deref(), Stage::Bound);
+    p.pressed.blocks.clear();
+    let dt = f64::from(p.time.delta_secs());
     let mut touches = BTreeMap::<Entity, BTreeMap<Entity, Vec<Touch>>>::new();
-    for pair in contacts.iter_active() {
+    for pair in p.contacts.iter_active() {
         let sides = [
             (pair.collider1, pair.body2, -1.0),
             (pair.collider2, pair.body1, 1.0),
@@ -417,164 +356,190 @@ fn bound_contacts(
             let Some(body) = body else {
                 continue; // A collider with no body presses nothing.
             };
-            let Ok((of, element, chunk)) = owned.get(collider) else {
+            let Ok((of, element, chunk)) = p.owned.get(collider) else {
                 continue; // Not construction matter.
             };
-            let Ok((root, position, rotation, owner)) = owners.get(of.body) else {
+            let Ok((root, position, rotation, owner)) = p.owners.get(of.body) else {
                 continue; // A piece or any other body: ordinary contact.
             };
-            if !movers.get(body).is_ok_and(|mover| mover.0.is_dynamic()) {
+            if !p.movers.get(body).is_ok_and(|mover| mover.0.is_dynamic()) {
                 continue; // Only a dynamic body pushes.
             }
             let pose = owner.physics_frame((position, rotation));
             for (m, manifold) in pair.manifolds.iter().enumerate() {
                 let into = (pose.rotation.inverse() * (sign * manifold.normal)).as_dvec3();
-                for (p, point) in manifold.points.iter().enumerate() {
+                for (n, point) in manifold.points.iter().enumerate() {
+                    // Matter the law does not move answers rigidly.
                     if let Some(cell) = cell(owner, &pose, element, chunk, point.point) {
                         (touches.entry(root).or_default().entry(body).or_default()).push(Touch {
-                            point: (pair.contact_id.0, m, p),
+                            point: (pair.contact_id.0, m, n),
                             cell,
                             at: point.point,
                             into,
-                            world: sign * manifold.normal,
                         });
-                    } else {
-                        let why = match (chunk, element) {
-                            (None, Some(element))
-                                if owner.kind.layout.chunks_of(usize::from(element.0)).count()
-                                    == 0 =>
-                            {
-                                Held::Unbreakable
-                            }
-                            _ => Held::Buried,
-                        };
-                        *rigid.entry((body, owner.construction, why)).or_default() += 1;
-                        pressed.ends.push((
-                            (pair.contact_id.0, m, p),
-                            body,
-                            owner.construction,
-                            End::Held(why),
-                            sign * manifold.normal,
-                        ));
                     }
                 }
             }
         }
     }
     for (root, bodies) in touches {
-        let (_, position, rotation, mut owner) = owners
-            .get_mut(root)
-            .expect("the owner was read from this query");
-        let construction = owner.construction;
-        // The gravity field is a cache of the state, not a change to it.
+        let (_, position, rotation, mut owner) =
+            (p.owners.get_mut(root)).expect("the owner was read from this query");
         let owner = owner.bypass_change_detection();
         let to_owner = owner.physics_frame((position, rotation)).rotation.inverse();
-        let live = &mut *owner.live;
-        let standing = Standing {
-            structure: &live.structure,
-            state: &live.state,
-            shapes: &owner.kind.layout.blocks,
-            preload: live
-                .gravity
-                .get(&live.structure, &live.state, &live.assessment),
-            bare: bare.is_some(),
+        let pricing = Pricing {
+            root,
+            standing: standing(owner),
+            to_owner,
+            movers: &p.movers,
+            gravity: p.gravity.0,
+            give: &p.give,
+            dt,
         };
         let bodies: Vec<(Entity, Vec<Touch>)> = bodies.into_iter().collect();
-        let (movers, give) = (&movers, &*give);
         let priced = bodies.par_splat_map(ComputeTaskPool::get(), None, |_, bodies| {
             (bodies.iter())
-                .map(|(body, touches)| {
-                    let pair = (root, *body);
-                    let priced = price(
-                        pair, touches, standing, to_owner, movers, gravity.0, give, dt,
-                    );
-                    (*body, priced)
-                })
-                .collect::<Vec<(Entity, Priced)>>()
+                .map(|(body, touches)| pricing.price(*body, touches))
+                .collect::<Vec<Priced>>()
         });
-        for (body, (blocks, held, ends)) in priced.into_iter().flatten() {
-            pressed.ends.extend(
-                (ends.into_iter()).map(|(point, end, into)| (point, body, construction, end, into)),
-            );
-            pressed.held.extend(held.into_iter().map(|cells| HeldRow {
-                body,
-                construction,
-                cells,
-                why: Held::NoWay,
-            }));
-            for (mut block, groups) in blocks {
-                for ((_, group), (members, most)) in block.gives.iter_mut().zip(groups) {
-                    *group = bounds.group(members, most);
-                }
-                pressed.blocks.push(block);
+        for (mut block, groups) in priced.into_iter().flatten().flatten() {
+            for ((_, group), (members, most)) in block.gives.iter_mut().zip(groups) {
+                *group = p.bounds.group(members, most);
             }
+            p.pressed.blocks.push(block);
         }
     }
-    pressed.held.extend(
-        (rigid.into_iter()).map(|((body, construction, why), cells)| HeldRow {
-            body,
-            construction,
-            cells,
-            why,
-        }),
+}
+
+/// `plug` (ordered) parted from `breakage`'s standing matter: the joints on its boundary
+/// separate, and it and whatever it alone held up are fallen. Returns the fragments they leave
+/// as. Internal joints stay, so a plug leaves as the pieces its own bonds make.
+pub(super) fn cut(
+    breakage: &mut Breakage,
+    plug: &[usize],
+    tick: u32,
+    record: &mut Record,
+) -> Vec<Vec<usize>> {
+    let kind = &breakage.kind;
+    let live = &mut *breakage.live;
+    let inside = |c: usize| plug.binary_search(&c).is_ok();
+    // A boundary joint has one side inside, so a plug's ordered cells meet it once.
+    let boundary: Vec<usize> = (plug.iter())
+        .flat_map(|&c| live.state.incident(c))
+        .copied()
+        .filter(|&j| {
+            let joint = &live.structure.joints[j];
+            let b = matches!(joint.b, Side::Chunk(b) if inside(b));
+            inside(joint.a) != b && !live.state.separated[j]
+        })
+        .collect();
+    for &j in &boundary {
+        live.state.cracked[j] = true;
+        live.state.separated[j] = true;
+        let joint = &live.structure.joints[j];
+        live.swapped[usize::from(kind.layout.element_of[joint.a])] = true;
+        if let Side::Chunk(b) = joint.b {
+            live.swapped[usize::from(kind.layout.element_of[b])] = true;
+        }
+        record.entries.push(Entry {
+            construction: breakage.construction,
+            event: Event::Separate(j as u16),
+            tick,
+        });
+    }
+    let mut fragments = crate::debris::crumble::fragments(&live.structure, &live.state, plug);
+    for &c in plug {
+        live.state.fate[c] = Fate::Fallen;
+    }
+    fragments.extend(fracture::loose_groups(&live.structure, &live.state));
+    let fragments = crate::debris::crumble::merge_fragments(
+        &live.structure,
+        fragments,
+        &boundary,
+        &mut live.rubble_joints,
     );
+    for &c in fragments.iter().flatten() {
+        live.state.fate[c] = Fate::Fallen;
+        live.swapped[usize::from(kind.layout.element_of[c])] = true;
+    }
+    fragments
+}
+
+/// `fragments` of `breakage` ([`cut`]) leaving at rest from `pose`: each routed by size
+/// ([`crate::debris::crumble::route`]) to a prepared body or a decoration.
+pub(super) fn depart(
+    breakage: &mut Breakage,
+    pose: Transform,
+    fragments: Vec<Vec<usize>>,
+    tick: u32,
+    record: &mut Record,
+    reusable: &ReusableColliders,
+) -> (Vec<PreparedDeparture>, Vec<crate::debris::crumble::Shed>) {
+    let rest = ReleasedMotion::at_rest(pose.translation);
+    let (kept, sheds) = crate::debris::crumble::route(
+        &breakage.live.structure,
+        (breakage.construction, pose),
+        fragments,
+        |light| vec![rest; light.len()],
+        tick,
+        record,
+    );
+    // Root state changes only after every worker has finished reading it.
+    let departures = ComputeTaskPool::get().scope(|scope| {
+        let breakage = &*breakage;
+        let kind = &breakage.kind;
+        for group in kept {
+            scope.spawn(async move {
+                let launch = launch(kind, &breakage.live.structure, &group, &[]);
+                prepare_group(
+                    Departure {
+                        kind: kind.clone(),
+                        construction: breakage.construction,
+                        root: pose,
+                        live: breakage.live.group(&group),
+                        group,
+                        launch,
+                        tick,
+                    },
+                    reusable,
+                )
+            });
+        }
+    });
+    crate::debris::crumble::mark_dust(&mut breakage.live.state, &sheds);
+    (departures, sheds)
+}
+
+#[derive(bevy::ecs::system::SystemParam)]
+struct Release<'w, 's> {
+    pressed: ResMut<'w, Pressed>,
+    bounds: Res<'w, Bounds>,
+    give: ResMut<'w, Give>,
+    account: ResMut<'w, BoundAccount>,
+    owners: Owners<'w, 's>,
+    movers: Query<'w, 's, (&'static LinearVelocity, &'static AngularVelocity)>,
+    children: Query<'w, 's, &'static Children>,
+    chunk_entities: ChunkChildren<'w, 's>,
+    fixed: Res<'w, Time<Fixed>>,
+    clock: Option<Res<'w, ShotClock>>,
+    record: ResMut<'w, Record>,
+    queue: ResMut<'w, Queue>,
+    shed: MessageWriter<'w, crate::debris::crumble::Shed>,
+    commands: Commands<'w, 's>,
+    stages: Option<Res<'w, Stages>>,
 }
 
 /// After the step: remember what yielded and free what crossed its give (module doc).
-fn release(
-    mut pressed: ResMut<Pressed>,
-    (bounds, contacts): (Res<Bounds>, Res<ContactGraph>),
-    mut give: ResMut<Give>,
-    mut account: ResMut<BoundAccount>,
-    mut owners: Owners,
-    movers: Query<(&LinearVelocity, &AngularVelocity)>,
-    children: Query<&Children>,
-    chunk_entities: ChunkChildren,
-    fixed: Res<Time<Fixed>>,
-    clock: Option<Res<ShotClock>>,
-    mut record: ResMut<Record>,
-    mut queue: ResMut<Queue>,
-    mut shed: MessageWriter<crate::debris::crumble::Shed>,
-    mut commands: Commands,
-    stages: Option<Res<Stages>>,
-    keep: Option<Res<KeepGive>>,
-) {
-    let _release = Stages::start(stages.as_deref(), Stage::Release);
-    let dt = f64::from(fixed.timestep().as_secs_f32());
-    let tick = clock.as_deref().map_or(0, |clock| clock.0.raw());
-    let Pressed {
-        blocks,
-        held,
-        ends,
-        belts,
-    } = std::mem::take(&mut *pressed);
-    account.blocks.clear();
-    account.held = held;
-    let mut returned = BTreeMap::<(Entity, u16, End), (Vec3, usize)>::new();
-    for ((contact, manifold, point), body, construction, end, into) in ends {
-        // A pair the step dropped returned nothing.
-        if let Some((_, pair)) = contacts.get_by_id(ContactId(contact)) {
-            let sum = returned.entry((body, construction, end)).or_default();
-            sum.0 -= into * pair.manifolds[manifold].points[point].normal_impulse;
-            sum.1 += 1;
-        }
-    }
-    account.ends = (returned.into_iter())
-        .map(|((body, construction, end), (impulse, points))| EndRow {
-            body,
-            construction,
-            end,
-            impulse,
-            points,
-        })
-        .collect();
-    account.freed.clear();
-    account.shed = 0;
-    let mut kept = if keep.is_some() {
-        give.0.clone()
-    } else {
-        BTreeMap::new()
-    };
+fn release(mut p: Release) {
+    let _release = Stages::start(p.stages.as_deref(), Stage::Release);
+    let dt = f64::from(p.fixed.timestep().as_secs_f32());
+    let tick = p.clock.as_deref().map_or(0, |clock| clock.0.raw());
+    let Pressed { blocks, belts } = std::mem::take(&mut *p.pressed);
+    p.account.blocks.clear();
+    p.account.freed.clear();
+    p.account.shed = 0;
+    // Only what yields this step is remembered ([`Give`]).
+    p.give.0.clear();
     let mut leaving: BTreeMap<Entity, BTreeSet<usize>> = BTreeMap::new();
     for (root, cells) in belts {
         leaving.entry(root).or_default().extend(cells);
@@ -583,70 +548,48 @@ fn release(
         // What the body crossed is how far the step moved it into the cells: its speed as the
         // solve left it, which a third body pushing it inside the step made. The way that gave
         // is the one that returns least at that speed.
-        let velocity = movers
-            .get(block.body)
-            .map_or(DVec3::ZERO, |(linear, angular)| {
-                (block.to_owner * (linear.0 + angular.0.cross(block.arm))).as_dvec3()
-            });
+        let velocity = (p.movers.get(block.body)).map_or(DVec3::ZERO, |(linear, angular)| {
+            (block.to_owner * (linear.0 + angular.0.cross(block.arm))).as_dvec3()
+        });
         let returned = |(given, _): &(Yield, usize)| {
             reaction(given.price, block.spent, velocity.dot(given.push.along), dt) / given.push.lean
         };
-        let (
-            Yield {
-                way,
-                push,
-                price,
-                leaves,
-                grounded,
-                ..
-            },
-            group,
-        ) = (block.gives.into_iter())
+        let (given, group) = (block.gives.into_iter())
             .min_by(|a, b| returned(a).total_cmp(&returned(b)))
             .expect("a block holds a way to give");
-        let closing = velocity.dot(push.along);
-        let impulse = reaction(price, block.spent, closing, dt);
+        let closing = velocity.dot(given.push.along);
         // The points of the way that gave returned all its bound between them.
-        let yielded = bounds.spent(group);
+        let yielded = p.bounds.spent(group);
         let spent = if yielded {
-            block.spent + crossed(price, closing, dt)
-        } else if keep.is_some() {
-            block.spent
+            block.spent + crossed(given.price, closing, dt)
         } else {
             0.0
         };
-        if let Ok((_, _, _, owner)) = owners.get(block.root) {
-            account.blocks.push(BlockRow {
+        if let Ok((_, _, _, owner)) = p.owners.get(block.root) {
+            p.account.blocks.push(BlockRow {
                 body: block.body,
                 construction: owner.construction,
                 cells: block.cells.len(),
-                way,
-                price: [price.force, price.work],
+                way: given.way,
+                price: [given.price.force, given.price.work],
                 closing,
-                bound: impulse,
+                bound: reaction(given.price, block.spent, closing, dt),
                 yielded,
-                wanting: bounds.wanting(group),
-                used: bounds.used(group),
                 spent,
-                along: push.along,
-                grounded,
-                returned: bounds.returned(group),
-                pressed: block.cells.clone(),
-                leaves: leaves.clone(),
+                returned: p.bounds.returned(group),
             });
         }
         if spent >= 1.0 {
-            leaving.entry(block.root).or_default().extend(leaves);
+            leaving.entry(block.root).or_default().extend(given.leaves);
         } else if yielded {
             for c in block.cells {
-                let share = kept.entry((block.root, c)).or_insert(0.0_f64);
+                let share = p.give.0.entry((block.root, c)).or_insert(0.0_f64);
                 *share = share.max(spent);
             }
         }
     }
-    give.0 = kept;
     for (root, cells) in leaving {
-        let Ok((_, position, rotation, mut owner)) = owners.get_mut(root) else {
+        let Ok((_, position, rotation, mut owner)) = p.owners.get_mut(root) else {
             continue; // The owner left the world inside the step; its cells went with it.
         };
         let plug: Vec<usize> = (cells.into_iter())
@@ -657,57 +600,48 @@ fn release(
         }
         let pose = owner.physics_frame((position, rotation));
         let construction = owner.construction;
-        let cut = cut_fragments(&mut owner, plug, tick);
+        let fragments = cut(&mut owner, &plug, tick, &mut p.record);
         // A construction without children has no chunk collider to rehome.
-        let reusable = reusable_colliders(children.get(root).ok(), &chunk_entities);
-        let (departures, sheds) = sweep_departure(
-            &mut owner,
-            pose,
-            &cut,
-            ReleasedMotion::at_rest(pose.translation),
-            tick,
-            &mut record,
-            &reusable,
-        );
-        account
-            .freed
-            .extend(cut.plug.iter().map(|&c| (construction, c as u16)));
-        account.shed += sheds.len();
-        shed.write_batch(sheds);
-        queue.0.push(RawDeposit {
+        let reusable = reusable_colliders(p.children.get(root).ok(), &p.chunk_entities);
+        let (departures, sheds) =
+            depart(&mut owner, pose, fragments, tick, &mut p.record, &reusable);
+        (p.account.freed).extend(plug.iter().map(|&c| (construction, c as u16)));
+        p.account.shed += sheds.len();
+        p.shed.write_batch(sheds);
+        p.queue.0.push(RawDeposit {
             changed: vec![root],
             ..default()
         });
         for departure in departures {
-            let piece = commands.spawn_empty().id();
-            spawn_prepared_as(&mut commands, piece, departure);
+            spawn_prepared(&mut p.commands, departure);
         }
     }
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+struct BoundBelts<'w, 's> {
+    transfers: Res<'w, ContactTransfers>,
+    owned: Owned<'w, 's>,
+    owners: Owners<'w, 's>,
+    bodies: Query<'w, 's, (Forces, &'static ComputedCenterOfMass)>,
+    fixed: Res<'w, Time<Fixed>>,
+    pressed: ResMut<'w, Pressed>,
+    account: ResMut<'w, BoundAccount>,
+    stages: Option<Res<'w, Stages>>,
+}
+
 /// Before the step: each belt's force on standing matter against what that matter can return
 /// (module doc). `StagedForce::force` is the force on the belt's body.
-fn bound_belts(
-    transfers: Res<ContactTransfers>,
-    owned: Owned,
-    mut owners: Owners,
-    mut bodies: Query<(Forces, &ComputedCenterOfMass)>,
-    fixed: Res<Time<Fixed>>,
-    mut pressed: ResMut<Pressed>,
-    mut account: ResMut<BoundAccount>,
-    stages: Option<Res<Stages>>,
-    bare: Option<Res<BareShed>>,
-) {
-    let _bound = Stages::start(stages.as_deref(), Stage::Bound);
-    account.capped_belts.clear();
-    pressed.belts.clear();
-    let dt = f64::from(fixed.timestep().as_secs_f32());
+fn bound_belts(mut p: BoundBelts) {
+    let _bound = Stages::start(p.stages.as_deref(), Stage::Bound);
+    p.account.capped_belts.clear();
+    p.pressed.belts.clear();
+    let dt = f64::from(p.fixed.timestep().as_secs_f32());
     let mut staged = BTreeMap::<(Entity, Entity), Vec<(usize, Vec3, Vec3)>>::new();
-    for force in transfers.staged() {
-        let (_, element, chunk) = owned
-            .get(force.structure_collider)
+    for force in p.transfers.staged() {
+        let (_, element, chunk) = (p.owned.get(force.structure_collider))
             .expect("a staged belt force names a contact collider of its owner");
-        let Ok((_, position, rotation, owner)) = owners.get(force.structure) else {
+        let Ok((_, position, rotation, owner)) = p.owners.get(force.structure) else {
             continue; // A belt on a moving group pushes it through its body.
         };
         let pose = owner.physics_frame((position, rotation));
@@ -719,28 +653,17 @@ fn bound_belts(
         }
     }
     for ((root, body), forces) in staged {
-        let (_, position, rotation, mut owner) = owners
-            .get_mut(root)
-            .expect("the owner was read from this query");
+        let (_, position, rotation, mut owner) =
+            (p.owners.get_mut(root)).expect("the owner was read from this query");
         let owner = owner.bypass_change_detection();
         let pose = owner.physics_frame((position, rotation));
-        let (mut source, centre) = bodies
-            .get_mut(body)
-            .expect("a belt's body is a dynamic body");
+        let (mut source, centre) =
+            (p.bodies.get_mut(body)).expect("a belt's body is a dynamic body");
         let to_owner = pose.rotation.inverse();
         let mut cells: Vec<usize> = forces.iter().map(|&(cell, ..)| cell).collect();
         cells.sort_unstable();
         cells.dedup();
-        let live = &mut *owner.live;
-        let standing = Standing {
-            structure: &live.structure,
-            state: &live.state,
-            shapes: &owner.kind.layout.blocks,
-            preload: live
-                .gravity
-                .get(&live.structure, &live.state, &live.assessment),
-            bare: bare.is_some(),
-        };
+        let standing = standing(owner);
         for cells in standing.connected(&cells) {
             let on: Vec<_> = (forces.iter())
                 .filter(|(cell, ..)| cells.binary_search(cell).is_ok())
@@ -758,7 +681,7 @@ fn bound_belts(
                 lean: 1.0,
             };
             let Some(given) = standing.give(&cells, &[push], 0.0, dt) else {
-                continue;
+                continue; // No way is open: the cells bear the belt whatever it presses with.
             };
             let most = given.impulse / dt;
             let pressing = f64::from(total.length());
@@ -770,8 +693,8 @@ fn bound_belts(
             for &&(_, at, force) in &on {
                 source.apply_force_at_point(-force * back, at);
             }
-            account.capped_belts.push((body, -total * back));
-            pressed.belts.push((root, given.leaves));
+            p.account.capped_belts.push((body, -total * back));
+            p.pressed.belts.push((root, given.leaves));
         }
     }
 }

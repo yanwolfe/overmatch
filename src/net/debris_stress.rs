@@ -302,7 +302,7 @@ fn retire_construction_piece(
     let (mut piece, mut pose) = carriers
         .get_mut(carrier.0)
         .expect("a server chunk group retains its carrier through its retirement tick");
-    // A sweep departure can split after physics in its birth tick. Its empty presentation
+    // A departure can split after physics in its birth tick. Its empty presentation
     // interval has no sample to retain; only its final descendants reach publication.
     if piece.born == retired.tick {
         commands.entity(carrier.0).despawn();
@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(&postcard::from_bytes::<Piece>(&bytes).unwrap(), piece);
     }
 
-    /// The sweep can free a group before physics and the law pass split it on the same tick.
+    /// A group can come free and split on the same tick.
     /// Clients require one same-birth owner per chunk; a zero-duration parent never presents.
     #[test]
     fn a_group_split_in_its_birth_tick_publishes_only_its_children() {
@@ -722,7 +722,7 @@ mod tests {
         app.init_resource::<bevy_replicon::server::visibility::registry::FilterRegistry>()
             .insert_resource(fixture_world());
         install_server_from(&mut app, None, scenario::RON).unwrap();
-        // Fixture: a sweep departure followed by its law-stage split, both at tick 7.
+        // Fixture: a departure followed by its law-stage split, both at tick 7.
         let parent = app
             .world_mut()
             .spawn(born_at_seven(vec![1, 2], Vec3::ZERO))

@@ -37,8 +37,9 @@
 //! - `contacts_us`: solver-contact readout and resting-contact cache maintenance, included in
 //!   `physics_us`. Intake consumes that readout later in the tick.
 //! - `publish_us`: construction-ledger diff commands prepared inside the tick.
-//! - `sweep_us`: the hull sweep before physics: its shape casts, cuts, holds and plastic
-//!   exchanges, and the departures it routes. The refit it triggers is `refit_us`.
+//! - `bound_us`, `release_us`: the contact law (`construction::breakage::bounded`): pricing
+//!   the pressed cells and the belts' forces on them, and freeing what gave after the step. The
+//!   refit a release triggers is `refit_us`.
 //! - `crumble_us`: the landing crumble after the deposits: each moving group's landing read,
 //!   judged by its kernel and routed. Per-tick `detail` carries the solve and split wall unions
 //!   inside this leaf, and `belt_partition_us` inside `belt_contacts_us`. Different owners can
@@ -1258,7 +1259,7 @@ mod tests {
         ))
         .init_asset::<Mesh>()
         .init_resource::<crate::contact_transfer::ContactTransfers>()
-        .init_resource::<crate::construction::breakage::SweepAccount>()
+        .init_resource::<crate::construction::breakage::bounded::BoundAccount>()
         .init_resource::<lightyear::prelude::LocalTimeline>()
         .insert_resource(Gravity(Vec3::ZERO));
         install(&mut app).unwrap();

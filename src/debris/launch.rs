@@ -1,6 +1,5 @@
 //! Free-body momentum exchange in the game's environment physics (game state only).
 //! Occupied geometry supplies mass and inertia; field impulses supply free-group motion.
-//! Body sweeps exchange momentum before physics in `construction::sweep`.
 
 use crate::construction::fracture::Load;
 use avian3d::dynamics::rigid_body::mass_properties::bevy_heavy::MassProperties3d;

@@ -3,7 +3,7 @@
 //! `F` for no longer than the body takes to cross its give `W / F` ([`reaction`]); a cell pushed
 //! past that is loose rubble. Nothing here predicts a path: the cells are the ones the narrow
 //! phase found pressed. The design narrative is
-//! `.agents/docs/design/construction-destruction.md`, "Bodies in contact".
+//! `.agents/scratch/strength-limited-contact-design-2026-11-21.md`, "As built".
 //!
 //! Pure functions of one structure's state ([`Standing`]); `breakage::bounded` hands the
 //! result to the solver's contacts and frees what gave.
@@ -94,8 +94,6 @@ pub(crate) struct Yield {
     pub impulse: f64,
     /// The cells that leave if it gives, ordered.
     pub leaves: Vec<usize>,
-    /// The push runs into the ground or buried matter ([`Plug::grounded`]).
-    pub grounded: bool,
 }
 
 /// The matter one push moves: the pressed cells and every cell behind them along it.
@@ -115,9 +113,6 @@ pub(crate) struct Standing<'a> {
     pub state: &'a State,
     pub shapes: &'a [Block],
     pub preload: &'a [f64],
-    /// The ram instrument's arm (`net::ram::relay`, `bare`): a joint the push closes resists a
-    /// sideways shed with nothing.
-    pub bare: bool,
 }
 
 impl Standing<'_> {
@@ -244,9 +239,6 @@ impl Standing<'_> {
                 let normal = self.toward(joint, c);
                 let area = f64::from(joint.area);
                 if push.is_some_and(|push| -normal.dot(push) > BEHIND) {
-                    if self.bare {
-                        continue;
-                    }
                     closed += area;
                     rough += area * pair_friction(self.structure, joint);
                 }
@@ -279,8 +271,9 @@ impl Standing<'_> {
     /// whose matter can move (its plug is not grounded). The joints the push closes slide under
     /// the push itself, so their friction grows with the reaction `P`: sliding starts at
     /// `P = R + μ P`, `R` the boundary's resistance at its gravity preload and `μ` the closed
-    /// joints' friction, area-weighted (the push bears on them evenly): `P = R / (1 − μ)`
-    /// (exact, Coulomb). Closed joints at `μ ≥ 1` never slide. `None` when no side is open.
+    /// joints' friction, area-weighted (the push bears on them evenly): `P = R / (1 − μ)`, with
+    /// the whole push turned sideways (a StandIn, below). Closed joints at `μ ≥ 1` never slide.
+    /// `None` when no side is open.
     pub(crate) fn shed(&self, pressed: &[usize], along: DVec3) -> Option<(Price, Vec<usize>)> {
         let mut sides: Vec<DVec3> = Vec::new();
         for &c in pressed {
@@ -334,7 +327,6 @@ impl Standing<'_> {
         dt: f64,
     ) -> Option<Yield> {
         let plug = self.plug(pressed, push.along);
-        let grounded = plug.grounded;
         let ways = [
             (self.shear_out(&plug, push.along)).map(|price| (Way::ShearOut, price, plug.cells)),
             (self.shed(pressed, push.along)).map(|(price, leaves)| (Way::Shed, price, leaves)),
@@ -349,7 +341,6 @@ impl Standing<'_> {
                     price,
                     impulse,
                     leaves,
-                    grounded,
                 });
             }
         }

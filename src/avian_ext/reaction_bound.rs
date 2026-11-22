@@ -18,7 +18,7 @@
 //! clamps to the normal impulse, at most its coefficient times that. A point in several groups
 //! takes the least of them. A manifold point in no group is Avian's rigid contact bit for bit.
 //!
-//! Who relies on it: the game's building model (`construction::bound`), where a block of
+//! Who relies on it: the game's building model (`construction::breakage::bounded`), where a block of
 //! standing cells returns no more than its bonds can, wherever a body presses it.
 
 use avian3d::collision::contact_types::ContactId;
@@ -62,8 +62,6 @@ struct Group {
     /// Per member, whether the last deal handed it more than it carried.
     room: Vec<bool>,
     spent: bool,
-    wanting: bool,
-    used: f32,
     returned: f32,
 }
 
@@ -118,8 +116,6 @@ impl Bounds {
             members,
             most,
             spent: false,
-            wanting: false,
-            used: 0.0,
             returned: 0.0,
         });
         self.groups.len() - 1
@@ -129,18 +125,6 @@ impl Bounds {
     /// still wanted more, and no point held room it did not use. The body was not stopped there.
     pub fn spent(&self, group: usize) -> bool {
         self.groups[group].spent
-    }
-
-    /// Whether the last step ended with a point of group `group` at its bound, spent or not:
-    /// the operator's reading of how often the deal, not the group's bound, held a point.
-    pub fn wanting(&self, group: usize) -> bool {
-        self.groups[group].wanting
-    }
-
-    /// The share of group `group`'s impulse bound over a substep that its points carried when
-    /// the last step ended: the operator's reading beside [`Self::wanting`].
-    pub fn used(&self, group: usize) -> f32 {
-        self.groups[group].used
     }
 
     /// What group `group`'s points returned between them over the last step, each times its
@@ -258,8 +242,9 @@ fn shares(carried: &[f32], wanting: &[bool], first: bool, bound: f32) -> Vec<(f3
 }
 
 /// Before each substep's solve: deals every group's bound over one substep to its points (the
-/// module doc) and cuts what a point carries to its bound.
-fn deal(
+/// module doc) and cuts what a point carries to its bound. Another writer of the substep's
+/// constraints orders itself against this system.
+pub(crate) fn deal(
     mut bounds: ResMut<Bounds>,
     mut constraints: ResMut<ConstraintGraph>,
     substeps: Res<SubstepCount>,
@@ -322,11 +307,7 @@ fn deal(
 }
 
 /// After the step's last solve: which groups it left spent ([`Bounds::spent`]).
-fn read_bounds(
-    mut bounds: ResMut<Bounds>,
-    constraints: Res<ConstraintGraph>,
-    substeps: Res<SubstepCount>,
-) {
+fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
     let Bounds {
         groups, manifolds, ..
     } = &mut *bounds;
@@ -346,11 +327,9 @@ fn read_bounds(
                 Some(point[member.point].normal_part.impulse * member.lean)
             })
             .sum();
-        group.used = carried * substeps.0 as f32 / group.most.impulse;
         group.returned += carried;
-        group.wanting = wants.contains(&true);
-        group.spent =
-            group.wanting && (wants.iter().zip(&group.room)).all(|(&wants, &room)| wants || !room);
+        group.spent = wants.contains(&true)
+            && (wants.iter().zip(&group.room)).all(|(&wants, &room)| wants || !room);
     }
 }
 
