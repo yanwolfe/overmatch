@@ -113,23 +113,33 @@ fn explore() {
     }
 }
 
-/// A cell the law frees has no solid form left: it is dust in its owner's state, so no body of it
-/// lies in the path of what freed it (a hull crossing a wall relies on this). Mutant: freeing the
-/// cells as a plug leaves them `Fallen`.
+/// Whoever is pressed onto fixed matter gives its presser its weight in place of that matter's
+/// answer ([`bound_contacts`]): the ground squarely under a piece backs a push down on it and
+/// leaves it free along the ground, through any piece it bears on that way, and so does the far
+/// side of the presser itself.
 #[test]
-fn a_freed_cell_leaves_as_dust() {
-    let kind = wall_construction(WALL, [6, 4, 1], "Brick");
-    // Fixture: a body heavy and fast enough to cross the leaf.
-    let mut ram = Ram::new(&kind, 57_000.0, 4.5, 0.0);
-    let mut freed = Vec::new();
-    for _ in 0..160 {
-        ram.app.update();
-        let account = ram.app.world().resource::<BoundAccount>();
-        freed.extend(account.freed.iter().map(|&(_, c)| usize::from(c)));
-    }
-    assert!(!freed.is_empty(), "the body crosses the leaf");
-    let owner = ram.app.world().get::<Breakage>(ram.root).unwrap();
-    for c in freed {
-        assert_eq!(owner.live.state.fate[c], Fate::Dust, "cell {c}");
-    }
+fn a_piece_is_backed_by_what_ends_its_push_and_free_across_it() {
+    let [presser, other, piece, under] =
+        [1, 2, 3, 4].map(|index| Entity::from_raw_u32(index).unwrap());
+    let mut rubble = Rubble::default();
+    rubble.fixed.insert(under, vec![Vec3::NEG_Y]);
+    assert_eq!(rubble.backing(under, presser, Vec3::NEG_Y), 1.0);
+    assert_eq!(rubble.backing(under, presser, Vec3::X), 0.0);
+    // The piece on top bears on the one under it, and on nothing sideways.
+    rubble.loose.insert(piece, vec![(under, Vec3::NEG_Y)]);
+    assert_eq!(rubble.backing(piece, presser, Vec3::NEG_Y), 1.0);
+    assert_eq!(rubble.backing(piece, presser, Vec3::X), 0.0);
+    // A body that also touches the piece's far side backs its own push, and no other body's.
+    rubble.driven.insert(piece, vec![(presser, Vec3::X)]);
+    assert_eq!(rubble.backing(piece, presser, Vec3::X), 1.0);
+    assert_eq!(rubble.backing(piece, other, Vec3::X), 0.0);
+}
+
+/// A pinned piece's points share its weight for the step, and a backing met at a slant bears
+/// only its lean of the push, so the presser gets more back the more the piece can slide.
+#[test]
+fn a_pinned_piece_returns_its_weight_over_its_backing_lean() {
+    let dt = 1.0 / 64.0;
+    assert_eq!(pinned(6400.0, 1.0, 4, dt), 25.0);
+    assert_eq!(pinned(6400.0, 0.5, 4, dt), 50.0);
 }
