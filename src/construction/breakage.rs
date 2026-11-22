@@ -579,6 +579,7 @@ pub(crate) struct Live {
 
 impl Live {
     /// `kind` on level ground at its frame's grade.
+    #[cfg(test)]
     fn new(kind: &ConstructionKind) -> Self {
         Self::sited(kind, Site::Level)
     }
@@ -681,6 +682,7 @@ pub(crate) struct Breakage {
 
 impl Breakage {
     /// On level ground at the frame's grade.
+    #[cfg(test)]
     pub(crate) fn new(kind: Arc<ConstructionKind>, construction: u16) -> Self {
         Self::sited(kind, construction, Site::Level)
     }

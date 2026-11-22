@@ -8,7 +8,7 @@
 //! Pure functions of one structure's state ([`Standing`]); `breakage::bounded` hands the
 //! result to the solver's contacts and frees what gave.
 
-use bevy::math::{DVec3, Vec3};
+use bevy::math::DVec3;
 
 use super::bondsolve::{joint_normal, pair_friction};
 use super::{Block, Joint, Side, State, Structure};

@@ -92,7 +92,7 @@ fn read(
         .iter()
         .find(|(body, _, _, mass)| body.is_dynamic() && mass.value() > 10_000.0);
     let speed = hull.map_or(0.0, |(_, _, velocity, _)| velocity.0.length());
-    if tick % 4 == 0
+    if tick.is_multiple_of(4)
         && let Some((_, at, velocity, _)) = hull
     {
         info!(
@@ -197,7 +197,7 @@ fn read(
     for (piece, deep) in deepest {
         info!("RELAY birth tick={tick} piece={piece:?} in_hull_m={deep} hull_v={speed}");
     }
-    if tick % 64 == 0 {
+    if tick.is_multiple_of(64) {
         // Deepest overlap by pair kind: piece on piece, on standing matter, on the ground, on a
         // driven body; and a driven body on the ground.
         let kind = |body: Entity| {
@@ -246,7 +246,7 @@ fn read(
         );
     }
     for held in &account.held {
-        if tick % 4 == 0 {
+        if tick.is_multiple_of(4) {
             info!(
                 "RELAY held tick={tick} body={:?} piece={} cells={} why={:?}",
                 held.body,

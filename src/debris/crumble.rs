@@ -781,7 +781,7 @@ fn press_verdict(tick: u32, entity: Entity, piece: &Piece, breakage: &Breakage, 
     let volume: f32 = owned.iter().map(|&c| structure.chunks[c].volume).sum();
     let load: f32 = touches.iter().map(|touch| touch.force.length()).sum();
     // Instrument filter: a piece bearing little more than itself is at rest, not pressed.
-    if load < 3.0 * mass * 9.81 || tick % 4 != 0 {
+    if load < 3.0 * mass * 9.81 || !tick.is_multiple_of(4) {
         return;
     }
     // Live bonds between the piece's own chunks: what the assessment can fail.
