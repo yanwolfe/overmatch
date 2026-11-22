@@ -2846,8 +2846,8 @@ pub(crate) struct PendingSplit {
 
 impl PendingSplit {
     /// A crumble's split of moving group `breakage` into `groups` at `tick`
-    /// ([`crate::debris::crumble`]): each keeps its share of the parent's state, and an owned
-    /// chunk in no group leaves the simulation with the parent's retirement.
+    /// ([`crate::debris::crumble`]), which partition it: each keeps its share of the parent's
+    /// state.
     pub(crate) fn of(breakage: &Breakage, groups: Vec<Vec<usize>>, tick: u32) -> Self {
         let children = groups
             .into_iter()
