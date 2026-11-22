@@ -707,8 +707,7 @@ pub(crate) fn clip_polygon(a: &[Vec3], b: &[Vec3], normal: Vec3) -> Vec<Vec3> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Fate {
     Standing,
-    /// Gone from the simulation: its pool was spent, or a crumble shed it to the players'
-    /// decoration (`crate::debris::crumble`).
+    /// Gone from the simulation: its pool was spent, or its piece crossed the play-area floor.
     Dust,
     /// Fell with a loose group.
     Fallen,

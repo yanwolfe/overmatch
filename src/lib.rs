@@ -791,8 +791,7 @@ impl Plugin for ClientPlugin {
             // The broken constructions and their fallen pieces (view-only, ADR-0014).
             construction::view::plugin,
         ));
-        // The fragments a crumble shed, drawn as decoration (view-only, ADR-0014).
-        app.add_plugins((drive_hud::plugin, debris::decor::plugin));
+        app.add_plugins(drive_hud::plugin);
         // The pen cam's shooter corner over the player's own hits (view-only; the store it reads
         // is mounted by `GamePlugin`).
         app.add_plugins(damage_cam::pen_cam::game::plugin);
@@ -871,10 +870,8 @@ impl Plugin for NetClientPlugin {
             // The render half of ballistics (see `ClientPlugin`): the shell glb, the tracer streak
             // and hold visibility. `SimPlugin` mounts only the sim half.
             ballistics::view_plugin,
-            // The broken constructions and their fallen pieces (view-only, ADR-0014), and the
-            // fragments a crumble shed, drawn as decoration.
+            // The broken constructions and their fallen pieces (view-only, ADR-0014).
             construction::view::plugin,
-            debris::decor::plugin,
             drive_hud::plugin,
             // Required by every scope/profile declarer; see `render_policy`.
             render_policy::plugin,

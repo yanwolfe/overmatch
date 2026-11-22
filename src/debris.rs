@@ -62,7 +62,6 @@
 //! has no pair with fixed matter.
 
 pub(crate) mod crumble;
-pub(crate) mod decor;
 pub(crate) mod freeze;
 pub(crate) mod launch;
 

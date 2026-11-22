@@ -17,31 +17,21 @@
 //! `E = ½ Σ |J_i| v_i` over its blows and closing speeds (DERIVED, a plastic impact), shared with
 //! a moving group on the other side by compliance ([`touches`]). Past that, the most overloaded
 //! crack first, it stops at the first the energy left cannot pay. What stays connected over the
-//! joints that did not part is a fragment.
-//!
-//! THE SIZE SPLIT ([`route`]). [`server_body`] selects fragments for the construction's split path
-//! ([`crate::construction::breakage::PendingSplit`]); the rest leave simulation as dust in the
-//! record and one [`Shed`] for players' decoration ([`super::decor`]), which only draws them.
+//! joints that did not part is a fragment, and every fragment stays a server body
+//! ([`crate::construction::breakage::PendingSplit`]).
 
 use std::collections::BTreeMap;
 
-use avian3d::prelude::{
-    AngularVelocity, CollisionLayers, ComputedCenterOfMass, LinearVelocity, PhysicsLengthUnit,
-    Position, Rotation, SleepThreshold,
-};
+use avian3d::prelude::{CollisionLayers, PhysicsLengthUnit, Position, Rotation, SleepThreshold};
 use bevy::prelude::*;
-use serde::{Deserialize, Serialize};
 
 use crate::construction::Element;
-use crate::construction::breakage::{
-    Breakage, ChunkCollider, Entry, Event, PendingSplit, Piece, Record, ReleasedMotion,
-};
+use crate::construction::breakage::{Breakage, ChunkCollider, PendingSplit, Piece};
 use crate::construction::fracture::parts::{Assessment, Kernel};
-use crate::construction::fracture::{Cause, Failure, Fate, Load, Origin, Side, State, Structure};
+use crate::construction::fracture::{Cause, Failure, Load, Origin, Side, State, Structure};
 use crate::contact_law::{Contactor, peak_force};
 use crate::contact_transfer::ContactTransfers;
 use crate::cost::stages::{Detail, Stage, Stages, Work};
-use crate::physical_laws::PhysicalLaws;
 use crate::{Layer, ShotClock};
 
 /// One contact on a group, in the construction frame: the chunk it touches, the point (m) and the
@@ -229,142 +219,6 @@ pub(crate) fn crumble(
     }
 }
 
-/// Whether `fragment` stays a server body (module doc): its size reaches the server's smallest
-/// body, whatever its mass.
-pub(crate) fn server_body(structure: &Structure, fragment: &[usize]) -> bool {
-    let volume: f32 = fragment.iter().map(|&c| structure.chunks[c].volume).sum();
-    volume.cbrt() >= PhysicalLaws::shipped().server_rubble_min_size_m
-}
-
-/// Coarsen to the server's smallest body ([`server_body`]): a fragment too small to stay a
-/// body alone joins one leaving with it across a joint parted in this event, so its matter stays
-/// present for hulls and rounds. The largest parted joint decides first, joint index breaking ties.
-/// Retained edges preserve earlier absorption without restoring material strength. Runs within
-/// each owner's worker; chunks and returned groups stay ascending, independent of worker
-/// assignment.
-pub(crate) fn merge_fragments(
-    structure: &Structure,
-    mut fragments: Vec<Vec<usize>>,
-    parted: &[usize],
-    retained: &mut Vec<usize>,
-) -> Vec<Vec<usize>> {
-    for fragment in &mut fragments {
-        fragment.sort_unstable();
-        assert!(!fragment.is_empty(), "a departing fragment contains matter");
-    }
-    fragments.sort_by_key(|fragment| fragment[0]);
-    if parted.is_empty() && retained.is_empty() {
-        return fragments; // No eligible edge can change this partition.
-    }
-    let mut owner = vec![None; structure.chunks.len()];
-    for (g, fragment) in fragments.iter().enumerate() {
-        for &c in fragment {
-            assert!(
-                owner[c].replace(g).is_none(),
-                "departing fragments partition matter"
-            );
-        }
-    }
-    let mut parent: Vec<_> = (0..fragments.len()).collect();
-    retained.retain(|&j| {
-        let joint = &structure.joints[j];
-        matches!(joint.b, Side::Chunk(b) if owner[joint.a].is_some() && owner[b].is_some())
-    });
-    let mut edges: Vec<_> = retained
-        .iter()
-        .map(|&j| (false, j))
-        .chain(parted.iter().map(|&j| (true, j)))
-        .collect();
-    edges.sort_unstable_by(|&(new_a, a), &(new_b, b)| {
-        let area = |j: usize| structure.joints[j].area;
-        new_a
-            .cmp(&new_b)
-            .then(area(b).total_cmp(&area(a)))
-            .then(a.cmp(&b))
-    });
-    for (new, j) in edges {
-        let joint = &structure.joints[j];
-        let Side::Chunk(b) = joint.b else { continue }; // Ground is no departing neighbour.
-        let (Some(a), Some(b)) = (owner[joint.a], owner[b]) else {
-            continue; // Only fragments leaving together may join.
-        };
-        let (a, b) = (root(&mut parent, a), root(&mut parent, b));
-        if a == b
-            || (new
-                && server_body(structure, &fragments[a])
-                && server_body(structure, &fragments[b]))
-        {
-            continue;
-        }
-        let (a, b) = (a.min(b), a.max(b));
-        parent[b] = a;
-        let absorbed = std::mem::take(&mut fragments[b]);
-        fragments[a].extend(absorbed);
-        fragments[a].sort_unstable();
-        if new {
-            retained.push(j);
-        }
-    }
-    retained.sort_unstable();
-    retained.dedup();
-    fragments
-        .into_iter()
-        .filter(|fragment| !fragment.is_empty())
-        .collect()
-}
-
-/// A fragment leaving the simulation for the players' decoration, sent once at `tick`: its
-/// construction and chunks (ascending), the construction frame's world pose then, the fragment's
-/// centre-of-mass velocity (m/s) and spin (rad/s) in world terms, and a seed that fixes every
-/// choice its decoration makes, so every player draws it alike.
-#[derive(Message, Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub(crate) struct Shed {
-    pub(crate) construction: u16,
-    pub(crate) chunks: Vec<u16>,
-    pub(crate) at: [f32; 3],
-    pub(crate) rotation: [f32; 4],
-    pub(crate) velocity: [f32; 3],
-    pub(crate) spin: [f32; 3],
-    pub(crate) seed: u32,
-    pub(crate) tick: u32,
-}
-
-impl Shed {
-    /// `fragment` of `construction` at `tick`, in the construction frame `frame` (world), moving
-    /// with the rigid field `velocity` + `spin` × (x − `centre`) of the group it left (world).
-    pub(crate) fn of(
-        structure: &Structure,
-        (construction, frame): (u16, Transform),
-        fragment: &[usize],
-        ReleasedMotion {
-            velocity,
-            spin,
-            centre,
-        }: ReleasedMotion,
-        tick: u32,
-    ) -> Self {
-        let mass: f32 = fragment.iter().map(|&c| structure.chunks[c].mass).sum();
-        let local = fragment
-            .iter()
-            .map(|&c| structure.chunks[c].centroid * structure.chunks[c].mass)
-            .sum::<Vec3>()
-            / mass;
-        let own = velocity + spin.cross(frame.transform_point(local) - centre);
-        let first = u32::from(fragment[0] as u16);
-        Self {
-            construction,
-            chunks: fragment.iter().map(|&c| c as u16).collect(),
-            at: frame.translation.to_array(),
-            rotation: frame.rotation.to_array(),
-            velocity: own.to_array(),
-            spin: spin.to_array(),
-            // Any fixed mix of the identities works; it only has to be the same on every peer.
-            seed: u32::from(construction).rotate_left(16) ^ first.wrapping_mul(0x9E37_79B9) ^ tick,
-            tick,
-        }
-    }
-}
-
 /// One patch of a landing: the blow (N·s) one of a group's colliders took from one other collider
 /// over the step, summed over every point the narrow phase sampled it with,
 /// at their blow-weighted centre and closing at their blow-weighted speed (m/s), so its force law
@@ -538,11 +392,6 @@ type Moving<'a> = (
     &'a Piece,
     &'a mut Breakage,
     (&'a Position, &'a Rotation),
-    (
-        &'a LinearVelocity,
-        &'a AngularVelocity,
-        &'a ComputedCenterOfMass,
-    ),
     Has<PendingSplit>,
 );
 
@@ -608,8 +457,6 @@ fn crumble_landings(
     mut contacts: Contacts,
     mut groups: Query<Moving>,
     clock: Option<Res<ShotClock>>,
-    mut record: ResMut<Record>,
-    mut shed: MessageWriter<Shed>,
     stages: Option<Res<Stages>>,
     mut commands: Commands,
 ) {
@@ -619,7 +466,7 @@ fn crumble_landings(
     let _crumble = Stages::start(stages.as_deref(), Stage::Crumble);
     *contacts.read = contacts.transfers.steps();
     let landings = landings(&contacts.transfers, |entity| {
-        groups.get(entity).is_ok_and(|item| !item.5).then(|| {
+        groups.get(entity).is_ok_and(|item| !item.4).then(|| {
             contacts
                 .rests
                 .get(entity)
@@ -633,7 +480,7 @@ fn crumble_landings(
     let landings: std::collections::BTreeMap<_, _> = landings
         .into_iter()
         .map(|(entity, landing)| {
-            let (_, _, breakage, pose, _, _) = groups
+            let (_, _, breakage, pose, _) = groups
                 .get(entity)
                 .expect("the landings were filtered to these groups");
             let chunk = |collider: Entity| {
@@ -658,23 +505,22 @@ fn crumble_landings(
         })
         .collect();
     let mut prepared = bevy::utils::Parallel::<Vec<_>>::default();
-    // Owners update their own seams and prepare children together. Only the ledger, messages
-    // and structural changes commit in entity order after every owner's calculation completes.
+    // Owners update their own seams and prepare children together. Only structural changes
+    // commit, in entity order, after every owner's calculation completes.
     // One landing per task: its passes and kernel scale with its group, from a few chunks to over
     // a hundred, so contiguous batches cannot balance them.
     groups
         .par_iter_many_unique_mut(landings.keys())
         .batching_strategy(bevy::ecs::batching::BatchingStrategy::fixed(1))
         .for_each(|candidate| {
-            let (entity, piece, mut breakage, pose, (velocity, spin, centre), _) =
+            let (entity, piece, mut breakage, _, _) =
                 candidate.expect("a landing's group passed this system's own groups.get");
             let (energy, touches) = &landings[&entity];
             let owned: Vec<usize> = piece.chunks.iter().map(|&c| usize::from(c)).collect();
-            let frame = breakage.physics_frame(pose);
             let kernels = breakage.kind.equilibrium.kernels.clone();
             let live = breakage.live.as_mut();
             let solve_bracket = Stages::detail(stages.as_deref(), Detail::CrumbleSolve);
-            let mut result =
+            let result =
                 crate::construction::fracture::parts::record_factors(stages.as_deref(), || {
                     crumble(
                         &live.structure,
@@ -692,98 +538,31 @@ fn crumble_landings(
                 stages.add(Work::LandingPasses, result.passes as u64);
                 stages.add(Work::LandingOps, result.work);
             }
-            result.fragments = merge_fragments(
-                &live.structure,
-                result.fragments,
-                &result.separated,
-                &mut live.rubble_joints,
-            );
             for &j in &result.cracked {
                 live.state.cracked[j] = true;
             }
             for &j in &result.separated {
                 live.state.separated[j] = true;
             }
-            if result.fragments.len() == 1 && server_body(&live.structure, &result.fragments[0]) {
+            if result.fragments.len() == 1 {
                 return; // Still one body: its seams took the energy, or none could.
             }
-            let motion = ReleasedMotion {
-                velocity: velocity.0,
-                spin: spin.0,
-                centre: pose.0.0 + pose.1.0 * centre.0,
-            };
-            let mut record = Record::default();
-            let (kept, sheds) = route(
-                &live.structure,
-                (piece.construction, frame),
-                result.fragments,
-                |light| vec![motion; light.len()],
-                tick,
-                &mut record,
-            );
-            let pending = PendingSplit::of(&breakage, kept, tick);
-            prepared.scope(|local| local.push((entity, pending, sheds, record.entries)));
+            let pending = PendingSplit::of(&breakage, result.fragments, tick);
+            prepared.scope(|local| local.push((entity, pending)));
         });
     let mut prepared: Vec<_> = prepared.drain().collect();
     if prepared.is_empty() {
         return;
     }
     let _commit_bracket = Stages::detail(stages.as_deref(), Detail::CrumbleSplit);
-    prepared.sort_unstable_by_key(|(entity, ..)| *entity);
-    for (entity, pending, sheds, entries) in prepared {
-        record.entries.extend(entries);
-        shed.write_batch(sheds);
+    prepared.sort_unstable_by_key(|(entity, _)| *entity);
+    for (entity, pending) in prepared {
         commands.entity(entity).insert(pending);
-    }
-}
-
-/// The size split after [`merge_fragments`], at `tick`, for hull cuts, structure releases and
-/// landings: a fragment that is no server body goes to the record as dust and to the players as
-/// one [`Shed`], returned for the caller to send, moving with the rigid field (as [`Shed::of`])
-/// that `motions` gives each such fragment, in order; the rest, returned, stay server bodies.
-pub(crate) fn route(
-    structure: &Structure,
-    (construction, frame): (u16, Transform),
-    fragments: Vec<Vec<usize>>,
-    motions: impl FnOnce(&[Vec<usize>]) -> Vec<ReleasedMotion>,
-    tick: u32,
-    record: &mut Record,
-) -> (Vec<Vec<usize>>, Vec<Shed>) {
-    let (kept, light): (Vec<_>, Vec<_>) = fragments
-        .into_iter()
-        .partition(|fragment| server_body(structure, fragment));
-    let motions = motions(&light);
-    assert_eq!(
-        motions.len(),
-        light.len(),
-        "each decor fragment has one rigid field"
-    );
-    let sheds = light
-        .iter()
-        .zip(motions)
-        .map(|(fragment, motion)| {
-            record.entries.extend(fragment.iter().map(|&c| Entry {
-                construction,
-                event: Event::Dust(c as u16),
-                tick,
-            }));
-            Shed::of(structure, (construction, frame), fragment, motion, tick)
-        })
-        .collect();
-    (kept, sheds)
-}
-
-/// Mark `sheds`' chunks as dust in `state`: what [`route`] sheds leaves the simulation. Landings
-/// mark nothing, as their split keeps only owned chunks.
-pub(crate) fn mark_dust(state: &mut State, sheds: &[Shed]) {
-    for &c in sheds.iter().flat_map(|shed| &shed.chunks) {
-        state.fate[usize::from(c)] = Fate::Dust;
     }
 }
 
 /// Mount the crumble on the authority in [`crate::construction::breakage::LandingSet`]: after the
 /// deposits whose splits it keeps, before the refit that despawns colliders its contacts name.
-/// [`Shed`] is registered with the breakage, whose contact law routes too.
 pub(crate) fn sim_plugin(app: &mut App) {
     app.add_systems(
         FixedPostUpdate,
