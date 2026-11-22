@@ -461,7 +461,7 @@ fn place_preview(
             id: placed.id.clone(),
             ordinal,
         };
-        let root = crate::construction::spawn(&mut commands, kind, identity, pose);
+        let root = crate::construction::spawn(&mut commands, kind, identity, pose, Some(&grid));
         commands.entity(root).insert(Previewed);
         if let Some(look) = &look {
             commands.spawn((

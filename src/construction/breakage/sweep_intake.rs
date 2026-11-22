@@ -1664,6 +1664,7 @@ mod tests {
                         ordinal: u16::MAX,
                     },
                     Isometry3d::from_translation(pose.translation),
+                    None,
                 );
                 // Fixture: tilt the column after its upright spawn gate to test frame covariance.
                 app.world_mut().commands().entity(root).insert(pose);

@@ -105,11 +105,35 @@ use crate::{ClientReplica, Layer, ShotClock};
 /// Resolution: face-stop tolerance, m, for repeated f32 intersection rounding.
 const STOP_TOLERANCE_M: f32 = 0.01;
 
-/// DERIVED from the construction frame: grade is its zero-height plane, m, the plane the construction stands on (a construction spawns with its
-/// frame's origin on the ground, its foundation below). A chunk wholly below it is buried.
+/// DERIVED from the construction frame: grade is its zero-height plane, m, the plane a level site
+/// meets it at (a construction spawns with its frame's origin on the ground, its foundation
+/// below).
 pub(crate) const GRADE_M: f32 = 0.0;
 /// Resolution: on-grade tolerance, m, for baked corners rounded off the cutting plane.
 const ON_GRADE_M: f32 = 1e-4;
+
+/// The ground a construction stands on. The soil holds a chunk it covers wholly, corner for
+/// corner: that chunk is buried.
+#[derive(Clone, Copy)]
+pub(crate) enum Site<'a> {
+    /// Level ground at the frame's grade: a fixture's, and what a kind is admitted on.
+    Level,
+    /// The map's ground under a construction placed at this pose.
+    Terrain(&'a crate::terrain_grid::HeightGrid, Isometry3d),
+}
+
+impl Site<'_> {
+    /// Whether the ground covers every one of `corners`, given in the construction frame.
+    fn covers(self, mut corners: impl Iterator<Item = Vec3>) -> bool {
+        corners.all(|corner| match self {
+            Site::Level => corner.y <= GRADE_M + ON_GRADE_M,
+            Site::Terrain(grid, pose) => {
+                let world = pose * corner;
+                world.y <= grid.height_at(world.x, world.z) + ON_GRADE_M
+            }
+        })
+    }
+}
 
 /// The most holes one chunk draws and the record carries (module doc), the earliest cut kept; a
 /// later one still wears the pool (Resolution: bounds the view's per-chunk table and the shared
@@ -327,7 +351,7 @@ impl Layout {
                         centroid: Vec3::from_array(chunk.centroid),
                         mass: chunk.mass_kg,
                         material,
-                        buried: chunk.hull.iter().all(|p| p[1] <= GRADE_M + ON_GRADE_M),
+                        buried: Site::Level.covers(chunk.hull.iter().map(|&p| Vec3::from_array(p))),
                     }
                 })
                 .collect(),
@@ -554,9 +578,32 @@ pub(crate) struct Live {
 }
 
 impl Live {
+    /// `kind` on level ground at its frame's grade.
     fn new(kind: &ConstructionKind) -> Self {
-        let mut live = Self::from_shared(kind.structure.clone(), kind.layout.elements.len());
-        live.assessment = kind.equilibrium.clone();
+        Self::sited(kind, Site::Level)
+    }
+
+    /// `kind` standing on `site`. A site that buries what level ground does shares the kind's
+    /// structure and equilibrium; any other holds its own.
+    fn sited(kind: &ConstructionKind, site: Site) -> Self {
+        let buried: Vec<bool> = (kind.layout.blocks.iter())
+            .map(|block| site.covers(block.points.iter().copied()))
+            .collect();
+        let shared = (kind.structure.chunks.iter())
+            .zip(&buried)
+            .all(|(chunk, &buried)| chunk.buried == buried);
+        if shared {
+            let mut live = Self::from_shared(kind.structure.clone(), kind.layout.elements.len());
+            live.assessment = kind.equilibrium.clone();
+            return live;
+        }
+        let mut structure = (*kind.structure).clone();
+        for (chunk, buried) in structure.chunks.iter_mut().zip(buried) {
+            chunk.buried = buried;
+        }
+        let equilibrium = Arc::new(fracture::parts::Assessment::at_rest(&structure));
+        let mut live = Self::from_shared(Arc::new(structure), kind.layout.elements.len());
+        live.assessment = equilibrium;
         live
     }
 
@@ -633,8 +680,13 @@ pub(crate) struct Breakage {
 }
 
 impl Breakage {
+    /// On level ground at the frame's grade.
     pub(crate) fn new(kind: Arc<ConstructionKind>, construction: u16) -> Self {
-        let live = Box::new(Live::new(&kind));
+        Self::sited(kind, construction, Site::Level)
+    }
+
+    pub(crate) fn sited(kind: Arc<ConstructionKind>, construction: u16, site: Site) -> Self {
+        let live = Box::new(Live::sited(&kind, site));
         Self {
             kind,
             construction,

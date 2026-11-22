@@ -268,6 +268,7 @@ impl ScatterScene {
                         kind,
                         placement.identity.clone(),
                         placement.pose,
+                        Some(&self.grid),
                     );
                     obstacles.push(crate::construction::footprint(kind, placement.pose));
                     if let Some(view) = view {

@@ -86,6 +86,7 @@ fn composed_kind_with_physics(
             ordinal: 3,
         },
         Isometry3d::IDENTITY,
+        None,
     );
     queue.apply(world);
     (app, root)
@@ -4156,6 +4157,7 @@ fn reconciliation_prepares_the_same_ordered_geometry_across_workers() {
                 ordinal: 2,
             },
             Isometry3d::from_translation(Vec3::new(5.0, 0.0, 0.0)),
+            None,
         );
         queue.apply(app.world_mut());
         {
@@ -5752,4 +5754,55 @@ fn staged_members_leave_from_the_back_and_the_rest_keep_their_order() {
         (list(old), list(new))
     };
     assert_eq!(rehome(true), rehome(false));
+}
+
+/// THE SOIL HOLDS WHAT THE GROUND COVERS. A chunk of a placed construction is buried exactly
+/// when the ground under it covers every corner of it. The contact law relies on it (a buried
+/// cell is never pressed, `bounded::cell`; a push that runs into one is grounded,
+/// `fracture::bound::Standing::plug`), and so does the support solve (a buried chunk is a fixed
+/// part). Fixture: the shipped house on ground rising 0.25 m per metre along world x through its
+/// root, read against the same plane stated analytically. Judging against the frame's grade
+/// instead leaves the uphill chunks the slope covers unburied and the downhill foundation it
+/// bares buried.
+#[test]
+fn the_ground_under_a_placed_construction_buries_what_it_covers() {
+    const RISE: f32 = 0.25;
+    let kind = shipped_house();
+    let extent = crate::terrain_grid::TerrainExtent {
+        world_size_m: 80.0,
+        ..crate::terrain_grid::FIXTURE_EXTENT
+    };
+    let side = 9_usize;
+    let node = |i: usize| -extent.half_extent() + extent.world_size_m * i as f32 / 8.0;
+    let samples: Vec<f32> = (0..side * side).map(|k| RISE * node(k % side)).collect();
+    let grid = crate::terrain_grid::HeightGrid::new(samples.into(), side as u32, extent);
+    let at = Vec3::new(3.0, 0.0, -2.0);
+    let pose = Isometry3d::new(at.with_y(RISE * at.x), Quat::from_rotation_y(0.4));
+    let sited = Breakage::sited(kind.clone(), 0, Site::Terrain(&grid, pose));
+    let level = Breakage::new(kind.clone(), 0);
+    let (mut covered, mut bared) = (0, 0);
+    for (c, block) in kind.layout.blocks.iter().enumerate() {
+        // Resolution: a corner within a millimetre of the plane is either side of the grid's
+        // triangle arithmetic; the fixture's chunks are judged by the rest.
+        let heights: Vec<f32> = (block.points.iter())
+            .map(|&corner| {
+                let world = pose * corner;
+                world.y - RISE * world.x
+            })
+            .collect();
+        if heights.iter().any(|height| height.abs() < 1e-3) {
+            continue;
+        }
+        let under = heights.iter().all(|&height| height < 0.0);
+        assert_eq!(
+            sited.live.structure.chunks[c].buried, under,
+            "chunk {c}, corners {heights:?} m over the ground"
+        );
+        covered += usize::from(under && !level.live.structure.chunks[c].buried);
+        bared += usize::from(!under && level.live.structure.chunks[c].buried);
+    }
+    assert!(
+        covered > 0 && bared > 0,
+        "the slope must differ from level ground both ways: covered {covered}, bared {bared}"
+    );
 }

@@ -3814,6 +3814,7 @@ fn a_shipped_data_hull_push_reports_environment_release_groups() {
             ordinal: 60000,
         },
         Isometry3d::from_translation(house_at),
+        None,
     );
     queue.apply(app.world_mut());
     app.world_mut().entity_mut(tank).insert((

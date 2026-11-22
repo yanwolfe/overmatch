@@ -8089,6 +8089,7 @@ pub(crate) mod march_tests {
                 ordinal: 0,
             },
             Isometry3d::IDENTITY,
+            None,
         );
         queue.apply(world);
         settle(&mut app);

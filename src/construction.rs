@@ -296,7 +296,8 @@ fn element_bundle(kind: &ConstructionKind, k: usize) -> impl Bundle {
 }
 
 /// Spawn one construction of `kind` at `pose`, the ground pose: the authored XZ, the grid's Y, the
-/// authored yaw. A tilted instance is refused (ADR-0011):
+/// authored yaw, on `grid`'s ground (none: a fixture's level slab), which buries what it covers
+/// ([`breakage::Site`]). A tilted instance is refused (ADR-0011):
 /// a construction stands on its foundation plane. Returns the root; the body is whole without a view.
 /// The root carries `Visibility` because a view, where one draws, is its child and inherits
 /// visibility through it.
@@ -305,6 +306,7 @@ pub(crate) fn spawn(
     kind: &Arc<ConstructionKind>,
     identity: MapInstance,
     pose: Isometry3d,
+    grid: Option<&crate::terrain_grid::HeightGrid>,
 ) -> Entity {
     assert!(
         (pose.rotation * Vec3::Y).y >= 1.0 - UPRIGHT_EPSILON,
@@ -312,7 +314,11 @@ pub(crate) fn spawn(
         identity.id,
         pose.rotation,
     );
-    let breakage = breakage::Breakage::new(kind.clone(), identity.ordinal);
+    // No grid is the flat slab the pose stands on.
+    let site = grid.map_or(breakage::Site::Level, |grid| {
+        breakage::Site::Terrain(grid, pose)
+    });
+    let breakage = breakage::Breakage::sited(kind.clone(), identity.ordinal, site);
     let root = commands
         .spawn((
             Name::new(format!("construction {}", identity.id)),
@@ -637,7 +643,7 @@ pub(crate) mod tests {
             id: "house_0001".to_owned(),
             ordinal: 0,
         };
-        let root = spawn(&mut commands, kind, identity, pose.to_isometry());
+        let root = spawn(&mut commands, kind, identity, pose.to_isometry(), None);
         queue.apply(&mut world);
         (world, root)
     }

@@ -370,6 +370,7 @@ mod tests {
                 ordinal,
             },
             Isometry3d::from_translation(offset),
+            None,
         );
         app.world_mut().flush();
         app.update();
