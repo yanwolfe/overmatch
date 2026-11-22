@@ -65,6 +65,11 @@ pub(crate) struct Pressed {
 #[derive(Resource, Default, Debug)]
 pub(crate) struct Give(BTreeMap<(Entity, usize), f64>);
 
+/// The ram instrument's relay arm (`net::ram::relay`): while present, a cell's crossed share is
+/// never forgotten.
+#[derive(Resource)]
+pub(crate) struct KeepGive;
+
 /// One block's step, for the operator's instruments.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BlockRow {
@@ -415,6 +420,7 @@ fn release(
     mut shed: MessageWriter<crate::debris::crumble::Shed>,
     mut commands: Commands,
     stages: Option<Res<Stages>>,
+    keep: Option<Res<KeepGive>>,
 ) {
     let _release = Stages::start(stages.as_deref(), Stage::Release);
     let dt = f64::from(fixed.timestep().as_secs_f32());
@@ -423,7 +429,11 @@ fn release(
     account.blocks.clear();
     account.freed.clear();
     account.shed = 0;
-    let mut kept = BTreeMap::new();
+    let mut kept = if keep.is_some() {
+        give.0.clone()
+    } else {
+        BTreeMap::new()
+    };
     let mut leaving: BTreeMap<Entity, BTreeSet<usize>> = BTreeMap::new();
     for (root, cells) in belts {
         leaving.entry(root).or_default().extend(cells);
@@ -458,6 +468,8 @@ fn release(
         let impulse = reaction(price, block.spent, closing, dt);
         let spent = if yielded {
             block.spent + crossed(price, closing, dt)
+        } else if keep.is_some() {
+            block.spent
         } else {
             0.0
         };

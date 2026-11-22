@@ -37,6 +37,7 @@ use crate::{
     track::{sim::TrackDrive, transmission::RPM_TO_RAD},
 };
 
+mod relay;
 mod structure;
 
 const LEVER: &str = "OVERMATCH_RAM";
@@ -351,6 +352,7 @@ pub(super) fn target(manifest: &MapManifest) -> Result<(String, Quat), LeverErro
 fn install_recipe(app: &mut App, recipe: Recipe) {
     app.insert_resource(Ram::new(recipe));
     app.add_systems(PostStartup, prepare);
+    relay::install(app);
 }
 
 /// Resolution: the midpoint steps of [`runup`]'s integral. The pull is piecewise smooth in speed

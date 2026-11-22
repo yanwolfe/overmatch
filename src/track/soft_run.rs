@@ -535,16 +535,11 @@ fn write_runs(mut laws: ResMut<Laws>, runs: Query<&RunContacts>) {
     }
 }
 
-/// The runs' laws are read and published; another writer of the step's law store orders on it.
-#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct RunLaws;
-
 pub(crate) fn plugin(app: &mut App) {
     app.add_systems(
         PhysicsSchedule,
         (read_runs, write_runs)
             .chain()
-            .in_set(RunLaws)
             .in_set(PhysicsStepSystems::Solver)
             .after(SolverSystems::PrepareSolverBodies)
             .before(SolverSystems::PrepareContactConstraints),

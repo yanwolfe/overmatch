@@ -402,6 +402,7 @@ struct Landing {
 fn landings(
     transfers: &ContactTransfers,
     rest_speed: impl Fn(Entity) -> Option<f32>,
+    pressed: bool,
 ) -> BTreeMap<Entity, Landing> {
     let dt = transfers.dt();
     let mut landings: BTreeMap<Entity, Landing> = BTreeMap::new();
@@ -456,7 +457,9 @@ fn landings(
             patch.closing += point.closing_speed * struck;
         }
     }
-    landings.retain(|_, landing| !landing.patches.is_empty());
+    if !pressed {
+        landings.retain(|_, landing| !landing.patches.is_empty());
+    }
     for patch in landings
         .values_mut()
         .flat_map(|landing| &mut landing.patches)
@@ -602,6 +605,11 @@ fn meets(
     }
 }
 
+/// The ram instrument's relay reading (`net::ram::relay`): while present, each step's groups that
+/// are pressed without a blow are judged as a landing would judge them, read-only, and logged.
+#[derive(Resource)]
+pub(crate) struct PressVerdicts;
+
 /// AUTHORITY: each physics step's landings crumble the moving groups they reach (module doc). A
 /// group a field load already splits this tick keeps that split; its landing is not read twice.
 fn crumble_landings(
@@ -612,22 +620,27 @@ fn crumble_landings(
     mut shed: MessageWriter<Shed>,
     stages: Option<Res<Stages>>,
     mut commands: Commands,
+    verdicts: Option<Res<PressVerdicts>>,
 ) {
     if contacts.transfers.steps() == *contacts.read {
         return;
     }
     let _crumble = Stages::start(stages.as_deref(), Stage::Crumble);
     *contacts.read = contacts.transfers.steps();
-    let landings = landings(&contacts.transfers, |entity| {
-        groups.get(entity).is_ok_and(|item| !item.5).then(|| {
-            contacts
-                .rests
-                .get(entity)
-                .expect("a moving group's dynamic body carries its sleep threshold")
-                .linear
-                * contacts.length_unit.0
-        })
-    });
+    let landings = landings(
+        &contacts.transfers,
+        |entity| {
+            groups.get(entity).is_ok_and(|item| !item.5).then(|| {
+                contacts
+                    .rests
+                    .get(entity)
+                    .expect("a moving group's dynamic body carries its sleep threshold")
+                    .linear
+                    * contacts.length_unit.0
+            })
+        },
+        verdicts.is_some(),
+    );
     // An authority without a shot clock (a test fixture's bare sim) is at tick zero.
     let tick = clock.as_deref().map_or(0, |clock| clock.0.raw());
     let landings: std::collections::BTreeMap<_, _> = landings
@@ -657,6 +670,16 @@ fn crumble_landings(
             (entity, (energy, touches))
         })
         .collect();
+    let (landings, pressed): (
+        std::collections::BTreeMap<_, _>,
+        std::collections::BTreeMap<_, _>,
+    ) = landings
+        .into_iter()
+        .partition(|(_, (energy, _))| *energy > 0.0);
+    for (entity, (_, touches)) in &pressed {
+        let (_, piece, breakage, ..) = groups.get(*entity).expect("a pressed group");
+        press_verdict(tick, *entity, piece, breakage, touches);
+    }
     let mut prepared = bevy::utils::Parallel::<Vec<_>>::default();
     // Owners update their own seams and prepare children together. Only the ledger, messages
     // and structural changes commit in entity order after every owner's calculation completes.
@@ -674,6 +697,12 @@ fn crumble_landings(
             let kernels = breakage.kind.equilibrium.kernels.clone();
             let live = breakage.live.as_mut();
             let solve_bracket = Stages::detail(stages.as_deref(), Detail::CrumbleSolve);
+            if verdicts.is_some() {
+                info!(
+                    "RELAY landing tick={tick} piece={entity:?} cells={} energy_j={energy}",
+                    owned.len()
+                );
+            }
             let mut result =
                 crate::construction::fracture::parts::record_factors(stages.as_deref(), || {
                     crumble(
@@ -703,6 +732,12 @@ fn crumble_landings(
             }
             for &j in &result.separated {
                 live.state.separated[j] = true;
+            }
+            if verdicts.is_some() && result.spent > 0.0 {
+                info!(
+                    "RELAY spent tick={tick} piece={entity:?} spent_j={}",
+                    result.spent
+                );
             }
             if result.fragments.len() == 1 && server_body(&live.structure, &result.fragments[0]) {
                 return; // Still one body: its seams took the energy, or none could.
@@ -735,6 +770,79 @@ fn crumble_landings(
         shed.write_batch(sheds);
         commands.entity(entity).insert(pending);
     }
+}
+
+/// The relay reading of one group pressed without a blow ([`PressVerdicts`]): what the landing law
+/// would do with its presses given all the energy it asks for. Changes nothing.
+fn press_verdict(tick: u32, entity: Entity, piece: &Piece, breakage: &Breakage, touches: &[Touch]) {
+    let structure = &breakage.live.structure;
+    let owned: Vec<usize> = piece.chunks.iter().map(|&c| usize::from(c)).collect();
+    let mass: f32 = owned.iter().map(|&c| structure.chunks[c].mass).sum();
+    let volume: f32 = owned.iter().map(|&c| structure.chunks[c].volume).sum();
+    let load: f32 = touches.iter().map(|touch| touch.force.length()).sum();
+    // Instrument filter: a piece bearing little more than itself is at rest, not pressed.
+    if load < 3.0 * mass * 9.81 {
+        return;
+    }
+    let most = touches
+        .iter()
+        .map(|touch| touch.force.length())
+        .fold(0.0, f32::max);
+    // DERIVED proxy: the largest press over the chunk's bearing strength on a face of its
+    // volume's two-thirds power.
+    let crush = touches
+        .iter()
+        .map(|touch| {
+            let chunk = &structure.chunks[touch.chunk];
+            let along = touch.force.as_dvec3().normalize_or_zero();
+            f64::from(touch.force.length())
+                / (chunk.material.bearing(along) * f64::from(chunk.volume).powf(2.0 / 3.0))
+        })
+        .fold(0.0, f64::max);
+    let kernels = &breakage.kind.equilibrium.kernels;
+    let mut first = breakage.live.state.clone();
+    let pass = Assessment::landing(kernels, structure, &mut first, &loads(touches));
+    let overload_most = pass.failures.iter().map(overload).fold(0.0, f32::max);
+    let result = crumble(
+        structure,
+        &breakage.live.state,
+        kernels,
+        &owned,
+        touches,
+        f32::MAX,
+    );
+    let mut retained = breakage.live.rubble_joints.clone();
+    let merged = merge_fragments(
+        structure,
+        result.fragments,
+        &result.separated,
+        &mut retained,
+    );
+    let size = |fragment: &Vec<usize>| -> f32 {
+        fragment.iter().map(|&c| structure.chunks[c].volume).sum()
+    };
+    let (kept, dust): (Vec<_>, Vec<_>) = merged
+        .iter()
+        .partition(|fragment| server_body(structure, fragment));
+    let dust: Vec<String> = dust
+        .iter()
+        .flat_map(|fragment| fragment.iter())
+        .map(|&c| format!("{c}:{}", structure.chunks[c].volume))
+        .collect();
+    let kept: Vec<String> = kept
+        .iter()
+        .map(|fragment| format!("{}", size(fragment)))
+        .collect();
+    info!(
+        "RELAY verdict tick={tick} piece={entity:?} con={} cells={} vol={volume} mass={mass} load_n={load} most_n={most} crush={crush} overload={overload_most} failures={} parted={} cost_j={} dust=[{}] kept=[{}]",
+        piece.construction,
+        owned.len(),
+        pass.failures.len(),
+        pass.parted.len(),
+        result.spent,
+        dust.join(","),
+        kept.join(","),
+    );
 }
 
 /// The size split after [`merge_fragments`], at `tick`, for hull cuts, structure releases and

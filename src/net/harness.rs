@@ -659,14 +659,6 @@ pub(crate) fn buffer_input(
     });
     sim.write(t, ready, &mut state.command);
     sim.stop(t, velocity.map(|v| v.length()), &mut state.command);
-    // TEMP DIAG: reverse from a tick, for the drive-back clip.
-    if let Some(back) = std::env::var("TMP_BACK_AT")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        && t >= back + RUN_LEAD
-    {
-        state.command.throttle = -1.0;
-    }
     if (state.command.fire_primary || state.command.fire_secondary)
         && let ScriptClock::Released {
             first_fire_logged, ..
