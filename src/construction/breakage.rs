@@ -689,6 +689,15 @@ impl Breakage {
 
     pub(crate) fn sited(kind: Arc<ConstructionKind>, construction: u16, site: Site) -> Self {
         let live = Box::new(Live::sited(&kind, site));
+        // A site only moves burial: a cell it bares is still joined, through cells below it,
+        // to the bake's anchors on the foundation plane (the bake joins every chunk to them).
+        if let Some(group) = fracture::loose_groups(&live.structure, &live.state).first() {
+            panic!(
+                "construction {construction} ({}): cell {} is neither buried at its site, held \
+                 by a ground joint, nor joined to a cell that is",
+                kind.asset.id, group[0]
+            );
+        }
         Self {
             kind,
             construction,

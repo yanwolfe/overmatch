@@ -5763,7 +5763,9 @@ fn staged_members_leave_from_the_back_and_the_rest_keep_their_order() {
 /// part). Fixture: the shipped house on ground rising 0.25 m per metre along world x through its
 /// root, read against the same plane stated analytically. Judging against the frame's grade
 /// instead leaves the uphill chunks the slope covers unburied and the downhill foundation it
-/// bares buried.
+/// bares buried. A bared chunk stays held: every chunk is still joined to a buried one or to a
+/// ground joint (the support check would otherwise drop it at spawn); a siting that took the
+/// ground joints of the chunks it bares would strand them.
 #[test]
 fn the_ground_under_a_placed_construction_buries_what_it_covers() {
     const RISE: f32 = 0.25;
@@ -5804,5 +5806,10 @@ fn the_ground_under_a_placed_construction_buries_what_it_covers() {
     assert!(
         covered > 0 && bared > 0,
         "the slope must differ from level ground both ways: covered {covered}, bared {bared}"
+    );
+    assert_eq!(
+        fracture::loose_groups(&sited.live.structure, &sited.live.state),
+        Vec::<Vec<usize>>::new(),
+        "every chunk of the sited house is joined to the ground"
     );
 }

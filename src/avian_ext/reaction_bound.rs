@@ -62,6 +62,8 @@ struct Group {
     /// Per member, whether the last deal handed it more than it carried.
     room: Vec<bool>,
     spent: bool,
+    wanting: bool,
+    used: f32,
 }
 
 /// A bounded manifold's prepared constraint, and this substep's bound of each of its points.
@@ -115,6 +117,8 @@ impl Bounds {
             members,
             most,
             spent: false,
+            wanting: false,
+            used: 0.0,
         });
         self.groups.len() - 1
     }
@@ -123,6 +127,18 @@ impl Bounds {
     /// still wanted more, and no point held room it did not use. The body was not stopped there.
     pub fn spent(&self, group: usize) -> bool {
         self.groups[group].spent
+    }
+
+    /// Whether the last step ended with a point of group `group` at its bound, spent or not:
+    /// the operator's reading of how often the deal, not the group's bound, held a point.
+    pub fn wanting(&self, group: usize) -> bool {
+        self.groups[group].wanting
+    }
+
+    /// The share of group `group`'s impulse bound over a substep that its points carried when
+    /// the last step ended: the operator's reading beside [`Self::wanting`].
+    pub fn used(&self, group: usize) -> f32 {
+        self.groups[group].used
     }
 }
 
@@ -294,7 +310,11 @@ fn deal(
 }
 
 /// After the step's last solve: which groups it left spent ([`Bounds::spent`]).
-fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
+fn read_bounds(
+    mut bounds: ResMut<Bounds>,
+    constraints: Res<ConstraintGraph>,
+    substeps: Res<SubstepCount>,
+) {
     let Bounds {
         groups, manifolds, ..
     } = &mut *bounds;
@@ -307,8 +327,17 @@ fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
             })
         };
         let wants: Vec<bool> = group.members.iter().map(wanting).collect();
-        group.spent = wants.contains(&true)
-            && (wants.iter().zip(&group.room)).all(|(&wants, &room)| wants || !room);
+        let carried: f32 = (group.members.iter())
+            .filter_map(|member| {
+                let (color, index) = manifolds[&(member.contact.0, member.manifold)].slot?;
+                let point = &constraints.colors[color].contact_constraints[index].points;
+                Some(point[member.point].normal_part.impulse * member.lean)
+            })
+            .sum();
+        group.used = carried * substeps.0 as f32 / group.most.impulse;
+        group.wanting = wants.contains(&true);
+        group.spent =
+            group.wanting && (wants.iter().zip(&group.room)).all(|(&wants, &room)| wants || !room);
     }
 }
 

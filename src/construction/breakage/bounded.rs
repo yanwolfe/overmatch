@@ -87,8 +87,12 @@ pub(crate) struct BlockRow {
     pub(crate) closing: f64,
     /// The most the block returned along the push, N·s.
     pub(crate) bound: f64,
-    /// Its loaded points ended the step at their bounds: the block did not stop the body.
+    /// It returned all its bound: the block did not stop the body.
     pub(crate) yielded: bool,
+    /// A point of the way that gave ended the step at its bound, yielded or not.
+    pub(crate) wanting: bool,
+    /// The share of the way's force bound its points carried in the step's last substep.
+    pub(crate) used: f32,
     /// The share of its give crossed after the step; one or more frees it.
     pub(crate) spent: f64,
     /// The push, unit, in the owner's frame.
@@ -543,6 +547,8 @@ fn release(
                 closing,
                 bound: impulse,
                 yielded,
+                wanting: bounds.wanting(group),
+                used: bounds.used(group),
                 spent,
                 along: push.along,
                 grounded,

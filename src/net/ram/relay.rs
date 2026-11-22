@@ -134,10 +134,39 @@ fn read(
             let gained = (0..chunks.len())
                 .filter(|&c| !owner.kind.structure.chunks[c].buried && chunks[c].buried)
                 .count();
-            let unheld = lost.iter().filter(|&&c| !grounded(c)).count();
-            if unburied_under + buried_above + lost.len() + gained > 0 {
+            let unheld: Vec<usize> = lost.iter().copied().filter(|&c| !grounded(c)).collect();
+            // A cell is carried from below when a joint ties it to a cell whose centre is lower.
+            let lower = |c: usize| {
+                joints.iter().any(|joint| match joint.b {
+                    Side::Chunk(b) if joint.a == c => chunks[b].centroid.y < chunks[c].centroid.y,
+                    Side::Chunk(b) if b == c => chunks[joint.a].centroid.y < chunks[c].centroid.y,
+                    _ => false,
+                })
+            };
+            let base_under = |c: usize| {
+                (owner.kind.layout.blocks[c].points.iter()).any(|&point| {
+                    let world = pose.transform_point(point);
+                    world.y <= ground(world)
+                })
+            };
+            let none: Vec<usize> = (0..chunks.len())
+                .filter(|&c| !chunks[c].buried && !grounded(c) && !lower(c))
+                .collect();
+            let air: Vec<f32> = (joints.iter())
+                .filter(|joint| matches!(joint.b, Side::Ground) && !chunks[joint.a].buried)
+                .map(|joint| {
+                    let world = pose.transform_point(joint.centroid);
+                    world.y - ground(world)
+                })
+                .filter(|&gap| gap > 0.0)
+                .collect();
+            let loose = crate::construction::fracture::loose_groups(
+                &owner.live.structure,
+                &owner.live.state,
+            );
+            if unburied_under + buried_above + lost.len() + gained + none.len() + loose.len() > 0 {
                 info!(
-                    "RELAY site con={} chunks={} buried={} level_buried={} lost_buried={} lost_and_no_ground_joint={unheld} gained_buried={gained} ground_joints={} unburied_under_ground={unburied_under} buried_above_ground={buried_above} root_over_ground={}",
+                    "RELAY site con={} chunks={} buried={} level_buried={} lost_buried={} lost_and_no_ground_joint={} of_those_on_a_lower_cell={} of_those_base_under_ground={} gained_buried={gained} ground_joints={} anchors_over_ground={} highest_anchor_over_ground={} none_of_three={} none_sample={:?} loose_groups={} unburied_under_ground={unburied_under} buried_above_ground={buried_above} root_over_ground={}",
                     owner.construction,
                     chunks.len(),
                     chunks.iter().filter(|chunk| chunk.buried).count(),
@@ -149,10 +178,18 @@ fn read(
                         .filter(|chunk| chunk.buried)
                         .count(),
                     lost.len(),
+                    unheld.len(),
+                    unheld.iter().filter(|&&c| lower(c)).count(),
+                    unheld.iter().filter(|&&c| base_under(c)).count(),
                     joints
                         .iter()
                         .filter(|joint| matches!(joint.b, Side::Ground))
                         .count(),
+                    air.len(),
+                    air.iter().copied().fold(0.0, f32::max),
+                    none.len(),
+                    &none[..none.len().min(6)],
+                    loose.len(),
                     pose.translation.y - ground(pose.translation),
                 );
             }

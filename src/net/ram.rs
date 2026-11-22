@@ -267,8 +267,12 @@ struct BlockReadout {
     closing_m_s: f32,
     /// The most it returned along the push over the step, N s.
     bound_ns: f32,
-    /// A point ended the step at its bound.
+    /// It returned all its bound.
     yielded: bool,
+    /// A point ended the step at its bound.
+    wanting: bool,
+    /// The share of its force bound its points carried in the step's last substep.
+    used: f32,
     /// The share of its give crossed; one frees it.
     spent: f32,
     /// The push in the owner's frame, unit; y is up.
@@ -602,6 +606,8 @@ impl Hull<'_, '_> {
                     closing_m_s: block.closing as f32,
                     bound_ns: block.bound as f32,
                     yielded: block.yielded,
+                    wanting: block.wanting,
+                    used: block.used,
                     spent: block.spent as f32,
                     along: block.along.as_vec3().to_array(),
                     grounded: block.grounded,

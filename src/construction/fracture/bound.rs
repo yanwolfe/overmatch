@@ -304,6 +304,10 @@ impl Standing<'_> {
             let (mut price, closed, rough) = self.boundary(&plug.cells, side, Some(along));
             if closed > 0.0 {
                 let friction = rough / closed;
+                // StandIn for the sideways share of a push, the missing law (how much of a push
+                // `P` on a block turns sideways, `κ P`, by its geometry and what backs it): here
+                // `κ = 1`, the whole push, which the closed joints rub at `μ P`, so the bonds'
+                // `R` is passed at `P = R + μ P`, `R / (1 - μ)`. Past `μ = 1` this way is shut.
                 if friction >= 1.0 {
                     continue;
                 }
