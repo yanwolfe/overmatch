@@ -64,6 +64,7 @@ struct Group {
     spent: bool,
     wanting: bool,
     used: f32,
+    returned: f32,
 }
 
 /// A bounded manifold's prepared constraint, and this substep's bound of each of its points.
@@ -119,6 +120,7 @@ impl Bounds {
             spent: false,
             wanting: false,
             used: 0.0,
+            returned: 0.0,
         });
         self.groups.len() - 1
     }
@@ -139,6 +141,12 @@ impl Bounds {
     /// the last step ended: the operator's reading beside [`Self::wanting`].
     pub fn used(&self, group: usize) -> f32 {
         self.groups[group].used
+    }
+
+    /// What group `group`'s points returned between them over the last step, each times its
+    /// lean, N·s: the operator's reading.
+    pub fn returned(&self, group: usize) -> f32 {
+        self.groups[group].returned
     }
 }
 
@@ -280,6 +288,10 @@ fn deal(
         let wanting: Vec<bool> = (group.members.iter())
             .map(|member| part(member, manifolds).is_some_and(|part| part.clamped))
             .collect();
+        if *dealt {
+            // What the last substep applied.
+            group.returned += carried.iter().sum::<f32>();
+        }
         let impulse = group.most.impulse * substep;
         let work = group.most.work * substep;
         let shares = shares(&carried, &wanting, !*dealt, impulse);
@@ -335,6 +347,7 @@ fn read_bounds(
             })
             .sum();
         group.used = carried * substeps.0 as f32 / group.most.impulse;
+        group.returned += carried;
         group.wanting = wants.contains(&true);
         group.spent =
             group.wanting && (wants.iter().zip(&group.room)).all(|(&wants, &room)| wants || !room);

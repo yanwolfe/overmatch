@@ -19,7 +19,10 @@ use crate::{
     command::ParsedTankCommand,
     construction::{
         Body, ConstructionKind,
-        breakage::{Breakage, GRADE_M, Piece, SweepAccount, bounded::BoundAccount},
+        breakage::{
+            Breakage, GRADE_M, Piece, SweepAccount,
+            bounded::{self, BoundAccount, Held},
+        },
         fracture::bound::Way,
     },
     contact_transfer::ContactTransfers,
@@ -199,6 +202,7 @@ pub(super) struct HullRow {
     solver_ns: Channels,
     /// Every block of standing cells the step bounded (`construction::breakage::bounded`).
     blocks: Vec<BlockReadout>,
+    ends: Vec<EndReadout>,
     /// Cells the step's over-pushed blocks freed.
     freed: usize,
     /// The hull's nose-up pitch, rad.
@@ -279,6 +283,24 @@ struct BlockReadout {
     along: [f32; 3],
     /// The push runs into the ground or buried matter.
     grounded: bool,
+    /// What its points returned along the push over the step, N s.
+    returned_ns: f32,
+    /// The pressed cells and the cells that leave if it gives.
+    pressed: Vec<usize>,
+    leaves: Vec<usize>,
+}
+
+/// What one kind of contact point on standing matter returned one body over a step.
+#[derive(Serialize)]
+struct EndReadout {
+    body: u32,
+    construction: u16,
+    /// priced, slid (rigid on a priced block), buried, unbreakable, no_way.
+    end: &'static str,
+    /// Into the body along the hull's forward, world up and the hull's right, from the points'
+    /// stored normal impulses (about twice the momentum; shares between ends are exact).
+    into_ns: [f32; 3],
+    points: usize,
 }
 
 /// Solver momentum into the hull along its forward over one step, N s, by the other body.
@@ -611,6 +633,28 @@ impl Hull<'_, '_> {
                     spent: block.spent as f32,
                     along: block.along.as_vec3().to_array(),
                     grounded: block.grounded,
+                    returned_ns: block.returned,
+                    pressed: block.pressed.clone(),
+                    leaves: block.leaves.clone(),
+                })
+                .collect(),
+            ends: (self.bound.ends.iter())
+                .map(|row| EndReadout {
+                    body: row.body.index_u32(),
+                    construction: row.construction,
+                    end: match row.end {
+                        bounded::End::Priced => "priced",
+                        bounded::End::Slid => "slid",
+                        bounded::End::Held(Held::Buried) => "buried",
+                        bounded::End::Held(Held::Unbreakable) => "unbreakable",
+                        bounded::End::Held(Held::NoWay) => "no_way",
+                    },
+                    into_ns: [
+                        row.impulse.dot(forward),
+                        row.impulse.y,
+                        row.impulse.dot(rotation.0 * Vec3::X),
+                    ],
+                    points: row.points,
                 })
                 .collect(),
             freed: self.bound.freed.len(),
