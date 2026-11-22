@@ -1,0 +1,21 @@
+// `wall_brick.wall.ron`'s wall 12 m long and laid along `Z`: fixture geometry for a pass along its
+// length, about two hull lengths of wall met end-on. Its part, foot and top as that file's.
+Wall(
+    id: "wall_brick_long",
+    foundation_y_m: -0.45,
+    foundation_attachment: "mortared",
+    parts: {
+        "leaf": (
+            material: "Brick",
+            surface_frame: Upright,
+            cut: Planar((
+                pitch_m: (0.21, Resolution("the village house's wall cell, so a pass through this wall reads against a pass through that house")),
+                keep_share: (0.82, Taste("masonry break look, the village house's")),
+            )),
+        ),
+    },
+    runs: [
+        (name: "leaf", part: "leaf", component: "leaf", from: (0.0, -6.0), to: (0.0, 6.0), thickness_m: 0.25, y_m: (-0.45, 2.7)),
+    ],
+    joins: [],
+)

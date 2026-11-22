@@ -1,5 +1,5 @@
 //! The construction bake, the one entry point for every construction: each spec under
-//! `tools/constructions/` (a house generator's `<id>.house.ron` or an explicit `<id>.pieces.ron`)
+//! `tools/constructions/` (a house generator's `<id>.house.ron`, a wall's `<id>.wall.ron` or an explicit `<id>.pieces.ron`)
 //! to its `assets/constructions/<id>/<id>.construction.ron` (`overmatch_tools::construction`). Writes only a
 //! file whose bytes change and the game's load gate admits (`overmatch::construction::admit`), and
 //! prints what each bake made.

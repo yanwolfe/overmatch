@@ -1,0 +1,21 @@
+// `wall_brick.wall.ron`'s wall at a finer cut: the same run, foot and top, so two passes that differ
+// only in this file's `pitch_m` say how far the laws' results follow the cut.
+Wall(
+    id: "wall_brick_fine",
+    foundation_y_m: -0.45,
+    foundation_attachment: "mortared",
+    parts: {
+        "leaf": (
+            material: "Brick",
+            surface_frame: Upright,
+            cut: Planar((
+                pitch_m: (0.15, Resolution("0.7 of the reference wall's cell across, the finest whose bake stays well inside the byte budget (`BAKED_BYTES_MAX`, `tools/src/construction.rs`): the fine arm of the cut-independence check")),
+                keep_share: (0.82, Taste("masonry break look, the village house's")),
+            )),
+        ),
+    },
+    runs: [
+        (name: "leaf", part: "leaf", component: "leaf", from: (-4.0, 0.0), to: (4.0, 0.0), thickness_m: 0.25, y_m: (-0.45, 2.7)),
+    ],
+    joins: [],
+)

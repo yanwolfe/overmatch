@@ -1,0 +1,29 @@
+// The wall generator's input for `wall_brick`, the proving ground's reference wall: one free-standing
+// run of the village house's wall, a one-brick (0.25 m) solid brick leaf 8 m long. `bake-constructions`
+// turns it into `assets/constructions/wall_brick/wall_brick.construction.ron`. Metres in the
+// construction frame (`+Y` up, the origin on the ground point at the wall's middle, the wall along
+// `X`).
+//
+// Fixture geometry, a test structure and no building: 8 m is about twice a hull's width, so a pass
+// through the middle leaves wall standing on both sides. The height is 36 of the village house's
+// 0.075 m courses, 2.7 m, and the foot is its 0.45 m foundation depth, bedded as that house's
+// (`house_1.house.ron` sources the brick, the course and the bedding).
+Wall(
+    id: "wall_brick",
+    foundation_y_m: -0.45,
+    foundation_attachment: "mortared",
+    parts: {
+        "leaf": (
+            material: "Brick",
+            surface_frame: Upright,
+            cut: Planar((
+                pitch_m: (0.21, Resolution("the village house's wall cell, so a pass through this wall reads against a pass through that house")),
+                keep_share: (0.82, Taste("masonry break look, the village house's")),
+            )),
+        ),
+    },
+    runs: [
+        (name: "leaf", part: "leaf", component: "leaf", from: (-4.0, 0.0), to: (4.0, 0.0), thickness_m: 0.25, y_m: (-0.45, 2.7)),
+    ],
+    joins: [],
+)

@@ -17,6 +17,16 @@
     // Placed by hand: the export record in `level.json` has no entry for it, and the game reads
     // that block for its keys only.
     "village_hall": Construction(asset: "hall_1"),
+    // The proving ground: plain test walls in a row on the level ground about (80, -50), each a
+    // construction of its own (`tools/constructions/wall_*.wall.ron`), placed by hand as the hall is
+    // and driven through by `scripts/perf/proving/`'s passes.
+    "wall_brick_double": Construction(asset: "wall_brick_double"),
+    "wall_brick": Construction(asset: "wall_brick"),
+    "wall_brick_coarse": Construction(asset: "wall_brick_coarse"),
+    "wall_brick_fine": Construction(asset: "wall_brick_fine"),
+    "wall_boards": Construction(asset: "wall_boards"),
+    "wall_brick_corner": Construction(asset: "wall_brick_corner"),
+    "wall_brick_long": Construction(asset: "wall_brick_long"),
     "church_proxy": Block(min: (-15.0, -18.5, -7.5), max: (15.0, 18.5, 7.5), substance: "Brick", surface: (faces: (Primary, Primary, Primary, Primary, Secondary, Primary), top_tangent: Z)),
     "fir_tree_01_a_LOD2": Construction(asset: "fir_1"),
     "fir_tree_01_b_LOD2": Construction(asset: "fir_1"),

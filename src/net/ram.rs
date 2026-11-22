@@ -2,6 +2,11 @@
 //! `scripts/perf/collapse.py --ram` owns `OVERMATCH_RAM`. Default-feature servers derive the
 //! run-up from their loaded drive data and resolve ground height at spawn, without view assets.
 //!
+//! CONTACT. A recipe states how the hull meets the instance ([`Contact`]): at full throttle from
+//! a run-up long enough for governed speed, at a speed the scripted driver holds, or from rest
+//! against it. The run-up is the free distance between the hull's nearest point and the face it
+//! meets, so a deep construction costs no more of it than a thin one.
+//!
 //! HULL. Each row reads the ram's one tank after the tick's physics step, outside the tick clock
 //! ([`HullRow`]): its motion, and what moved it along its forward over that step, from the step's
 //! solver points ([`ContactTransfers`], held until the next step) and the sweep's account. A body
@@ -37,7 +42,7 @@ use crate::{
     spec::TankSpec,
     tank::{Tank, TankTemplate},
     terrain_grid::{HeightGrid, Stance, spawn_pos},
-    track::{sim::TrackDrive, transmission::RPM_TO_RAD},
+    track::sim::TrackDrive,
 };
 
 mod relay;
@@ -50,13 +55,9 @@ const LEVER: &str = "OVERMATCH_RAM";
 pub(super) struct Recipe {
     instance: String,
     heading_deg: f64,
-    /// The first-contact speed the pass aims at, as a share of the tank's governed speed.
-    speed_fraction: f64,
-    /// The approach line's offset to the heading's right of the instance's origin, m.
+    /// The approach line's offset from the instance's origin to the heading's right, m.
     lateral_m: f64,
-    /// Operator margin on the ideal constant-top-gear-force acceleration distance.
-    runup_margin: f64,
-    minimum_speed_fraction: f64,
+    contact: Contact,
     /// No-contact limit on the server's ram capture clock (`tick * dt`), from tank spawn;
     /// includes client readiness and the harness lead-in before driving.
     approach_s: f64,
@@ -66,25 +67,68 @@ pub(super) struct Recipe {
     in_place_m: Labelled<f64>,
 }
 
+/// How the hull meets the instance (module doc, CONTACT), and the speed entering first contact
+/// that admits the run, m/s. A driven contact's `runup_margin` is the operator's margin on the
+/// ideal constant-top-gear-force acceleration distance to its speed ([`top_gear`]).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+enum Contact {
+    /// Full throttle over the run-up to governed speed; admitted at `minimum_fraction` of it.
+    Governed {
+        minimum_fraction: f64,
+        runup_margin: f64,
+    },
+    /// The scripted driver holds `speed_m_s` (`harness::Drive::Ram`, `hold_m_s`) over the run-up
+    /// to that speed and through the contact; admitted within `within_m_s` of it.
+    Held {
+        speed_m_s: f64,
+        within_m_s: f64,
+        runup_margin: f64,
+    },
+    /// Full throttle from a standing hull whose nearest point is `gap_m` short of the instance;
+    /// admitted at `at_most_m_s` or under.
+    Rest { gap_m: f64, at_most_m_s: f64 },
+}
+
+impl Contact {
+    fn valid(self) -> bool {
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        let margin = |v: f64| v.is_finite() && v >= 1.0;
+        match self {
+            Self::Governed {
+                minimum_fraction,
+                runup_margin,
+            } => 0.0 < minimum_fraction && minimum_fraction <= 1.0 && margin(runup_margin),
+            Self::Held {
+                speed_m_s,
+                within_m_s,
+                runup_margin,
+            } => {
+                positive(speed_m_s)
+                    && positive(within_m_s)
+                    && within_m_s < speed_m_s
+                    && margin(runup_margin)
+            }
+            Self::Rest { gap_m, at_most_m_s } => positive(gap_m) && positive(at_most_m_s),
+        }
+    }
+}
+
 impl Recipe {
     fn parse(text: &str) -> Result<Self, LeverError> {
         let invalid = || {
             LeverError::invalid(
                 LEVER,
                 text,
-                "JSON ram recipe: nonempty instance, finite heading_deg and lateral_m, speed_fraction and minimum_speed_fraction in (0,1], runup_margin >= 1, positive approach_s/deadline_s/settle_s with settle_s < deadline_s, in_place_m as [metres > 0, {\"Unit\": \"why this scale\"}]",
+                "JSON ram recipe: nonempty instance, finite heading_deg and lateral_m, contact as {\"Governed\": {\"minimum_fraction\": in (0,1], \"runup_margin\": >= 1}}, {\"Held\": {\"speed_m_s\": > 0, \"within_m_s\": in (0, speed_m_s), \"runup_margin\": >= 1}} or {\"Rest\": {\"gap_m\": > 0, \"at_most_m_s\": > 0}}, positive approach_s/deadline_s/settle_s with settle_s < deadline_s, in_place_m as [metres > 0, {\"Unit\": \"why this scale\"}]",
             )
         };
         let recipe: Self =
             with_shipped_policy(|| serde_json::from_str(text)).map_err(|_| invalid())?;
         if recipe.instance.is_empty()
             || !recipe.heading_deg.is_finite()
-            || !(0.0 < recipe.speed_fraction && recipe.speed_fraction <= 1.0)
             || !recipe.lateral_m.is_finite()
-            || !recipe.runup_margin.is_finite()
-            || recipe.runup_margin < 1.0
-            || !recipe.minimum_speed_fraction.is_finite()
-            || !(0.0 < recipe.minimum_speed_fraction && recipe.minimum_speed_fraction <= 1.0)
+            || !recipe.contact.valid()
             || [recipe.approach_s, recipe.deadline_s, recipe.settle_s]
                 .iter()
                 .any(|v| !v.is_finite() || *v <= 0.0)
@@ -130,11 +174,13 @@ impl Recipe {
 struct Plan {
     spawn: [f32; 3],
     rotation: [f32; 4],
+    /// DERIVED: how far the hull's nearest point stands from the face it meets, along the
+    /// heading, m (module doc, CONTACT).
     runup_m: f32,
     governed_m_s: f32,
-    /// The speed the run-up aims at, and the least first-contact speed that admits the run.
-    aimed_m_s: f32,
-    minimum_m_s: f64,
+    /// The least and, where the contact bounds it, the greatest speed entering first contact
+    /// that admits the run, m/s.
+    admitted_m_s: (f64, Option<f64>),
     /// DERIVED: where the hull's root has carried its rear past the construction, along the
     /// heading from the map origin, m: the construction's far bound plus the tank's stance reach.
     clear_m: f32,
@@ -385,38 +431,23 @@ fn install_recipe(app: &mut App, recipe: Recipe) {
     relay::install(app);
 }
 
-/// Resolution: the midpoint steps of [`runup`]'s integral. The pull is piecewise smooth in speed
-/// with one break per gear, so a step of 1/256 of the aim places each within 0.4 % of it.
-const RUNUP_STEPS: usize = 256;
-
-/// DERIVED ideal run-up to `fraction` of the governed speed, with that speed: ∫ m v dv / P(v),
-/// `P` the pull of the best gear whose engine speed at `v` stays under the governor (below idle
-/// the clutch slips at idle torque), `T(rpm) * reduction / r`. It excludes terrain and rolling
-/// losses and the time a shift takes; the recipe's margin buys distance, and measured
-/// first-contact speed is the admission gate. It never substitutes an estimated impact speed.
-fn runup(spec: &TankSpec, margin: f32, fraction: f32) -> (f32, f32) {
+/// The tank's governed speed, m/s, and its ideal top-gear acceleration, m/s²:
+/// a = T_peak * top_reduction / (r * mass). DERIVED ideal run-up to a speed v: d = v²/(2a), which
+/// excludes terrain and rolling losses and, below top gear, overstates the distance; the recipe's
+/// margin buys distance, and measured first-contact speed is the admission gate. It never
+/// substitutes an estimated impact speed.
+fn top_gear(spec: &TankSpec) -> (f32, f32) {
     let drive = spec
         .track
         .nominal_transmission_params(&spec.roadwheels, spec.mass)
         .expect("spawn uses an admitted tank transmission");
-    let speed = drive.governed_speed(false);
-    let step = fraction * speed / RUNUP_STEPS as f32;
-    let ideal: f32 = (0..RUNUP_STEPS)
-        .map(|k| {
-            let v = (k as f32 + 0.5) * step;
-            let pull = (drive.gears_fwd.iter())
-                .filter_map(|&gear| {
-                    let rpm = v * gear / drive.sprocket_radius / RPM_TO_RAD;
-                    (rpm <= drive.engine.governed_rpm).then(|| {
-                        drive.torque_at(rpm.max(drive.engine.idle_rpm)) * gear
-                            / drive.sprocket_radius
-                    })
-                })
-                .fold(0.0_f32, f32::max);
-            spec.mass * v * step / pull
-        })
-        .sum();
-    (margin * ideal, speed)
+    let top = drive
+        .gears_fwd
+        .last()
+        .expect("transmission admission requires forward gears");
+    let acceleration =
+        drive.torque_at(drive.peak_torque_rpm) * top / drive.sprocket_radius / spec.mass;
+    (drive.governed_speed(false), acceleration)
 }
 
 impl Recipe {
@@ -431,53 +462,77 @@ impl Recipe {
     ) -> Result<Plan, LeverError> {
         let invalid = |why| LeverError::invalid(LEVER, &self.instance, why);
         let (instance, kind) = self.construction(manifest)?;
-        let (runup_m, governed_m_s) =
-            runup(spec, self.runup_margin as f32, self.speed_fraction as f32);
+        let (governed_m_s, acceleration) = top_gear(spec);
+        let governed = f64::from(governed_m_s);
+        let to_speed = |margin: f64, speed: f64| {
+            (margin * speed * speed / (2.0 * f64::from(acceleration))) as f32
+        };
+        let (runup_m, admitted_m_s) = match self.contact {
+            Contact::Governed {
+                minimum_fraction,
+                runup_margin,
+            } => (
+                to_speed(runup_margin, governed),
+                (governed * minimum_fraction, None),
+            ),
+            Contact::Held {
+                speed_m_s,
+                within_m_s,
+                runup_margin,
+            } => {
+                if speed_m_s >= governed {
+                    return Err(invalid(
+                        "contact.Held.speed_m_s under the tank's governed speed; Governed is the full-speed contact",
+                    ));
+                }
+                let admitted = (speed_m_s - within_m_s, Some(speed_m_s + within_m_s));
+                (to_speed(runup_margin, speed_m_s), admitted)
+            }
+            Contact::Rest { gap_m, at_most_m_s } => (gap_m as f32, (0.0, Some(at_most_m_s))),
+        };
         let rotation = self.rotation();
         let direction = rotation * Vec3::NEG_Z;
         let points = points(rotation);
         let stance = Stance::enclosing(points.iter().copied());
         let pose = Transform::from_isometry(instance.pose.at_height(0.0));
         let (min, max) = kind.bounds();
-        let (near, far) = (0..8)
+        let corners = (0..8)
             .map(|k| Vec3::select(BVec3::new(k & 1 > 0, k & 2 > 0, k & 4 > 0), max, min))
-            .map(|corner| pose.transform_point(corner).dot(direction))
-            .fold((f32::INFINITY, f32::NEG_INFINITY), |(near, far), at| {
-                (near.min(at), far.max(at))
-            });
-        // The run-up ends where the tank's front reaches the construction's near bound.
-        let back = pose.translation.dot(direction) - (near - stance.reach_m - runup_m);
-        let aside = rotation * Vec3::X * self.lateral_m as f32;
-        let xz = instance.pose.xz() - direction.xz() * back + aside.xz();
+            .map(|corner| pose.transform_point(corner));
+        let (far, around) = corners.fold((f32::NEG_INFINITY, 0.0_f32), |(far, around), corner| {
+            let from_origin = (corner.xz() - instance.pose.xz()).length();
+            (far.max(corner.dot(direction)), around.max(from_origin))
+        });
+        // Each point of the tank on the approach line, in the construction's frame, its root
+        // standing at its stance over its own ground and `back` short of the line's foot: far
+        // enough that no point has entered the construction.
+        let foot = (rotation * Vec3::X) * self.lateral_m as f32;
+        let back = around + self.lateral_m.abs() as f32 + stance.reach_m;
+        let turn = pose.rotation.inverse();
+        let lift = Vec3::Y * (GRADE_M + stance.depth_m);
+        let origins = (points.iter()).map(|&point| turn * (point + foot - direction * back) + lift);
+        let (panel, ahead_m) =
+            structure::Panel::met(kind, origins, turn * direction).map_err(|why| {
+                let value = format!(
+                    "instance {} heading_deg {} lateral_m {}",
+                    self.instance, self.heading_deg, self.lateral_m
+                );
+                LeverError::invalid(LEVER, value, why)
+            })?;
+        let xz = instance.pose.xz() + (foot - direction * (back - ahead_m + runup_m)).xz();
         let limit = super::spawn_map::spawn_limit(manifest.extent.half_extent());
-        if !runup_m.is_finite() || xz.abs().max_element() > limit {
+        if !xz.is_finite() || xz.abs().max_element() > limit {
             return Err(invalid(
                 "derived run-up is outside spawn bounds; choose another approach or instance",
             ));
         }
         let spawn = spawn_pos(height, xz, stance);
-        // Each point of the tank approaching, in the construction's frame, its root standing at
-        // its stance over its own ground.
-        let turn = pose.rotation.inverse();
-        let lift = Vec3::Y * (GRADE_M + stance.depth_m);
-        let origins =
-            (points.iter()).map(|&point| turn * (point - direction * back + aside) + lift);
-        let panel = structure::Panel::met(kind, origins, turn * direction).map_err(|why| {
-            let value = format!(
-                "instance {} heading_deg {}",
-                self.instance, self.heading_deg
-            );
-            LeverError::invalid(LEVER, value, why)
-        })?;
         Ok(Plan {
             spawn: spawn.to_array(),
             rotation: rotation.to_array(),
             runup_m,
             governed_m_s,
-            aimed_m_s: governed_m_s * self.speed_fraction as f32,
-            minimum_m_s: f64::from(governed_m_s)
-                * self.speed_fraction
-                * self.minimum_speed_fraction,
+            admitted_m_s,
             clear_m: far + stance.reach_m,
             panel,
         })
@@ -1095,11 +1150,23 @@ pub(crate) struct FixturePlan {
     pub(crate) approach_ticks: usize,
 }
 
+/// The recipe `collapse.py` hands the server for the shipped pass `scripts/perf/ram.json` at its
+/// contact `name`: the pass's fields with that one of its `contacts` as `contact`.
+#[cfg(test)]
+fn shipped_recipe(name: &str) -> Recipe {
+    let mut pass: Value = serde_json::from_str(include_str!("../../scripts/perf/ram.json"))
+        .expect("the shipped pass is JSON");
+    let fields = pass.as_object_mut().expect("a pass is an object");
+    let mut contacts = fields.remove("contacts").expect("a pass states contacts");
+    fields.insert("contact".into(), contacts[name].take());
+    Recipe::parse(&pass.to_string()).expect("the shipped pass makes an admitted recipe")
+}
+
 /// Headless witnesses use the operator recipe's real parser and planner without enabling pricing.
 #[cfg(test)]
 pub(crate) fn fixture_plan(app: &mut App) -> FixturePlan {
     use bevy::ecs::system::RunSystemOnce;
-    let recipe = Recipe::parse(include_str!("../../scripts/perf/ram.json")).unwrap();
+    let recipe = shipped_recipe("governed");
     let plan = app
         .world_mut()
         .run_system_once({
@@ -1122,7 +1189,7 @@ pub(crate) fn fixture_plan(app: &mut App) -> FixturePlan {
         instance: recipe.instance,
         spawn: Vec3::from_array(plan.spawn),
         rotation: Quat::from_array(plan.rotation),
-        minimum_m_s: plan.minimum_m_s as f32,
+        minimum_m_s: plan.admitted_m_s.0 as f32,
         // DERIVED: first contact must arrive within the recipe's approach watchdog.
         approach_ticks: (recipe.approach_s
             / app
@@ -1145,21 +1212,33 @@ mod tests {
     /// the in-place limit is a labelled `Unit`, never a bare number or another job.
     #[test]
     fn recipes_reject_unknown_fields_and_invalid_domains() {
-        let text = include_str!("../../scripts/perf/ram.json");
-        let valid = Recipe::parse(text).unwrap();
-        let value: Value = serde_json::from_str(text).unwrap();
-        let attested = serde_json::to_value(&valid).unwrap();
-        for (key, authored) in value.as_object().unwrap() {
-            if authored.is_number() {
-                assert_eq!(attested[key].as_f64(), authored.as_f64(), "{key}");
-            } else {
-                assert_eq!(&attested[key], authored);
-            }
-        }
+        let valid = shipped_recipe("governed");
+        let value = serde_json::to_value(&valid).unwrap();
         for (field, bad) in [
             ("instance", json!("")),
-            ("runup_margin", json!(0.5)),
-            ("minimum_speed_fraction", json!(1.1)),
+            ("lateral_m", json!("1")),
+            ("runup_margin", json!(2.0)),
+            ("contact", json!("Rest")),
+            (
+                "contact",
+                json!({"Governed": {"minimum_fraction": 1.1, "runup_margin": 2.0}}),
+            ),
+            (
+                "contact",
+                json!({"Governed": {"minimum_fraction": 0.9, "runup_margin": 0.5}}),
+            ),
+            (
+                "contact",
+                json!({"Held": {"speed_m_s": 2.0, "within_m_s": 2.0, "runup_margin": 2.0}}),
+            ),
+            (
+                "contact",
+                json!({"Held": {"speed_m_s": 2.0, "within_m_s": 0.5}}),
+            ),
+            (
+                "contact",
+                json!({"Rest": {"gap_m": 0.0, "at_most_m_s": 0.5}}),
+            ),
             ("settle_s", json!(0)),
             ("deadline_s", json!(-1)),
             ("approach_s", json!("60")),
@@ -1197,7 +1276,7 @@ mod tests {
     #[test]
     fn route_admission_refuses_missing_nonconstruction_and_unreachable_instances() {
         let manifest = crate::map::tests::construction_fixture_manifest();
-        let mut recipe = Recipe::parse(include_str!("../../scripts/perf/ram.json")).unwrap();
+        let mut recipe = shipped_recipe("governed");
         let spec = fixture_spec();
         for instance in ["missing", "house_0001"] {
             // Fixture: absent and graybox targets.
@@ -1214,7 +1293,11 @@ mod tests {
         }
         recipe.instance = "brick_0001".into(); // Fixture construction from the manifest owner.
         assert!(recipe.plan(&spec, fixture_points, &manifest, None).is_ok());
-        recipe.runup_margin = f64::MAX; // Fixture: finite input whose derived run-up cannot fit.
+        // Fixture: finite input whose derived run-up cannot fit.
+        recipe.contact = Contact::Governed {
+            minimum_fraction: 0.95,
+            runup_margin: f64::MAX,
+        };
         let error = recipe
             .plan(&spec, fixture_points, &manifest, None)
             .err()
@@ -1223,12 +1306,60 @@ mod tests {
         assert!(error.contains("spawn bounds"), "{error}");
     }
 
+    /// WHERE THE RUN STARTS: the hull's nearest point stands the contact's free distance from the
+    /// face it meets, however deep the construction is behind that face, and the approach line
+    /// lies `lateral_m` to the heading's right of the instance's origin. A pass from rest relies on
+    /// the first (its gap is centimetres) and a pass at a wall junction on the second. A mutant
+    /// laying the distance from the instance's origin, or the offset to the left, fails; so does a
+    /// held speed the tank cannot reach passing as a slower full-throttle run.
+    #[test]
+    fn the_run_up_is_free_distance_to_the_met_face_on_the_offset_line() {
+        let manifest = crate::map::tests::construction_fixture_manifest();
+        let spec = fixture_spec();
+        let mut recipe = shipped_recipe("governed");
+        recipe.instance = "brick_0001".into(); // Fixture construction from the manifest owner.
+        // Fixture: a gap, a heading and an offset inside the fixture box's half-width.
+        let (gap_m, lateral_m) = (0.25, 0.5);
+        recipe.heading_deg = 20.0;
+        recipe.lateral_m = lateral_m;
+        recipe.contact = Contact::Rest {
+            gap_m,
+            at_most_m_s: 1.0,
+        };
+        let turned = |turn: Quat| (fixture_points(turn).into_iter().map(|p| turn * p)).collect();
+        let plan = recipe.plan(&spec, turned, &manifest, None).unwrap();
+        let (instance, _) = recipe.construction(&manifest).unwrap();
+        let pose = Transform::from_isometry(instance.pose.at_height(0.0));
+        let direction = recipe.rotation() * Vec3::NEG_Z;
+        let spawn = Vec3::from_array(plan.spawn);
+        let panel = serde_json::to_value(&plan.panel).unwrap();
+        let at: Vec3 = serde_json::from_value(panel["at"].clone()).unwrap();
+        let nearest = (fixture_points(Quat::IDENTITY).iter())
+            .map(|&point| (spawn + recipe.rotation() * point).dot(direction))
+            .fold(f32::NEG_INFINITY, f32::max);
+        let free = pose.transform_point(at).dot(direction) - nearest;
+        assert!((free - gap_m as f32).abs() < 1e-3, "{free}");
+        assert_eq!(plan.runup_m, gap_m as f32);
+        let right = (spawn - pose.translation).dot(recipe.rotation() * Vec3::X);
+        assert!((right - lateral_m as f32).abs() < 1e-4, "{right}");
+        recipe.contact = Contact::Held {
+            speed_m_s: f64::from(plan.governed_m_s),
+            within_m_s: 0.5,
+            runup_margin: 1.0,
+        };
+        let error = recipe.plan(&spec, turned, &manifest, None).err();
+        let error = error
+            .expect("an unreachable held speed is refused")
+            .to_string();
+        assert!(error.contains("Held.speed_m_s"), "{error}");
+    }
+
     /// The production installer checks and retains the route without a client, while sampling
     /// waits for spawn. Starting capture at admission would publish a zero-tank prefix to the runner.
     #[test]
     fn startup_retains_the_plan_without_starting_capture() {
         let mut app = App::new();
-        let mut recipe = Recipe::parse(include_str!("../../scripts/perf/ram.json")).unwrap();
+        let mut recipe = shipped_recipe("governed");
         recipe.instance = "brick_0001".into(); // Fixture construction in the manifest below.
         // Route admission reads the tank's construction for its spawn stance; no rig is spawned.
         let (blueprint, template) = crate::tank::shipped_construction();
@@ -1303,14 +1434,13 @@ mod tests {
 
     /// A started capture on the shipped recipe; tests set any timing they exercise.
     fn armed() -> Ram {
-        let mut ram = Ram::new(Recipe::parse(include_str!("../../scripts/perf/ram.json")).unwrap());
+        let mut ram = Ram::new(shipped_recipe("governed"));
         ram.plan = Some(Plan {
             spawn: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
             runup_m: 1.0,
             governed_m_s: 1.0,
-            aimed_m_s: 1.0,
-            minimum_m_s: 1.0,
+            admitted_m_s: (1.0, None),
             clear_m: 1.0,
             panel: structure::tests::column_panel(),
         });
@@ -1416,27 +1546,17 @@ mod tests {
         }
     }
 
-    /// A second vehicle changes distance through its data, without a vehicle-specific route.
+    /// A second vehicle changes the run-up through its data, without a vehicle-specific route:
+    /// twice the mass at one drive is half the ideal acceleration, so twice the distance to any
+    /// speed, at the same governed speed.
     #[test]
-    fn runup_scales_with_mass_and_operator_margin() {
-        let mut spec = ron::from_str::<crate::spec::TankSpec>(include_str!(
-            "../../assets/tiger_1/tiger_1.tank.ron"
-        ))
-        .unwrap();
-        let (distance, speed) = runup(&spec, 1.0, 1.0); // Fixture: ideal margin, full speed.
+    fn the_ideal_acceleration_follows_the_vehicles_mass() {
+        let mut spec = fixture_spec();
+        let (speed, acceleration) = top_gear(&spec);
         spec.mass *= 2.0; // Fixture: otherwise identical heavier vehicle.
-        let (heavier, same_speed) = runup(&spec, 1.0, 1.0);
-        assert_eq!(same_speed, speed);
-        // Resolution: allow roundoff across the integral's sum and the margin's product.
-        let close = |a: f32, b: f32| (a - b).abs() <= 1e-4 * b;
-        assert!(close(heavier, 2.0 * distance));
-        assert!(close(runup(&spec, 3.0, 1.0).0, 3.0 * heavier));
-        let slow = runup(&spec, 1.0, 0.25).0;
-        assert!(
-            slow < heavier / 16.0,
-            "a quarter of the speed in the lower gears takes under a sixteenth of the distance"
-        );
+        assert_eq!(top_gear(&spec), (speed, acceleration / 2.0));
     }
+
     /// The game's environment destruction: the shipped tracked recipe accounts for the hull's
     /// sweep exchange and whole-step momentum. A cast body's solver look-ahead against exposed
     /// standing matter must lie in its judged patch; otherwise an unjudged cut could stop the ram.

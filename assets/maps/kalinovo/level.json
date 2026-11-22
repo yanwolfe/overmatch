@@ -10858,6 +10858,111 @@
         0.81915204
       ],
       "id": "village_hall_0001"
+    },
+    {
+      "prototype": "wall_brick_double",
+      "translation": [
+        0.0,
+        32.729890,
+        -50.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "id": "wall_brick_double_0001"
+    },
+    {
+      "prototype": "wall_brick",
+      "translation": [
+        25.0,
+        32.490628,
+        -50.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "id": "wall_brick_0001"
+    },
+    {
+      "prototype": "wall_brick_coarse",
+      "translation": [
+        50.0,
+        32.342260,
+        -50.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "id": "wall_brick_coarse_0001"
+    },
+    {
+      "prototype": "wall_brick_fine",
+      "translation": [
+        75.0,
+        32.341227,
+        -50.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "id": "wall_brick_fine_0001"
+    },
+    {
+      "prototype": "wall_boards",
+      "translation": [
+        100.0,
+        32.585263,
+        -50.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "id": "wall_boards_0001"
+    },
+    {
+      "prototype": "wall_brick_corner",
+      "translation": [
+        125.0,
+        33.022261,
+        -50.0
+      ],
+      "rotation": [
+        0.0,
+        -0.38268343,
+        0.0,
+        0.92387953
+      ],
+      "id": "wall_brick_corner_0001"
+    },
+    {
+      "prototype": "wall_brick_long",
+      "translation": [
+        165.0,
+        33.106185,
+        10.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "id": "wall_brick_long_0001"
     }
   ]
 }

@@ -2,9 +2,12 @@
   "instance": "village_hall_0001",
   "heading_deg": 70.0,
   "lateral_m": 0.0,
-  "speed_fraction": 1.0,
-  "runup_margin": 2.0,
-  "minimum_speed_fraction": 0.95,
+  "contacts": {
+    "rest": {"Rest": {"gap_m": 0.02, "at_most_m_s": 0.5}},
+    "10kmh": {"Held": {"speed_m_s": 2.8, "within_m_s": 0.5, "runup_margin": 6.0}},
+    "20kmh": {"Held": {"speed_m_s": 5.6, "within_m_s": 0.5, "runup_margin": 3.0}},
+    "governed": {"Governed": {"minimum_fraction": 0.95, "runup_margin": 2.0}}
+  },
   "approach_s": 45,
   "deadline_s": 10,
   "settle_s": 2,
