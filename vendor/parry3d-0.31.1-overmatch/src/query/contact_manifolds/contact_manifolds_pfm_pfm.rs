@@ -117,7 +117,9 @@ pub fn contact_manifold_pfm_pfm<'a, ManifoldData, ContactData, S1, S2>(
                 // OVERMATCH PATCH: "changed" is judged within rounding, not bit for bit. The
                 // projection rewrites an unchanged direction (rotated into shape 2's frame and
                 // back, or replaced by the face normal it already equals), and a bitwise test
-                // then drops the deepest point of the pair.
+                // then drops the deepest point of the pair. The bound admits a turn of up to
+                // 0.081 degrees (acos(1 - 1e-6)); the witness then reads its depth along the
+                // projected normal, off by at most 1e-6 of the pair's distance (1 - cos).
                 && local_n1.dot(dir) >= 1.0 - 1.0e-6
             {
                 let contact = TrackedContact::new(

@@ -1,10 +1,10 @@
-//! A convex body on the terrain keeps its deepest point in the contact manifold, whichever shape
-//! the query names first. The solver holds every loose body (a rubble cell, a hull) at the points
-//! it is given; a manifold without the deepest one holds a turning body where its hull crosses the
-//! surface and lets it turn through. Guards the vendored parry3d's patch
+//! A convex body lying within one triangle of the terrain keeps its deepest point in the contact
+//! manifold, whichever shape the query names first. The solver holds every loose body (a rubble
+//! cell, a hull) at the points it is given; a manifold without the deepest one holds a turning body
+//! where its hull crosses the surface and lets it turn through. Guards the vendored parry3d's patch
 //! (`vendor/parry3d-0.31.1-overmatch/OVERMATCH_PATCH.md`): restoring upstream's bit-equality gate
 //! on the witness point turns this red in the body-first order, the order Avian's broad phase
-//! produces.
+//! produces. A body over an edge is outside the claim: the patch note's last paragraph.
 
 use avian3d::collision::collider::contact_query::contact_manifolds;
 use avian3d::prelude::*;
@@ -32,9 +32,13 @@ const BODY: [Vec3; 12] = [
 /// Fixture: how far the body's lowest vertex is under the surface, m: shallow, so its shorter way
 /// out is up in every pose.
 const DEPTH_M: f32 = 0.03;
-/// Resolution: agreement between the reported and the geometric depth, m (parry's penetration
-/// search converges to about 1e-5 at this size).
+/// Resolution: agreement between the reported and the geometric depth, m: far under `DEPTH_M`,
+/// and far over the largest disagreement in these poses, 1.3e-6 m (MEASURED, this test).
 const AGREE_M: f32 = 1e-3;
+/// Resolution: the cosine over which a manifold's normal is the ground's (2.6 degrees, DERIVED
+/// from its arc cosine). What it refuses is a normal out through the side or the back of the
+/// surface, tens of degrees off.
+const SAME_NORMAL_COS: f32 = 0.999;
 /// Fixture: poses per ground.
 const POSES: usize = 96;
 
@@ -62,7 +66,7 @@ fn deepest(manifolds: &[ContactManifold], toward_second: Vec3) -> f32 {
         for point in &manifold.points {
             if point.penetration > 0.0 {
                 assert!(
-                    manifold.normal.dot(toward_second) > 0.999,
+                    manifold.normal.dot(toward_second) > SAME_NORMAL_COS,
                     "an overlapping point's normal is the ground's: {:?}",
                     manifold.normal
                 );
@@ -74,7 +78,7 @@ fn deepest(manifolds: &[ContactManifold], toward_second: Vec3) -> f32 {
 }
 
 #[test]
-fn a_body_on_the_terrain_keeps_its_deepest_point_in_either_shape_order() {
+fn a_body_within_a_triangle_of_the_terrain_keeps_its_deepest_point_in_either_shape_order() {
     let body = Collider::convex_hull(&BODY).expect("the fixture is a solid");
     for rise in [0.0_f32, 0.08, 0.3] {
         let grid = ground(rise);

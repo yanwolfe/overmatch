@@ -35,14 +35,9 @@ Hall long wall, 16 sinkers:
 | 3 | cause 1 | born with the centre 0.085 to 0.311 m under; ground pair from tick 2 with zero manifolds |
 | 13 | cause 2 | cross later with a live manifold, upward normal, constraint present, points at 0.000 depth while the collider's lowest bound is 0.1 to 0.5 m under; spin 4 to 17 rad/s |
 
-Bed (200 cells dropped with spin on a 33 by 33 field, five seeds, 512 ticks; sunk of 1000):
-
-| query | flat | 8 % slope |
-|---|---|---|
-| published parry, body first (Avian's order) | 7 | 12 |
-| published parry, heightfield first | 0 | 4 |
-| the landed fix, body first | 0 | 0 |
-| published parry, no edge fix (of 400) | 0 | 0 |
+Bed, cells dropped with spin onto the heightfield without the game: 7 of 1000 sink on flat ground
+and 12 of 1000 on an 8 % slope on the published parry, none with the landed fix. The table is in
+`upstream/parry-normal-constraints-drop-deepest-contact.md`.
 
 Refuted:
 
@@ -76,7 +71,7 @@ hold a structure of their own because the terrain buries other chunks than level
 
 Cause 2, at its root: parry3d 0.31.1 is vendored (`vendor/parry3d-0.31.1-overmatch`, 348 files,
 2.8 MB, the largest 85 kB; benches, examples and integration tests left out) with one changed
-condition, 6 fork lines: whether the edge fix changed the direction is judged within rounding
+condition, 8 fork lines with its comment: whether the edge fix changed the direction is judged within rounding
 (`local_n1.dot(dir) >= 1.0 - 1.0e-6`), not bit for bit. Where the constraints do turn the normal
 the witness is dropped as upstream drops it, so for any caller the result changes only where it
 depended on shape order and on the last bit of a rotation. Dropping the gate altogether measured

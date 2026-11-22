@@ -109,8 +109,8 @@ const STOP_TOLERANCE_M: f32 = 0.01;
 /// below).
 pub(crate) const GRADE_M: f32 = 0.0;
 
-/// The ground a construction stands on. The soil holds a chunk whose centroid it covers: more of
-/// the chunk is in the ground than out of it, so it is buried.
+/// The ground a construction stands on. The soil holds a chunk whose centroid is under the
+/// ground: that chunk is buried.
 #[derive(Clone, Copy)]
 pub(crate) enum Site<'a> {
     /// Level ground at the frame's grade: a fixture's, and the site a kind's shared structure is

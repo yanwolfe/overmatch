@@ -17,15 +17,18 @@ Avian is the only dependent (`cargo tree -i parry3d`). The lock's `parry2d`, `pa
 `parry3d-f64` are optional dependencies of crates the game does not enable; none is built.
 
 The patched site is tagged `OVERMATCH PATCH`. Fork lines by `diff --minimal -ruN` of `src/` against
-the published crate: 6 (MEASURED, 5 added and 1 removed).
+the published crate: 8 (MEASURED, 7 added and 1 removed).
 
 ## The closest-point witness under normal constraints (`src/query/contact_manifolds/contact_manifolds_pfm_pfm.rs`): kept
 
 `contact_manifold_pfm_pfm` adds the closest-point (GJK or EPA) pair to the clipped manifold unless
 the normal constraints changed the contact direction. Upstream tests "changed" bit for bit; the
-fork tests it within rounding (`local_n1.dot(dir) >= 1.0 - 1.0e-6`; Resolution: an f32 unit vector
-rotated into another frame and back differs by a few units in the last place, and a constraint
-that turns the normal turns it by far more).
+fork tests it within a bound, `local_n1.dot(dir) >= 1.0 - 1.0e-6` (Resolution: an f32 unit vector
+rotated into another frame and back differs by a few units in the last place, about 1e-7). The
+bound admits a turn of up to 0.081 degrees (DERIVED, acos(1 - 1e-6)). A turn under it keeps the
+witness, with its depth read along the projected normal as the function already reads it: the
+pair lies along the unprojected direction, so the depth is off by at most 1e-6 of the pair's
+distance (DERIVED, 1 - cos of the turn). A larger turn drops the witness, as upstream does.
 
 Kept as an upstream bug fix. The projection rewrites a direction it leaves unchanged: for a
 constrained second shape it rotates the direction into that shape's frame and back, and among
@@ -36,3 +39,6 @@ and turns through it. Where the constraints do change the direction the fork is 
 
 Guard: `src/tests/parry_manifold_witness.rs`. Mechanism and measurements:
 [local upstream draft](../../upstream/parry-normal-constraints-drop-deepest-contact.md).
+
+The fix holds for a body within one triangle. A body over an edge among coplanar neighbours can
+still lose its deepest point in either shape order: the draft's "Not covered".
