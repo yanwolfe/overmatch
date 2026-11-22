@@ -1,7 +1,7 @@
 //! GUARD for the bounded contact hook (`vendor/avian3d-0.8.0-overmatch`, `OVERMATCH_PATCH.md`,
 //! "Bounded contact") and the game's seam behind it, `crate::avian_ext::reaction_bound`, in the
 //! game's building model (game state only). A standing cell returns no more than its bonds can
-//! (`construction::bound`), so a bounded point must return its bound over the step and no more,
+//! (`construction::fracture::bound`), so a bounded point must return its bound over the step and no more,
 //! say so, and an unbounded or unreached bound must leave the contact rigid.
 
 use avian3d::prelude::*;
@@ -79,47 +79,45 @@ fn press_beside(
     each: Option<Hand>,
     idle: bool,
 ) -> (Vec<f32>, Vec<(bool, usize)>) {
-    {
-        let mut app = super::avian_child_pose_churn::physics_app();
-        app.insert_resource(Gravity(Vec3::ZERO))
-            .insert_resource(Each(each))
-            .init_resource::<Named>()
-            .add_systems(
-                PhysicsSchedule,
-                hand_over
-                    .after(PhysicsStepSystems::NarrowPhase)
-                    .before(PhysicsStepSystems::Solver),
-            );
-        app.world_mut()
-            .spawn((RigidBody::Static, Collider::cuboid(4.0, 1.0, 4.0)));
-        // Fixture: the box's lower face 1 mm into the slab's upper face.
-        let cube = app
-            .world_mut()
-            .spawn((
-                RigidBody::Dynamic,
-                Collider::cuboid(1.0, 1.0, 1.0),
-                Mass(mass),
-                Position(Vec3::Y * 0.999),
-                LinearVelocity(Vec3::NEG_Y * approach),
-            ))
-            .id();
-        if idle {
-            app.world_mut().spawn((
-                RigidBody::Dynamic,
-                Collider::cuboid(1.0, 1.0, 1.0),
-                Mass(mass),
-                Position(Vec3::new(1.5, 0.999, 0.0)),
-            ));
-        }
-        let mut speeds = vec![];
-        let mut reports = vec![];
-        for _ in 0..4 {
-            app.update();
-            speeds.push(app.world().get::<LinearVelocity>(cube).unwrap().0.y);
-            reports.push(app.world_mut().run_system_once(held).unwrap());
-        }
-        (speeds, reports)
+    let mut app = super::avian_child_pose_churn::physics_app();
+    app.insert_resource(Gravity(Vec3::ZERO))
+        .insert_resource(Each(each))
+        .init_resource::<Named>()
+        .add_systems(
+            PhysicsSchedule,
+            hand_over
+                .after(PhysicsStepSystems::NarrowPhase)
+                .before(PhysicsStepSystems::Solver),
+        );
+    app.world_mut()
+        .spawn((RigidBody::Static, Collider::cuboid(4.0, 1.0, 4.0)));
+    // Fixture: the box's lower face 1 mm into the slab's upper face.
+    let cube = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(1.0, 1.0, 1.0),
+            Mass(mass),
+            Position(Vec3::Y * 0.999),
+            LinearVelocity(Vec3::NEG_Y * approach),
+        ))
+        .id();
+    if idle {
+        app.world_mut().spawn((
+            RigidBody::Dynamic,
+            Collider::cuboid(1.0, 1.0, 1.0),
+            Mass(mass),
+            Position(Vec3::new(1.5, 0.999, 0.0)),
+        ));
     }
+    let mut speeds = vec![];
+    let mut reports = vec![];
+    for _ in 0..4 {
+        app.update();
+        speeds.push(app.world().get::<LinearVelocity>(cube).unwrap().0.y);
+        reports.push(app.world_mut().run_system_once(held).unwrap());
+    }
+    (speeds, reports)
 }
 
 /// A bounded point returns its bound over the step, whatever the approach needs, and reports
@@ -169,8 +167,8 @@ fn a_bounded_point_returns_its_bound_over_the_step() {
 /// the kinetic energy a step removes is the points' work, whatever the speed, and a body whose
 /// energy the work exceeds is stopped. Relied on by the game's building model, where a body
 /// shoved inside a step meets a cell at a speed no writer saw. Fixture: a 2,000 kg box, four
-/// points of 100 J each; at 4 m/s and at 8 m/s a step removes 400 J within a fifth. Mutant: the
-/// fork's work clamp removed (the contact is rigid and stops the box).
+/// points of 100 J each; at 4 m/s and at 8 m/s a step removes 400 J. Mutant: the fork's work
+/// clamp removed (the contact is rigid and stops the box).
 #[test]
 fn a_work_bounded_point_takes_its_work_at_the_speed_it_is_crossed() {
     let (mass, work) = (2_000.0_f32, 100.0);
@@ -183,8 +181,12 @@ fn a_work_bounded_point_takes_its_work_at_the_speed_it_is_crossed() {
         assert!(reports[1..].iter().all(|&report| report == (true, 4)));
         for pair in speeds.windows(2) {
             let taken = 0.5 * mass * (pair[0] * pair[0] - pair[1] * pair[1]);
+            // An impulse `W / v` at speed `v` moves the energy `W − W² / (2 m v²)`: the second
+            // term bounds the error of a step's work taken in one impulse, and its substeps
+            // take it in smaller ones.
+            let allowed = (4.0 * work).powi(2) / (2.0 * mass * pair[0] * pair[0]);
             assert!(
-                (taken - 4.0 * work).abs() < 0.2 * 4.0 * work,
+                (taken - 4.0 * work).abs() < allowed,
                 "a step at {approach} m/s takes {taken} J of {}: {speeds:?}",
                 4.0 * work
             );
@@ -223,9 +225,10 @@ fn a_group_returns_its_bound_over_the_step_whatever_the_split() {
             losses.iter().all(|&loss| loss <= bound * 1.001),
             "idle {idle}: no step returns more than {bound} N·s: {losses:?}"
         );
-        // A step's first substep deals a new group before any solve says where the load falls.
+        // The first step's first substep deals the group before any solve says where the load
+        // falls; a later step's starts from what the points carried into it. f32 otherwise.
         assert!(
-            losses[1..].iter().all(|&loss| loss >= bound * 0.95),
+            losses[1..].iter().all(|&loss| loss >= bound * 0.999),
             "idle {idle}: each later step returns {bound} N·s: {losses:?}, spent {reports:?}"
         );
     }

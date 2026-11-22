@@ -1171,7 +1171,7 @@ Measure server cost on deployment hardware before selecting runtime refinement a
 | 4 — partial removal | Shared sub-chunk geometry and depth refinement. |
 | 5 — strength-scaled inertia | Independent target density and resistance terms; porous-material validity remains a validation gate. |
 | 6 — fracture versus toppling | Cohesive work separates seams; gravity and unilateral contact decide rocking and toppling. |
-| 7 — sustained pushing | The strength limit, read against each tick's press from the solver's transferred momentum (see Bodies in contact). |
+| 7 — sustained pushing | The contact law: a standing cell returns a body no more than its bonds can, and leaves once pushed across its give (see Bodies in contact). |
 | 8 — universal Lamé field | Restricted embedded-cavity domain; transient local response near boundaries. |
 | 9 — connection mechanisms | Symmetric opening, frictional sliding, crushing and cohesive softening; timber awaits directional data. |
 | 10 — ejecta budget | Ejection response determines mass and velocity; complete energy and momentum accounts constrain it. |

@@ -49,9 +49,11 @@ pub mod construction;
 /// View-only brick/timber surfaces mapped in metres on every face through a shared `ExtendedMaterial`.
 /// See the module doc.
 mod construction_surface;
+/// How hard two bodies stop each other on impact (the game's environment destruction): the
+/// elastic contact law a landing reads.
+mod contact_law;
 /// What the physics solver moved through each contact, per step (the game's environment
 /// destruction): the reading landings take. Mounted by `SimPlugin`.
-mod contact_law;
 mod contact_transfer;
 /// Fixed-tick wall clock/server stats and `SPIKE_COST_TRACE=<path>` JSONL recorder:
 /// FixedUpdate time, `ballistics::integrate_projectiles` share and entity/projectile counts.

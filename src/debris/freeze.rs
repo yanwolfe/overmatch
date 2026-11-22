@@ -61,8 +61,8 @@
 //!   among others), no game code edits a loose piece's collider in place, and anything else that
 //!   writes a pose moves the piece.
 //!
-//! A frozen piece's press on standing construction stays as its sleeping press did
-//! (`contact_transfer`, resting contacts).
+//! A frozen piece presses standing construction as a sleeping one does: no law reads a resting
+//! contact (`contact_transfer`).
 //!
 //! ORDER. Avian finds a switched body's new pairs, and so builds and solves its contacts, in the
 //! order the bodies switched (`collider_tree/update.rs`, `MovedProxies`: insertion order). Freeze

@@ -25,7 +25,9 @@ the block has one way to give, the one that returns the body least this step
 - **Shear-out.** The pressed cells and the matter behind them along the push, up to a free face,
   leave through that face. The price is a sum over the boundary joints of that plug: each opens at
   its tensile strength and slides at its cohesion plus the friction of its gravity preload, and
-  spends its fracture energy. Joints inside the plug carry nothing, so a wall is no stronger the
+  spends its fracture energy. The work also carries a `StandIn` for the grip of standing matter
+  on a loosened plug, which the solver does not carry: each sliding joint's preload friction over
+  the plug's depth along the slide. Joints inside the plug carry nothing, so a wall is no stronger the
   finer it is cut. Shut when the push runs into the ground or buried matter.
 - **Shed.** The pressed cells slide out sideways, through the cheapest side whose matter can
   move. The joints the push closes rub under the push itself, so the bonds' resistance `R` is

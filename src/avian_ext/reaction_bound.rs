@@ -24,6 +24,7 @@
 use avian3d::collision::contact_types::ContactId;
 use avian3d::dynamics::integrator::IntegrationSystems;
 use avian3d::dynamics::solver::constraint_graph::ConstraintGraph;
+use avian3d::dynamics::solver::contact::ContactNormalPart;
 use avian3d::dynamics::solver::schedule::{SolverSystems, SubstepSolverSystems};
 use avian3d::prelude::*;
 use bevy::platform::collections::HashMap;
@@ -241,6 +242,16 @@ fn shares(carried: &[f32], wanting: &[bool], first: bool, bound: f32) -> Vec<(f3
         .collect()
 }
 
+/// `member`'s prepared normal part; none when the step prepared its manifold no constraint.
+fn part<'a>(
+    member: &Member,
+    manifolds: &HashMap<(u32, usize), Manifold>,
+    constraints: &'a ConstraintGraph,
+) -> Option<&'a ContactNormalPart> {
+    let (color, index) = manifolds[&(member.contact.0, member.manifold)].slot?;
+    Some(&constraints.colors[color].contact_constraints[index].points[member.point].normal_part)
+}
+
 /// Before each substep's solve: deals every group's bound over one substep to its points (the
 /// module doc) and cuts what a point carries to its bound. Another writer of the substep's
 /// constraints orders itself against this system.
@@ -261,17 +272,15 @@ pub(crate) fn deal(
     for manifold in manifolds.values_mut() {
         manifold.points.fill(Bound::RIGID);
     }
-    let part = |member: &Member, manifolds: &HashMap<(u32, usize), Manifold>| {
-        let (color, index) = manifolds[&(member.contact.0, member.manifold)].slot?;
-        Some(&constraints.colors[color].contact_constraints[index].points[member.point].normal_part)
-    };
     for group in groups.iter_mut() {
         // A member whose manifold has no constraint this step carries and wants nothing.
         let carried: Vec<f32> = (group.members.iter())
-            .map(|member| part(member, manifolds).map_or(0.0, |part| part.impulse * member.lean))
+            .map(|member| {
+                part(member, manifolds, &constraints).map_or(0.0, |part| part.impulse * member.lean)
+            })
             .collect();
         let wanting: Vec<bool> = (group.members.iter())
-            .map(|member| part(member, manifolds).is_some_and(|part| part.clamped))
+            .map(|member| part(member, manifolds, &constraints).is_some_and(|part| part.clamped))
             .collect();
         if *dealt {
             // What the last substep applied.
@@ -312,20 +321,11 @@ fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
         groups, manifolds, ..
     } = &mut *bounds;
     for group in groups.iter_mut() {
-        let wanting = |member: &Member| {
-            (manifolds[&(member.contact.0, member.manifold)].slot).is_some_and(|(color, index)| {
-                constraints.colors[color].contact_constraints[index].points[member.point]
-                    .normal_part
-                    .clamped
-            })
-        };
-        let wants: Vec<bool> = group.members.iter().map(wanting).collect();
+        let wants: Vec<bool> = (group.members.iter())
+            .map(|member| part(member, manifolds, &constraints).is_some_and(|part| part.clamped))
+            .collect();
         let carried: f32 = (group.members.iter())
-            .filter_map(|member| {
-                let (color, index) = manifolds[&(member.contact.0, member.manifold)].slot?;
-                let point = &constraints.colors[color].contact_constraints[index].points;
-                Some(point[member.point].normal_part.impulse * member.lean)
-            })
+            .filter_map(|member| Some(part(member, manifolds, &constraints)?.impulse * member.lean))
             .sum();
         group.returned += carried;
         group.spent = wants.contains(&true)

@@ -635,13 +635,8 @@ of the two, and sets `clamped`; `apply_restitution` gains `max_impulse`. A point
 impulse is what one substep applies, so a finite bound is the most the point returns per substep;
 with both infinite the contact is Avian's bit for bit.
 
-The bound and its writers are the game's: a writer names a group of points and the most they
-return and the work they do between them over the step in the `Bounds` resource, after the narrow
-phase; the store is cleared at the start of every step. Before each substep's warm start
-(`SubstepSchedule`) the seam deals each group's bound to its points' `max_impulse` and `max_work`
-by what they carry and which the last solve left `clamped`, and cuts their accumulated impulse to
-it; after the last solve it reads which groups ended the step spent. Friction needs no patch: the
-tangent solve clamps to the normal impulse.
+The bound, its writers and its deal to the points before each substep are the game's (the seam's
+module doc). Friction needs no patch: the tangent solve clamps to the normal impulse.
 
 Not game-side: the clamp sits inside the solve's inner loop, and no public field or schedule slot
 caps an impulse between two solves. 29 fork lines (MEASURED: 24 in the normal part, 5 in the
