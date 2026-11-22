@@ -5,7 +5,7 @@
 //!
 //! * [`bound_contacts`], inside the physics step after the narrow phase: groups each body's
 //!   contact points on one construction into blocks of connected pressed cells, prices each
-//!   ([`Standing::give`]) and bounds what its points return between them, wherever the body
+//!   ([`Standing::give_along`]) and bounds what its points return between them, wherever the body
 //!   presses it, at that price (`avian_ext::reaction_bound`). A point the law does not move (an
 //!   unbreakable element, a buried cell, a face slid along) stays rigid.
 //! * [`release`], after the step: a block that returned all its bound was not enough to stop
@@ -30,7 +30,7 @@ use avian3d::prelude::{
 use super::fracture::bound::{Push, Standing, Way, Yield, crossed, reaction};
 use super::*;
 use crate::avian_ext::reaction_bound::{Bound, Bounds, Member};
-use bevy::tasks::ParallelSlice;
+use bevy::tasks::{ParallelSlice, ParallelSliceMut};
 
 /// One body's connected pressed cells on one construction, as the step priced them.
 #[derive(Debug, Clone)]
@@ -66,7 +66,6 @@ pub(crate) struct Give(BTreeMap<(Entity, usize), f64>);
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BlockRow {
     pub(crate) body: Entity,
-    pub(crate) construction: u16,
     pub(crate) cells: usize,
     pub(crate) way: Way,
     /// N and J ([`fracture::bound::Price`]).
@@ -89,10 +88,6 @@ pub(crate) struct BoundAccount {
     pub(crate) blocks: Vec<BlockRow>,
     /// Freed cells: construction and chunk.
     pub(crate) freed: Vec<(u16, u16)>,
-    /// Freed fragments shed to the players as decoration.
-    pub(crate) shed: usize,
-    /// Belt forces capped this tick: body, and the force taken back from it, N.
-    pub(crate) capped_belts: Vec<(Entity, Vec3)>,
 }
 
 type Owners<'w, 's> = Query<
@@ -117,6 +112,7 @@ type Owned<'w, 's> = Query<
     ),
 >;
 
+/// A body the solver holds: its `SolverBodyIndex` requires the integration data.
 type Movers<'w, 's> = Query<
     'w,
     's,
@@ -127,7 +123,7 @@ type Movers<'w, 's> = Query<
         &'static LinearVelocity,
         &'static AngularVelocity,
         &'static ComputedCenterOfMass,
-        Option<&'static VelocityIntegrationData>,
+        &'static VelocityIntegrationData,
         Option<&'static AccumulatedLocalAcceleration>,
         Option<&'static GravityScale>,
         (
@@ -234,7 +230,7 @@ impl Pricing<'_, '_, '_> {
         let (mass, force, local_force, steady, local_steady) = constant;
         // What Avian integrates before its contact solve: the forces applied to the body, its
         // constant ones and gravity (`pre_process_velocity_increments`).
-        let acceleration = increment.map_or(Vec3::ZERO, |data| data.linear_increment)
+        let acceleration = increment.linear_increment
             + force.map_or(Vec3::ZERO, |force| force.0 * mass.inverse())
             + steady.map_or(Vec3::ZERO, |steady| steady.0)
             + facing.0
@@ -267,7 +263,6 @@ impl Pricing<'_, '_, '_> {
             // several groups takes the least, which is the cheapest way at whatever speed the
             // solve finds the body closing.
             let gives: Vec<Yield> = (pushes.iter())
-                .filter(|push| push.lean > 0.0)
                 .filter_map(|&push| standing.give_along(&cells, push, spent, dt))
                 .collect();
             if gives.is_empty() {
@@ -339,9 +334,29 @@ struct BoundContacts<'w, 's> {
     stages: Option<Res<'w, Stages>>,
 }
 
+/// Resolution: owners are priced as tasks from this many; one owner has nothing to split. Not
+/// measured: a higher floor waits on a profile of a step that presses several owners.
+const PARALLEL_OWNERS: usize = 2;
+
+/// `work` on each of `owners`, in their order. An owner's work reads its own state and the
+/// step's immutable inputs alone, so each is a task of the compute pool.
+fn per_owner<T: Send, R: Send + 'static>(
+    mut owners: &mut [T],
+    work: impl Fn(&mut T) -> R + Sync,
+) -> Vec<R> {
+    if owners.len() < PARALLEL_OWNERS {
+        return owners.iter_mut().map(work).collect();
+    }
+    let done = owners.par_splat_map_mut(ComputeTaskPool::get(), None, |_, owners| {
+        owners.iter_mut().map(&work).collect::<Vec<R>>()
+    });
+    done.into_iter().flatten().collect()
+}
+
 /// Inside the physics step, between the narrow phase and the solver's constraints (module doc).
-/// Each body's cells are priced from the owner's state and its own motion alone, so the bodies
-/// on one owner are priced in parallel; their bounds are handed over in owner and body order.
+/// Each body's cells are priced from the owner's state and its own motion alone, so owners
+/// ([`per_owner`]) and the bodies on each are priced in parallel; their bounds are handed over
+/// in owner and body order.
 fn bound_contacts(mut p: BoundContacts) {
     let _bound = Stages::start(p.stages.as_deref(), Stage::Bound);
     p.pressed.blocks.clear();
@@ -382,32 +397,39 @@ fn bound_contacts(mut p: BoundContacts) {
             }
         }
     }
-    for (root, bodies) in touches {
-        let (_, position, rotation, mut owner) =
-            (p.owners.get_mut(root)).expect("the owner was read from this query");
-        let owner = owner.bypass_change_detection();
-        let to_owner = owner.physics_frame((position, rotation)).rotation.inverse();
+    let mut owners: Vec<_> = (p.owners.iter_many_unique_mut(touches.keys()))
+        .map(|owner| owner.expect("the owner was read from this query"))
+        .collect();
+    let mut pressed: Vec<_> = (owners.iter_mut().zip(touches))
+        .map(|((_, position, rotation, owner), (root, bodies))| {
+            let owner = owner.bypass_change_detection();
+            let to_owner = owner.physics_frame((position, rotation)).rotation.inverse();
+            let bodies: Vec<(Entity, Vec<Touch>)> = bodies.into_iter().collect();
+            (root, to_owner, owner, bodies)
+        })
+        .collect();
+    let (movers, gravity, give) = (&p.movers, p.gravity.0, &*p.give);
+    let priced = per_owner(&mut pressed, |(root, to_owner, owner, bodies)| {
         let pricing = Pricing {
-            root,
+            root: *root,
             standing: standing(owner),
-            to_owner,
-            movers: &p.movers,
-            gravity: p.gravity.0,
-            give: &p.give,
+            to_owner: *to_owner,
+            movers,
+            gravity,
+            give,
             dt,
         };
-        let bodies: Vec<(Entity, Vec<Touch>)> = bodies.into_iter().collect();
-        let priced = bodies.par_splat_map(ComputeTaskPool::get(), None, |_, bodies| {
+        bodies.par_splat_map(ComputeTaskPool::get(), None, |_, bodies| {
             (bodies.iter())
                 .map(|(body, touches)| pricing.price(*body, touches))
                 .collect::<Vec<Priced>>()
-        });
-        for (mut block, groups) in priced.into_iter().flatten().flatten() {
-            for ((_, group), (members, most)) in block.gives.iter_mut().zip(groups) {
-                *group = p.bounds.group(members, most);
-            }
-            p.pressed.blocks.push(block);
+        })
+    });
+    for (mut block, groups) in priced.into_iter().flatten().flatten().flatten() {
+        for ((_, group), (members, most)) in block.gives.iter_mut().zip(groups) {
+            *group = p.bounds.group(members, most);
         }
+        p.pressed.blocks.push(block);
     }
 }
 
@@ -533,11 +555,11 @@ struct Release<'w, 's> {
 fn release(mut p: Release) {
     let _release = Stages::start(p.stages.as_deref(), Stage::Release);
     let dt = f64::from(p.fixed.timestep().as_secs_f32());
+    // An authority without a shot clock (a test fixture's bare sim) is at tick zero.
     let tick = p.clock.as_deref().map_or(0, |clock| clock.0.raw());
     let Pressed { blocks, belts } = std::mem::take(&mut *p.pressed);
     p.account.blocks.clear();
     p.account.freed.clear();
-    p.account.shed = 0;
     // Only what yields this step is remembered ([`Give`]).
     p.give.0.clear();
     let mut leaving: BTreeMap<Entity, BTreeSet<usize>> = BTreeMap::new();
@@ -548,9 +570,10 @@ fn release(mut p: Release) {
         // What the body crossed is how far the step moved it into the cells: its speed as the
         // solve left it, which a third body pushing it inside the step made. The way that gave
         // is the one that returns least at that speed.
-        let velocity = (p.movers.get(block.body)).map_or(DVec3::ZERO, |(linear, angular)| {
-            (block.to_owner * (linear.0 + angular.0.cross(block.arm))).as_dvec3()
-        });
+        let Ok((linear, angular)) = p.movers.get(block.body) else {
+            continue; // The body left the world inside the tick: it presses nothing now.
+        };
+        let velocity = (block.to_owner * (linear.0 + angular.0.cross(block.arm))).as_dvec3();
         let returned = |(given, _): &(Yield, usize)| {
             reaction(given.price, block.spent, velocity.dot(given.push.along), dt) / given.push.lean
         };
@@ -565,20 +588,17 @@ fn release(mut p: Release) {
         } else {
             0.0
         };
-        if let Ok((_, _, _, owner)) = p.owners.get(block.root) {
-            p.account.blocks.push(BlockRow {
-                body: block.body,
-                construction: owner.construction,
-                cells: block.cells.len(),
-                way: given.way,
-                price: [given.price.force, given.price.work],
-                closing,
-                bound: reaction(given.price, block.spent, closing, dt),
-                yielded,
-                spent,
-                returned: p.bounds.returned(group),
-            });
-        }
+        p.account.blocks.push(BlockRow {
+            body: block.body,
+            cells: block.cells.len(),
+            way: given.way,
+            price: [given.price.force, given.price.work],
+            closing,
+            bound: reaction(given.price, block.spent, closing, dt),
+            yielded,
+            spent,
+            returned: p.bounds.returned(group),
+        });
         if spent >= 1.0 {
             leaving.entry(block.root).or_default().extend(given.leaves);
         } else if yielded {
@@ -606,7 +626,6 @@ fn release(mut p: Release) {
         let (departures, sheds) =
             depart(&mut owner, pose, fragments, tick, &mut p.record, &reusable);
         (p.account.freed).extend(plug.iter().map(|&c| (construction, c as u16)));
-        p.account.shed += sheds.len();
         p.shed.write_batch(sheds);
         p.queue.0.push(RawDeposit {
             changed: vec![root],
@@ -626,18 +645,80 @@ struct BoundBelts<'w, 's> {
     bodies: Query<'w, 's, (Forces, &'static ComputedCenterOfMass)>,
     fixed: Res<'w, Time<Fixed>>,
     pressed: ResMut<'w, Pressed>,
-    account: ResMut<'w, BoundAccount>,
     stages: Option<Res<'w, Stages>>,
 }
 
+/// One belt body's forces on one owner, as staged: the cell each bears on, where (world), and
+/// the force on the body, N.
+struct Belt {
+    body: Entity,
+    /// The body's centre of mass, m, and its linear and angular velocity, world.
+    motion: [Vec3; 3],
+    forces: Vec<(usize, Vec3, Vec3)>,
+}
+
+/// A belt's force on one block of cells over what they return.
+struct Capped {
+    body: Entity,
+    /// The share of each force taken back from the body.
+    back: f32,
+    /// Where each force is applied (world), and the force, N.
+    forces: Vec<(Vec3, Vec3)>,
+    /// The cells that leave, ordered.
+    leaves: Vec<usize>,
+}
+
+/// The blocks of `standing` that `belt` presses past what they return, `to_owner` the world's
+/// rotation into the owner's frame.
+fn capped(standing: Standing, to_owner: Quat, belt: &Belt, dt: f64) -> Vec<Capped> {
+    let [centre, linear, angular] = belt.motion;
+    let mut cells: Vec<usize> = belt.forces.iter().map(|&(cell, ..)| cell).collect();
+    cells.sort_unstable();
+    cells.dedup();
+    let mut capped = Vec::new();
+    for cells in standing.connected(&cells) {
+        let on: Vec<_> = (belt.forces.iter())
+            .filter(|(cell, ..)| cells.binary_search(cell).is_ok())
+            .collect();
+        let total: Vec3 = on.iter().map(|&&(_, _, force)| force).sum();
+        let Some(along) = (to_owner * -total).as_dvec3().try_normalize() else {
+            continue; // The belt bears nothing on these cells.
+        };
+        let met = on.iter().map(|&&(_, at, _)| at).sum::<Vec3>() / on.len() as f32;
+        let velocity = linear + angular.cross(met - centre);
+        let push = Push {
+            along,
+            closing: (to_owner * velocity).as_dvec3().dot(along),
+            lean: 1.0,
+        };
+        // No give is crossed first: a staged force has no contact constraint, so no solve says
+        // whether the cells stopped the belt (`Bounds::spent`), which a crossing is counted from.
+        let Some(given) = standing.give_along(&cells, push, 0.0, dt) else {
+            continue; // No way is open: the cells bear the belt whatever it presses with.
+        };
+        let most = given.impulse / dt;
+        let pressing = f64::from(total.length());
+        if pressing <= most {
+            continue; // The cells bear the belt.
+        }
+        capped.push(Capped {
+            body: belt.body,
+            back: (1.0 - most / pressing) as f32,
+            forces: on.iter().map(|&&(_, at, force)| (at, force)).collect(),
+            leaves: given.leaves,
+        });
+    }
+    capped
+}
+
 /// Before the step: each belt's force on standing matter against what that matter can return
-/// (module doc). `StagedForce::force` is the force on the belt's body.
+/// (module doc). `StagedForce::force` is the force on the belt's body. Owners are priced in
+/// parallel ([`per_owner`]); the forces go back to the bodies in owner and body order.
 fn bound_belts(mut p: BoundBelts) {
     let _bound = Stages::start(p.stages.as_deref(), Stage::Bound);
-    p.account.capped_belts.clear();
     p.pressed.belts.clear();
     let dt = f64::from(p.fixed.timestep().as_secs_f32());
-    let mut staged = BTreeMap::<(Entity, Entity), Vec<(usize, Vec3, Vec3)>>::new();
+    let mut staged = BTreeMap::<Entity, BTreeMap<Entity, Vec<(usize, Vec3, Vec3)>>>::new();
     for force in p.transfers.staged() {
         let (_, element, chunk) = (p.owned.get(force.structure_collider))
             .expect("a staged belt force names a contact collider of its owner");
@@ -646,55 +727,59 @@ fn bound_belts(mut p: BoundBelts) {
         };
         let pose = owner.physics_frame((position, rotation));
         if let Some(cell) = cell(owner, &pose, element, chunk, force.point) {
-            staged
-                .entry((force.structure, force.body))
-                .or_default()
-                .push((cell, force.point, force.force));
+            ((staged.entry(force.structure).or_default())
+                .entry(force.body)
+                .or_default())
+            .push((cell, force.point, force.force));
         }
     }
-    for ((root, body), forces) in staged {
-        let (_, position, rotation, mut owner) =
-            (p.owners.get_mut(root)).expect("the owner was read from this query");
-        let owner = owner.bypass_change_detection();
-        let pose = owner.physics_frame((position, rotation));
-        let (mut source, centre) =
-            (p.bodies.get_mut(body)).expect("a belt's body is a dynamic body");
-        let to_owner = pose.rotation.inverse();
-        let mut cells: Vec<usize> = forces.iter().map(|&(cell, ..)| cell).collect();
-        cells.sort_unstable();
-        cells.dedup();
-        let standing = standing(owner);
-        for cells in standing.connected(&cells) {
-            let on: Vec<_> = (forces.iter())
-                .filter(|(cell, ..)| cells.binary_search(cell).is_ok())
+    let mut owners: Vec<_> = (p.owners.iter_many_unique_mut(staged.keys()))
+        .map(|owner| owner.expect("the owner was read from this query"))
+        .collect();
+    let mut pressed: Vec<_> = (owners.iter_mut().zip(staged))
+        .map(|((_, position, rotation, owner), (root, belts))| {
+            let owner = owner.bypass_change_detection();
+            let to_owner = owner.physics_frame((position, rotation)).rotation.inverse();
+            let belts: Vec<Belt> = (belts.into_iter())
+                .map(|(body, forces)| {
+                    let (source, centre) =
+                        (p.bodies.get(body)).expect("a belt's body is a dynamic body");
+                    Belt {
+                        body,
+                        motion: [
+                            source.position() + source.rotation() * centre.0,
+                            source.linear_velocity(),
+                            source.angular_velocity(),
+                        ],
+                        forces,
+                    }
+                })
                 .collect();
-            let total: Vec3 = on.iter().map(|&&(_, _, force)| force).sum();
-            let Some(along) = (to_owner * -total).as_dvec3().try_normalize() else {
-                continue; // The belt bears nothing on these cells.
-            };
-            let met = on.iter().map(|&&(_, at, _)| at).sum::<Vec3>() / on.len() as f32;
-            let arm = met - (source.position() + source.rotation() * centre.0);
-            let velocity = source.linear_velocity() + source.angular_velocity().cross(arm);
-            let push = Push {
-                along,
-                closing: (to_owner * velocity).as_dvec3().dot(along),
-                lean: 1.0,
-            };
-            let Some(given) = standing.give(&cells, &[push], 0.0, dt) else {
-                continue; // No way is open: the cells bear the belt whatever it presses with.
-            };
-            let most = given.impulse / dt;
-            let pressing = f64::from(total.length());
-            if pressing <= most {
-                continue; // The cells bear the belt.
-            }
+            (root, to_owner, owner, belts)
+        })
+        .collect();
+    let capped = per_owner(&mut pressed, |(root, to_owner, owner, belts)| {
+        let standing = standing(owner);
+        let capped: Vec<Capped> = (belts.iter())
+            .flat_map(|belt| capped(standing, *to_owner, belt, dt))
+            .collect();
+        (*root, capped)
+    });
+    for (root, capped) in capped {
+        for Capped {
+            body,
+            back,
+            forces,
+            leaves,
+        } in capped
+        {
+            let (mut source, _) =
+                (p.bodies.get_mut(body)).expect("a belt's body is a dynamic body");
             // The belt keeps what the cells return; the rest it never had.
-            let back = (1.0 - most / pressing) as f32;
-            for &&(_, at, force) in &on {
+            for (at, force) in forces {
                 source.apply_force_at_point(-force * back, at);
             }
-            p.account.capped_belts.push((body, -total * back));
-            p.pressed.belts.push((root, given.leaves));
+            p.pressed.belts.push((root, leaves));
         }
     }
 }

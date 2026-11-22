@@ -17,13 +17,18 @@ use super::{Block, Joint, Side, State, Structure};
 /// slides along it. DERIVED: cos 45°, where the two modes of one rigid translation are equal.
 const BEHIND: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
-/// Resolution: two faces' sideways directions within about 8 degrees are one side to shed
-/// through (cos); baked faces of one wall plane differ by rounding only.
+/// Resolution: sideways directions within about 8 degrees (cos) are priced as one side to shed
+/// through, since each side priced costs a plug and a boundary sum. The faces of one wall plane
+/// differ by rounding only, far inside it; the angle itself is not measured.
 const SAME_SIDE: f64 = 0.99;
 
-fn chunk(side: Side) -> Option<usize> {
-    match side {
-        Side::Chunk(c) => Some(c),
+/// The chunk across `joint` from its side `c`; none across a ground joint.
+fn across(joint: &Joint, c: usize) -> Option<usize> {
+    if joint.a != c {
+        return Some(joint.a);
+    }
+    match joint.b {
+        Side::Chunk(b) => Some(b),
         Side::Ground => None,
     }
 }
@@ -138,12 +143,7 @@ impl Standing<'_> {
             while let Some(c) = open.pop() {
                 for &j in &self.state.topology.incident[c] {
                     let joint = &self.structure.joints[j];
-                    let other = if joint.a == c {
-                        chunk(joint.b)
-                    } else {
-                        Some(joint.a)
-                    };
-                    if let Some(other) = other
+                    if let Some(other) = across(joint, c)
                         && self.touching(j, joint)
                         && left.remove(&other)
                     {
@@ -178,12 +178,7 @@ impl Standing<'_> {
                 if !self.touching(j, joint) || -self.toward(joint, c).dot(along) <= BEHIND {
                     continue;
                 }
-                let other = if joint.a == c {
-                    chunk(joint.b)
-                } else {
-                    Some(joint.a)
-                };
-                match other {
+                match across(joint, c) {
                     Some(d) if self.structure.chunks[d].buried => grounded = true,
                     Some(d) if !inside[d] => {
                         inside[d] = true;
@@ -227,12 +222,7 @@ impl Standing<'_> {
         for &c in cells {
             for &j in &self.state.topology.incident[c] {
                 let joint = &self.structure.joints[j];
-                let across = if joint.a == c {
-                    chunk(joint.b)
-                } else {
-                    Some(joint.a)
-                };
-                let internal = across.is_some_and(|d| cells.binary_search(&d).is_ok());
+                let internal = across(joint, c).is_some_and(|d| cells.binary_search(&d).is_ok());
                 if internal || !self.touching(j, joint) {
                     continue;
                 }
@@ -268,12 +258,9 @@ impl Standing<'_> {
 
     /// What `pressed` hold against being shed sideways by a push `along`, and the cells that
     /// leave: over the directions the push slides a pressed cell's face along, the cheapest
-    /// whose matter can move (its plug is not grounded). The joints the push closes slide under
-    /// the push itself, so their friction grows with the reaction `P`: sliding starts at
-    /// `P = R + μ P`, `R` the boundary's resistance at its gravity preload and `μ` the closed
-    /// joints' friction, area-weighted (the push bears on them evenly): `P = R / (1 − μ)`, with
-    /// the whole push turned sideways (a StandIn, below). Closed joints at `μ ≥ 1` never slide.
-    /// `None` when no side is open.
+    /// whose matter can move (its plug is not grounded). The joints the push closes rub under
+    /// the push itself, at their area-weighted friction (the push bears on them evenly), which
+    /// raises the price (the StandIn below). `None` when no side is open.
     pub(crate) fn shed(&self, pressed: &[usize], along: DVec3) -> Option<(Price, Vec<usize>)> {
         let mut sides: Vec<DVec3> = Vec::new();
         for &c in pressed {
@@ -318,7 +305,7 @@ impl Standing<'_> {
 
     /// How `pressed` (ordered) give to a body pushing them along `push`, `spent` of their give
     /// crossed already: the way that returns the body least this step. `None` when no way is
-    /// open along it.
+    /// open along it, or the push leans no part of a normal impulse its way ([`Push::lean`]).
     pub(crate) fn give_along(
         &self,
         pressed: &[usize],
@@ -326,6 +313,9 @@ impl Standing<'_> {
         spent: f64,
         dt: f64,
     ) -> Option<Yield> {
+        if push.lean <= 0.0 {
+            return None;
+        }
         let plug = self.plug(pressed, push.along);
         let ways = [
             (self.shear_out(&plug, push.along)).map(|price| (Way::ShearOut, price, plug.cells)),
@@ -345,21 +335,6 @@ impl Standing<'_> {
             }
         }
         least
-    }
-
-    /// [`Self::give_along`] the push of `pushes` that returns the body's contact least: the
-    /// cheapest way and direction. `None` when no push moves them (every lean is nil or away).
-    pub(crate) fn give(
-        &self,
-        pressed: &[usize],
-        pushes: &[Push],
-        spent: f64,
-        dt: f64,
-    ) -> Option<Yield> {
-        (pushes.iter())
-            .filter(|push| push.lean > 0.0)
-            .filter_map(|&push| self.give_along(pressed, push, spent, dt))
-            .min_by(|a, b| (a.impulse / a.push.lean).total_cmp(&(b.impulse / b.push.lean)))
     }
 }
 

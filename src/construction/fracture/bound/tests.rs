@@ -103,7 +103,8 @@ fn a_backed_block_leaves_through_the_free_face_behind_it() {
     };
     let (two, one) = (price(2), price(1));
     assert!(
-        close(two.force, one.force, 0.02) && close(two.work, one.work, 0.02),
+        // One boundary summed in two orders.
+        close(two.force, one.force, 1e-6) && close(two.work, one.work, 1e-6),
         "two layers price as one: {two:?} against {one:?}"
     );
 }
@@ -211,16 +212,21 @@ fn a_push_into_the_ground_sheds_sideways_against_its_own_friction() {
             closing: 5.0,
             lean: 0.0,
         };
-        assert_eq!(standing.give(&top, &[along_the_face], 0.0, dt), None);
-        standing.give(&top, &[down], 0.0, dt).unwrap()
+        assert_eq!(standing.give_along(&top, along_the_face, 0.0, dt), None);
+        standing.give_along(&top, down, 0.0, dt).unwrap()
     };
     assert_eq!((given.way, &given.leaves), (Way::Shed, &top));
-    let beside = [DVec3::Z, DVec3::NEG_Z]
-        .into_iter()
-        .map(|side| standing.boundary(&top, side, None).0.force)
-        .fold(f64::INFINITY, f64::min);
+    // What slides when the cells leave through either face, from the fixture's geometry: the
+    // bed joint under them and the head joint at each end, each at its cohesion at least.
+    let cell = WALL / Vec3::new(16.0, 12.0, 1.0);
+    let sliding = f64::from((PATCH.1.x - PATCH.0.x) * WALL.z + 2.0 * cell.y * WALL.z);
+    let cohesion = (wall.kind.structure.joints.iter())
+        .find_map(|joint| joint.seam())
+        .map(|seam| f64::from(seam.shear.cohesion))
+        .unwrap();
+    let beside = cohesion * sliding;
     assert!(
-        beside.is_finite() && given.price.force * (1.0 - friction) >= beside * (1.0 - 1e-9),
+        given.price.force * (1.0 - friction) >= beside * (1.0 - 1e-6),
         "{:?} against the joints beside alone, {beside} N, at friction {friction}",
         given.price
     );
