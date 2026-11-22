@@ -3,13 +3,6 @@
 //! rest and is ordinary rubble from the next step on. Nothing is predicted: the cells are the
 //! ones the narrow phase found pressed.
 //!
-//! Rubble compresses: a loose piece a body presses onto fixed matter (the ground, standing cells,
-//! or other pieces that end on either) is no strut. It returns that body its own weight over the
-//! lean of what backs it ([`pinned`]) and no more, so the body sinks into the piece until it
-//! meets the fixed matter itself; and standing cells bear such a piece's weight and do not grip
-//! it, so a freed block jammed in its slot is pushed out. Once the body has gone the piece's
-//! contacts are ordinary. Two pieces stay rigid to each other, so a heap bears itself.
-//!
 //! * [`bound_contacts`], inside the physics step after the narrow phase: groups each body's
 //!   contact points on one construction into blocks of connected pressed cells, prices each
 //!   ([`Standing::give`]) and hands its points their share of the reaction as the solver's bound
@@ -144,63 +137,9 @@ type Movers<'w, 's> = Query<
             Option<&'static ConstantLocalForce>,
             Option<&'static ConstantLinearAcceleration>,
             Option<&'static ConstantLocalLinearAcceleration>,
-            Has<Piece>,
         ),
     ),
 >;
-
-/// What a body is to rubble's compression.
-#[derive(Clone, Copy, PartialEq)]
-enum Matter {
-    /// Nothing moves it: the ground, a standing owner.
-    Fixed,
-    /// A loose piece.
-    Loose,
-    /// Any other dynamic body.
-    Driven,
-}
-
-/// The loose pieces' contacts of one step, unit normals in world.
-#[derive(Default)]
-struct Rubble {
-    /// By piece: from it into fixed matter it touches.
-    fixed: BTreeMap<Entity, Vec<Vec3>>,
-    /// By piece: each piece it touches, and from it into that piece.
-    loose: BTreeMap<Entity, Vec<(Entity, Vec3)>>,
-    /// By piece: each driven body it touches, and from it into that body.
-    driven: BTreeMap<Entity, Vec<(Entity, Vec3)>>,
-}
-
-impl Rubble {
-    /// How squarely `piece` is backed against `presser`'s push `along` (unit): the largest lean on
-    /// `along` of a contact with fixed matter, or with the presser's own far side, of the piece
-    /// or of a piece it bears on that way. Zero when it is free to move.
-    fn backing(&self, piece: Entity, presser: Entity, along: Vec3) -> f32 {
-        let (mut seen, mut next, mut lean) = (BTreeSet::from([piece]), vec![piece], 0.0_f32);
-        while let Some(at) = next.pop() {
-            for into in self.fixed.get(&at).into_iter().flatten() {
-                lean = lean.max(into.dot(along));
-            }
-            for &(body, into) in self.driven.get(&at).into_iter().flatten() {
-                if body == presser {
-                    lean = lean.max(into.dot(along));
-                }
-            }
-            for &(other, into) in self.loose.get(&at).into_iter().flatten() {
-                if into.dot(along) > 0.0 && seen.insert(other) {
-                    next.push(other);
-                }
-            }
-        }
-        lean
-    }
-}
-
-/// The most a pinned piece of `weight` N returns its presser at one of `sharing` points over
-/// `dt`, N·s: the backing bears `lean` of the push (above zero) and bears the piece's weight.
-fn pinned(weight: f32, lean: f32, sharing: usize, dt: f32) -> f32 {
-    weight * dt / (sharing as f32 * lean)
-}
 
 /// The standing cell of `owner` a collider of it shows at world `point`: a chunk's own, or the
 /// nearest of an unbroken element's. `None` for matter the law does not move: an unbreakable
@@ -270,7 +209,6 @@ type Priced = (Vec<Block>, Vec<((u32, usize), (usize, Bound))>);
 fn price(
     (root, body): (Entity, Entity),
     touches: &[Touch],
-    pressed: bool,
     standing: Standing,
     to_owner: Quat,
     movers: &Movers,
@@ -280,7 +218,7 @@ fn price(
 ) -> Priced {
     let (_, at, facing, linear, angular, centre, increment, local, scale, constant) =
         movers.get(body).expect("the body was read from this query");
-    let (mass, force, local_force, steady, local_steady, _) = constant;
+    let (mass, force, local_force, steady, local_steady) = constant;
     // What Avian integrates before its contact solve: the forces applied to the body, its
     // constant ones and gravity (`pre_process_velocity_increments`).
     let acceleration = increment.map_or(Vec3::ZERO, |data| data.linear_increment)
@@ -291,11 +229,6 @@ fn price(
                 + local_force.map_or(Vec3::ZERO, |force| force.0 * mass.inverse())
                 + local_steady.map_or(Vec3::ZERO, |steady| steady.0))
         + gravity * scale.map_or(1.0, |scale| scale.0);
-    // Standing matter does not grip a piece a driven body presses: it bears the piece's weight.
-    let own = pressed.then(|| {
-        let weight = mass.value() * (gravity * scale.map_or(1.0, |scale| scale.0)).length();
-        pinned(weight, 1.0, touches.len(), dt as f32)
-    });
     let mut cells: Vec<usize> = touches.iter().map(|touch| touch.cell).collect();
     cells.sort_unstable();
     cells.dedup();
@@ -324,7 +257,9 @@ fn price(
             .filter(|push| push.lean > 0.0)
             .filter_map(|&push| standing.give_along(&cells, push, spent, dt))
             .collect();
-        // With no way open the cells hold whatever presses them.
+        if gives.is_empty() {
+            continue; // No way is open: the cells hold whatever presses them.
+        }
         let mut most = vec![Bound::RIGID; on.len()];
         for given in &gives {
             let leans: Vec<f64> = (on.iter())
@@ -341,20 +276,12 @@ fn price(
             }
         }
         let mut points = Vec::new();
-        for (touch, mut most) in on.iter().zip(most) {
-            // A point held to the piece's weight says nothing of the cells' bonds.
-            let weighed = own.filter(|&own| own < most.impulse);
-            most.impulse = weighed.unwrap_or(most.impulse);
+        for (touch, most) in on.iter().zip(most) {
             if most != Bound::RIGID {
                 let (contact, manifold, point) = touch.point;
                 limits.push(((contact, manifold), (point, most)));
-                if weighed.is_none() {
-                    points.push(touch.point);
-                }
+                points.push(touch.point);
             }
-        }
-        if gives.is_empty() {
-            continue;
         }
         blocks.push(Block {
             root,
@@ -390,43 +317,7 @@ fn bound_contacts(
     let dt = f64::from(time.delta_secs());
     let mut touches = BTreeMap::<Entity, BTreeMap<Entity, Vec<Touch>>>::new();
     let mut sizes = BTreeMap::new();
-    let matter = |body: Option<Entity>| match body.map(|body| movers.get(body)) {
-        Some(Ok(mover)) if mover.0.is_dynamic() && mover.9.5 => Matter::Loose,
-        Some(Ok(mover)) if mover.0.is_dynamic() => Matter::Driven,
-        _ => Matter::Fixed,
-    };
-    let mut rubble = Rubble::default();
-    // Each manifold of a driven body on a piece: contact, manifold, its points, the two bodies
-    // and the unit normal from the body into the piece.
-    let mut presses = Vec::new();
     for pair in contacts.iter_active() {
-        let sides = [
-            (pair.body1, pair.body2, 1.0),
-            (pair.body2, pair.body1, -1.0),
-        ];
-        for (piece, other, sign) in sides {
-            if matter(piece) != Matter::Loose {
-                continue;
-            }
-            let piece = piece.expect("a loose piece is a body");
-            for (m, manifold) in pair.manifolds.iter().enumerate() {
-                // From the piece into the other.
-                let into = sign * manifold.normal;
-                match matter(other) {
-                    Matter::Fixed => rubble.fixed.entry(piece).or_default().push(into),
-                    Matter::Loose => {
-                        let other = other.expect("a loose piece is a body");
-                        rubble.loose.entry(piece).or_default().push((other, into));
-                    }
-                    Matter::Driven => {
-                        let other = other.expect("a driven body is a body");
-                        rubble.driven.entry(piece).or_default().push((other, into));
-                        let points = manifold.points.len();
-                        presses.push((pair.contact_id.0, m, points, (other, piece), -into));
-                    }
-                }
-            }
-        }
         let sides = [
             (pair.collider1, pair.body2, -1.0),
             (pair.collider2, pair.body1, 1.0),
@@ -480,14 +371,13 @@ fn bound_contacts(
                 .get(&live.structure, &live.state, &live.assessment),
         };
         let bodies: Vec<(Entity, Vec<Touch>)> = bodies.into_iter().collect();
-        let (movers, give, rubble) = (&movers, &*give, &rubble);
+        let (movers, give) = (&movers, &*give);
         let priced = bodies.par_splat_map(ComputeTaskPool::get(), None, |_, bodies| {
             (bodies.iter())
                 .map(|(body, touches)| {
                     let pair = (root, *body);
-                    let pressed = rubble.driven.contains_key(body);
                     price(
-                        pair, touches, pressed, standing, to_owner, movers, gravity.0, give, dt,
+                        pair, touches, standing, to_owner, movers, gravity.0, give, dt,
                     )
                 })
                 .collect::<Vec<Priced>>()
@@ -505,26 +395,6 @@ fn bound_contacts(
             each[point] = most;
         }
         bounds.set(ContactId(contact), manifold, each);
-    }
-    let presses: Vec<_> = (presses.into_iter())
-        .map(|(contact, manifold, points, pair, along)| {
-            let lean = rubble.backing(pair.1, pair.0, along);
-            (contact, manifold, points, pair, lean)
-        })
-        .filter(|&(.., lean)| lean > 0.0)
-        .collect();
-    let mut sharing = BTreeMap::<(Entity, Entity), usize>::new();
-    for &(_, _, points, pair, _) in &presses {
-        *sharing.entry(pair).or_default() += points;
-    }
-    for (contact, manifold, points, pair, lean) in presses {
-        let (.., scale, constant) = movers.get(pair.1).expect("the piece was read as loose");
-        let weight = constant.0.value() * (gravity.0 * scale.map_or(1.0, |scale| scale.0)).length();
-        let most = Bound {
-            impulse: pinned(weight, lean, sharing[&pair], dt as f32),
-            work: f32::INFINITY,
-        };
-        bounds.set(ContactId(contact), manifold, vec![most; points]);
     }
 }
 

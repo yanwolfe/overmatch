@@ -112,34 +112,3 @@ fn explore() {
         );
     }
 }
-
-/// Whoever is pressed onto fixed matter gives its presser its weight in place of that matter's
-/// answer ([`bound_contacts`]): the ground squarely under a piece backs a push down on it and
-/// leaves it free along the ground, through any piece it bears on that way, and so does the far
-/// side of the presser itself.
-#[test]
-fn a_piece_is_backed_by_what_ends_its_push_and_free_across_it() {
-    let [presser, other, piece, under] =
-        [1, 2, 3, 4].map(|index| Entity::from_raw_u32(index).unwrap());
-    let mut rubble = Rubble::default();
-    rubble.fixed.insert(under, vec![Vec3::NEG_Y]);
-    assert_eq!(rubble.backing(under, presser, Vec3::NEG_Y), 1.0);
-    assert_eq!(rubble.backing(under, presser, Vec3::X), 0.0);
-    // The piece on top bears on the one under it, and on nothing sideways.
-    rubble.loose.insert(piece, vec![(under, Vec3::NEG_Y)]);
-    assert_eq!(rubble.backing(piece, presser, Vec3::NEG_Y), 1.0);
-    assert_eq!(rubble.backing(piece, presser, Vec3::X), 0.0);
-    // A body that also touches the piece's far side backs its own push, and no other body's.
-    rubble.driven.insert(piece, vec![(presser, Vec3::X)]);
-    assert_eq!(rubble.backing(piece, presser, Vec3::X), 1.0);
-    assert_eq!(rubble.backing(piece, other, Vec3::X), 0.0);
-}
-
-/// A pinned piece's points share its weight for the step, and a backing met at a slant bears
-/// only its lean of the push, so the presser gets more back the more the piece can slide.
-#[test]
-fn a_pinned_piece_returns_its_weight_over_its_backing_lean() {
-    let dt = 1.0 / 64.0;
-    assert_eq!(pinned(6400.0, 1.0, 4, dt), 25.0);
-    assert_eq!(pinned(6400.0, 0.5, 4, dt), 50.0);
-}

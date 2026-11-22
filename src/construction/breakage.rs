@@ -862,6 +862,7 @@ type Colliders<'w, 's> = Query<
 pub(crate) mod bounded;
 pub(crate) mod felling;
 mod sweep_intake;
+mod yielding;
 #[cfg(test)]
 pub(crate) use sweep_intake::pushes;
 pub(crate) use sweep_intake::{ReleasedMotion, SweepAccount, SweepCast, SweepContacts};
@@ -3259,6 +3260,7 @@ fn sweep(intake: sweep_intake::Intake, stages: Option<Res<Stages>>) {
 pub(crate) fn sim_plugin(app: &mut App) {
     crate::collider_rehome::plugin(app);
     bounded::plugin(app);
+    yielding::plugin(app);
     app.init_resource::<SweepAccount>()
         .init_resource::<SweepCast>()
         .add_message::<crate::debris::crumble::Shed>()

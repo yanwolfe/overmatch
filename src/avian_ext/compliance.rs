@@ -16,11 +16,21 @@
 //! the manifold, whose impulses are stored back point by point. A zero `rest` is the law without it
 //! bit for bit.
 //!
-//! Who relies on it: the game's soft run, which hands each manifold of a track run its links' law.
+//! A manifold may instead hold a [`Tuned`] spring: one natural frequency and damping ratio at each
+//! point's own effective mass (Avian's `SoftnessParameters`, solved in the relaxing pass too), so
+//! the point's stiffness follows the bodies it joins. It has no rest length and no inert rule: a
+//! point bears in whichever substep finds it in overlap. Its push-out keeps Avian's bound
+//! (`SolverConfig::max_overlap_solve_speed`): a point deeper at the narrow phase than the overlap
+//! that speed answers is solved as that deep, so bodies that start a step far inside each other
+//! part at that speed, not at the spring's.
+//!
+//! Who relies on it: the game's soft run, which hands each manifold of a track run its links' law;
+//! the game's building model, whose loose pieces meet everything through a tuned spring
+//! (`construction::breakage::yielding`).
 
 use avian3d::collision::contact_types::ContactId;
 use avian3d::dynamics::solver::constraint_graph::ConstraintGraph;
-use avian3d::dynamics::solver::softness_parameters::SoftnessCoefficients;
+use avian3d::dynamics::solver::softness_parameters::{SoftnessCoefficients, SoftnessParameters};
 use avian3d::prelude::*;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -79,20 +89,53 @@ const INERT: SoftnessCoefficients = SoftnessCoefficients {
     impulse_scale: 1.0,
 };
 
+/// A spring stated by its motion: at each point, the stiffness and damping that give the point's
+/// own effective mass this natural frequency and damping ratio.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tuned {
+    /// Natural frequency, Hz.
+    pub hertz: f32,
+    /// One is critical: the overlap closes without passing zero.
+    pub damping_ratio: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Law {
+    Absolute(ContactCompliance),
+    Tuned(Tuned),
+}
+
 /// This step's laws, by contact pair and manifold index; a manifold without one is Avian's rigid
 /// contact.
 #[derive(Resource, Default, Debug)]
-pub struct Laws(HashMap<(u32, usize), ContactCompliance>);
+pub struct Laws(HashMap<(u32, usize), Law>);
 
 impl Laws {
     /// Gives manifold `manifold` of pair `contact` its law for this step, replacing any set before.
     pub fn set(&mut self, contact: ContactId, manifold: usize, law: ContactCompliance) {
-        self.0.insert((contact.0, manifold), law);
+        self.0.insert((contact.0, manifold), Law::Absolute(law));
     }
 
-    /// The law manifold `manifold` of pair `contact` holds this step.
+    /// Gives manifold `manifold` of pair `contact` a tuned spring for this step, unless a law is
+    /// already set: an absolute law is its writer's statement of the whole contact.
+    pub fn tune(&mut self, contact: ContactId, manifold: usize, spring: Tuned) {
+        (self.0.entry((contact.0, manifold))).or_insert(Law::Tuned(spring));
+    }
+
+    /// The absolute law manifold `manifold` of pair `contact` holds this step.
     pub fn get(&self, contact: ContactId, manifold: usize) -> Option<ContactCompliance> {
-        self.0.get(&(contact.0, manifold)).copied()
+        match self.0.get(&(contact.0, manifold)) {
+            Some(&Law::Absolute(law)) => Some(law),
+            Some(Law::Tuned(_)) | None => None,
+        }
+    }
+
+    /// The tuned spring manifold `manifold` of pair `contact` holds this step.
+    pub fn tuned(&self, contact: ContactId, manifold: usize) -> Option<Tuned> {
+        match self.0.get(&(contact.0, manifold)) {
+            Some(&Law::Tuned(spring)) => Some(spring),
+            Some(Law::Absolute(_)) | None => None,
+        }
     }
 }
 
@@ -119,6 +162,7 @@ pub(crate) fn apply_laws(
     mut constraints: ResMut<ConstraintGraph>,
     graph: Res<ContactGraph>,
     substep: Res<Time<Substeps>>,
+    config: Res<avian3d::dynamics::solver::SolverConfig>,
 ) {
     if laws.0.is_empty() {
         return;
@@ -131,9 +175,31 @@ pub(crate) fn apply_laws(
                 .iter_mut()
                 .flat_map(|color| &mut color.contact_constraints)
             {
-                // A manifold without a law stays rigid.
-                let Some(law) = laws.get(constraint.contact_id, constraint.manifold_index) else {
-                    continue;
+                let key = (constraint.contact_id.0, constraint.manifold_index);
+                let law = match laws.0.get(&key) {
+                    // A manifold without a law stays rigid.
+                    None => continue,
+                    Some(&Law::Tuned(spring)) => {
+                        let spring = SoftnessParameters::new(spring.damping_ratio, spring.hertz)
+                            .compute_coefficients(h);
+                        let reach = config.max_overlap_solve_speed / spring.bias;
+                        let (_, pair) = graph
+                            .get_by_id(constraint.contact_id)
+                            .expect("a prepared constraint's pair is in the contact graph");
+                        let manifold = &pair.manifolds[constraint.manifold_index];
+                        assert_eq!(
+                            constraint.points.len(),
+                            manifold.points.len(),
+                            "Avian prepares one constraint point per manifold point, in order"
+                        );
+                        for (point, contact) in constraint.points.iter_mut().zip(&manifold.points) {
+                            point.initial_separation += (contact.penetration - reach).max(0.0);
+                            point.normal_part.compliant = true;
+                            point.normal_part.spring = spring;
+                        }
+                        continue;
+                    }
+                    Some(&Law::Absolute(law)) => law,
                 };
                 let (_, pair) = graph
                     .get_by_id(constraint.contact_id)
