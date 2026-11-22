@@ -23,7 +23,7 @@ Each patch takes one form, named in its section:
 - **dropped**: upstream 0.8.0 does it; the old witness runs against unpatched code.
 
 Patched sites in upstream files are tagged `OVERMATCH PATCH`. Fork lines are counted by `diff --minimal -ruN`
-of `src/` against the published crate: 992 in all (MEASURED), 914 in upstream files and 78 in the
+of `src/` against the published crate: 1008 in all (MEASURED), 930 in upstream files and 78 in the
 fork-only `src/collision/narrow_phase/stationary_miss.rs`.
 
 Guards run as the game's own tests, each named in its patch's section.
@@ -626,21 +626,26 @@ test). Record: `upstream/avian-compliant-contact.md`.
 Subject: the game's building model (a body against a standing cell), game state only.
 
 Form: **hook**, for a game divergence: upstream's contact is rigid by design, so no draft goes to
-`upstream/`. `ContactNormalPart` gains `max_impulse: f32`, infinite on a new part, and the
-accumulated-impulse clamp in `solve_impulse` and in `apply_restitution` gains its upper side. A
-point's accumulated impulse is what one substep applies, so a finite `max_impulse` is the most the
-point returns per substep; an infinite one is Avian's contact bit for bit.
+`upstream/`. The seam is `avian_ext::reaction_bound`. `ContactNormalPart` gains three fields, inert
+on a new part: `max_impulse` (infinite), the largest accumulated impulse the point holds;
+`max_work` (infinite), the most work one substep's impulse does on bodies closing at speed `v`, so
+the point holds at most `max_work / v`; and `clamped`, whether the last solve left the point at
+that upper clamp. `solve_impulse` gains the upper side of its accumulated-impulse clamp, the lesser
+of the two, and sets `clamped`; `apply_restitution` gains `max_impulse`. A point's accumulated
+impulse is what one substep applies, so a finite bound is the most the point returns per substep;
+with both infinite the contact is Avian's bit for bit.
 
-The bound and its writers are the game's (`avian_ext::reaction_bound`): a writer names a group of
-points and the most they return between them over the step in the `Bounds` resource, after the
-narrow phase; the store is cleared at the start of every step. Before each substep's warm start
-(`SubstepSchedule`) the game deals each group's bound to its points' `max_impulse` and `max_work`
-by what they carry and which the last solve left clamped, and cuts their accumulated impulse to
+The bound and its writers are the game's: a writer names a group of points and the most they
+return and the work they do between them over the step in the `Bounds` resource, after the narrow
+phase; the store is cleared at the start of every step. Before each substep's warm start
+(`SubstepSchedule`) the seam deals each group's bound to its points' `max_impulse` and `max_work`
+by what they carry and which the last solve left `clamped`, and cuts their accumulated impulse to
 it; after the last solve it reads which groups ended the step spent. Friction needs no patch: the
 tangent solve clamps to the normal impulse.
 
 Not game-side: the clamp sits inside the solve's inner loop, and no public field or schedule slot
-caps an impulse between two solves. 13 fork lines (MEASURED).
+caps an impulse between two solves. 29 fork lines (MEASURED: 24 in the normal part, 5 in the
+restitution pass).
 
 Guard: `src/tests/avian_reaction_bound.rs`.
 
