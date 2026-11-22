@@ -145,6 +145,19 @@ impl ConstructionKind {
             .collect::<Result<Vec<_>, String>>()?;
         let layout = breakage::Layout::of(&asset, &law_materials, attachments)?;
         let structure = Arc::new(layout.checked_structure(&asset)?);
+        // Whatever a site buries or bares ([`breakage::Site`]): burial holds nothing here.
+        let mut bared = (*structure).clone();
+        for chunk in &mut bared.chunks {
+            chunk.buried = false;
+        }
+        if let Some(group) = fracture::loose_groups(&bared, &fracture::State::new(&bared)).first() {
+            return Err(format!(
+                "chunk {} reaches no ground joint through `joints`: a site that bares it would \
+                 leave it loose; rebake so every chunk is joined to an anchor on the foundation \
+                 plane",
+                group[0]
+            ));
+        }
         let equilibrium = Arc::new(fracture::parts::Assessment::at_rest(&structure));
         let kind = Self {
             hulls: hulls::Hulls::new(&layout.blocks, &structure)?,
@@ -292,8 +305,8 @@ fn element_bundle(kind: &ConstructionKind, k: usize) -> impl Bundle {
 }
 
 /// Spawn one construction of `kind` at `pose`, the ground pose: the authored XZ, the grid's Y, the
-/// authored yaw, on `grid`'s ground (none: a fixture's level slab), which buries what it covers
-/// ([`breakage::Site`]). A tilted instance is refused (ADR-0011):
+/// authored yaw, on `site`, the ground under that pose, which buries what it covers. A tilted
+/// instance is refused (ADR-0011):
 /// a construction stands on its foundation plane. Returns the root; the body is whole without a view.
 /// The root carries `Visibility` because a view, where one draws, is its child and inherits
 /// visibility through it.
@@ -302,7 +315,7 @@ pub(crate) fn spawn(
     kind: &Arc<ConstructionKind>,
     identity: MapInstance,
     pose: Isometry3d,
-    grid: Option<&crate::terrain_grid::HeightGrid>,
+    site: breakage::Site,
 ) -> Entity {
     assert!(
         (pose.rotation * Vec3::Y).y >= 1.0 - UPRIGHT_EPSILON,
@@ -310,10 +323,6 @@ pub(crate) fn spawn(
         identity.id,
         pose.rotation,
     );
-    // No grid is the flat slab the pose stands on.
-    let site = grid.map_or(breakage::Site::Level, |grid| {
-        breakage::Site::Terrain(grid, pose)
-    });
     let breakage = breakage::Breakage::sited(kind.clone(), identity.ordinal, site);
     let root = commands
         .spawn((
@@ -639,7 +648,13 @@ pub(crate) mod tests {
             id: "house_0001".to_owned(),
             ordinal: 0,
         };
-        let root = spawn(&mut commands, kind, identity, pose.to_isometry(), None);
+        let root = spawn(
+            &mut commands,
+            kind,
+            identity,
+            pose.to_isometry(),
+            breakage::Site::Level,
+        );
         queue.apply(&mut world);
         (world, root)
     }
@@ -881,6 +896,26 @@ pub(crate) mod tests {
         let unknown = text.replacen("\"Brick\"", "\"Adobe\"", 1);
         let err = resolve("house_1", &unknown).unwrap_err();
         assert!(err.contains("Adobe"), "{err}");
+    }
+
+    /// A CHUNK NO JOINT PATH HOLDS TO THE GROUND DOES NOT LOAD: a site buries only what its ground
+    /// covers (`breakage::Site`), so a chunk held by burial alone would hang loose wherever a
+    /// slope bares it. `Breakage::sited` relies on it and checks no site. Fixture: the shipped
+    /// house without its anchors. Mutant: the refusal removed (the house loads).
+    #[test]
+    fn a_chunk_no_joints_hold_to_the_ground_is_refused_before_play() {
+        let path = shipped_assets().join("constructions/house_1/house_1.construction.ron");
+        let mut asset =
+            ConstructionAsset::from_ron(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        asset.anchors.clear();
+        let err = ConstructionKind::resolve(
+            "house_1",
+            &ron::ser::to_string(&asset).unwrap(),
+            SubstanceRegistry::shipped_static(),
+            Attachments::shipped_static(),
+        )
+        .unwrap_err();
+        assert!(err.contains("reaches no ground joint"), "{err}");
     }
 
     /// A NON-FINITE OR MALFORMED GEOMETRIC FACT DOES NOT LOAD: NaN passes every `>` and `<`

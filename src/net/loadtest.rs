@@ -485,7 +485,7 @@ mod tests {
                     ordinal,
                 },
                 Isometry3d::from_translation(Vec3::new(f32::from(ordinal) * 10.0, 1000.0, 0.0)),
-                None,
+                crate::construction::breakage::Site::Level,
             );
         }
         app.world_mut().flush();

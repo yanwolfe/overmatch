@@ -67,7 +67,7 @@ fn composed_kind_with_physics(
             ordinal: 3,
         },
         Isometry3d::IDENTITY,
-        None,
+        Site::Level,
     );
     queue.apply(world);
     (app, root)
@@ -4139,7 +4139,7 @@ fn reconciliation_prepares_the_same_ordered_geometry_across_workers() {
                 ordinal: 2,
             },
             Isometry3d::from_translation(Vec3::new(5.0, 0.0, 0.0)),
-            None,
+            Site::Level,
         );
         queue.apply(app.world_mut());
         {

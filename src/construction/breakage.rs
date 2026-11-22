@@ -689,15 +689,6 @@ impl Breakage {
 
     pub(crate) fn sited(kind: Arc<ConstructionKind>, construction: u16, site: Site) -> Self {
         let live = Box::new(Live::sited(&kind, site));
-        // A site only moves burial: a cell it bares is still joined, through cells below it,
-        // to the bake's anchors on the foundation plane (the bake joins every chunk to them).
-        if let Some(group) = fracture::loose_groups(&live.structure, &live.state).first() {
-            panic!(
-                "construction {construction} ({}): cell {} is neither buried at its site, held \
-                 by a ground joint, nor joined to a cell that is",
-                kind.asset.id, group[0]
-            );
-        }
         Self {
             kind,
             construction,
@@ -853,7 +844,8 @@ impl AdmittedPiece {
     }
 }
 
-/// What one shell's march step deposited, in world terms, waiting for [`apply_deposits`].
+/// What one march step deposited, or one contact release changed ([`bounded`]), in world terms,
+/// waiting for [`apply_deposits`].
 #[derive(Debug, Default)]
 struct RawDeposit {
     /// The game's damage model: resolved line work and momentum, preserving entrance-only shares.
@@ -862,7 +854,7 @@ struct RawDeposit {
     rays: Vec<RayDeposit>,
     /// A burst's blast: where, and its energy and charge.
     blast: Option<(Vec3, Blast)>,
-    /// Owners whose swept topology changed before physics.
+    /// Owners whose standing matter a contact release freed: the support check reads them anew.
     changed: Vec<Entity>,
 }
 

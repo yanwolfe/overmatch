@@ -8089,7 +8089,7 @@ pub(crate) mod march_tests {
                 ordinal: 0,
             },
             Isometry3d::IDENTITY,
-            None,
+            crate::construction::breakage::Site::Level,
         );
         queue.apply(world);
         settle(&mut app);

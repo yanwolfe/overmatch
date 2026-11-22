@@ -220,7 +220,7 @@ fn fell_house(app: &mut App, at: Vec3) {
             ordinal: ORDINAL,
         },
         Isometry3d::from_translation(at),
-        None,
+        crate::construction::breakage::Site::Level,
     );
     queue.apply(app.world_mut());
     app.update();
