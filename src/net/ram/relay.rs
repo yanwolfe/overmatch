@@ -8,7 +8,8 @@
 //!   sunk`, a piece whose centre first lies under the grid, `RELAY freed`, the cells the bound law
 //!   freed and what pressed them, `RELAY held`, the blocks no way was open for, `RELAY hull` every
 //!   fourth tick, `RELAY rest` every second (the deepest overlap by pair kind), and `RELAY site`
-//!   once (each construction's chunks against the grid).
+//!   once (each construction's chunks against the grid, and the cells the site unburied that no
+//!   ground joint holds).
 //! * `verdicts`: pressed pieces are judged read-only (`debris::crumble::PressVerdicts`).
 //! * `keep`: a cell's crossed give is never forgotten (`bounded::KeepGive`).
 //! * `bare`: a joint the push closes resists a sideways shed with nothing (`bounded::BareShed`).
@@ -21,6 +22,7 @@ use bevy::prelude::*;
 
 use crate::construction::breakage::bounded::{BareShed, BoundAccount, KeepGive};
 use crate::construction::breakage::{Breakage, Piece};
+use crate::construction::fracture::Side;
 use crate::debris::crumble::PressVerdicts;
 
 const LEVER: &str = "OVERMATCH_RELAY";
@@ -120,12 +122,37 @@ fn read(
             let buried_above = (0..chunks.len())
                 .filter(|&c| chunks[c].buried && !under(c))
                 .count();
-            if unburied_under + buried_above > 0 {
+            // Cells the kind buries on level ground and this site does not, and those of them no
+            // ground joint holds.
+            let joints = &owner.live.structure.joints;
+            let grounded = |c: usize| {
+                (joints.iter()).any(|joint| joint.a == c && matches!(joint.b, Side::Ground))
+            };
+            let lost: Vec<usize> = (0..chunks.len())
+                .filter(|&c| owner.kind.structure.chunks[c].buried && !chunks[c].buried)
+                .collect();
+            let gained = (0..chunks.len())
+                .filter(|&c| !owner.kind.structure.chunks[c].buried && chunks[c].buried)
+                .count();
+            let unheld = lost.iter().filter(|&&c| !grounded(c)).count();
+            if unburied_under + buried_above + lost.len() + gained > 0 {
                 info!(
-                    "RELAY site con={} chunks={} buried={} unburied_under_ground={unburied_under} buried_above_ground={buried_above} root_over_ground={}",
+                    "RELAY site con={} chunks={} buried={} level_buried={} lost_buried={} lost_and_no_ground_joint={unheld} gained_buried={gained} ground_joints={} unburied_under_ground={unburied_under} buried_above_ground={buried_above} root_over_ground={}",
                     owner.construction,
                     chunks.len(),
                     chunks.iter().filter(|chunk| chunk.buried).count(),
+                    owner
+                        .kind
+                        .structure
+                        .chunks
+                        .iter()
+                        .filter(|chunk| chunk.buried)
+                        .count(),
+                    lost.len(),
+                    joints
+                        .iter()
+                        .filter(|joint| matches!(joint.b, Side::Ground))
+                        .count(),
                     pose.translation.y - ground(pose.translation),
                 );
             }
