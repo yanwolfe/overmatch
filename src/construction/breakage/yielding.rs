@@ -42,7 +42,11 @@ fn soften_pieces(
     bodies: Query<&RigidBody, With<Piece>>,
     substep: Res<Time<Substeps>>,
     mut laws: ResMut<Laws>,
+    standing: Query<(), (With<Breakage>, Without<Piece>)>,
+    dynamic: Query<&RigidBody, Without<Piece>>,
 ) {
+    // TEMP DIAG: which contacts of a piece are soft: p piece, h other dynamic, s standing, g ground.
+    let scope = std::env::var("OVERMATCH_TMP_PIECE_SCOPE").unwrap_or("phsg".into());
     let mut spring = piece_spring(substep.delta_secs());
     // TEMP DIAG
     if let Some(hz) = std::env::var("OVERMATCH_TMP_PIECE_HZ")
@@ -64,7 +68,18 @@ fn soften_pieces(
         body.is_some_and(|body| bodies.get(body).is_ok_and(RigidBody::is_dynamic))
     };
     for pair in contacts.iter_active() {
-        if loose(pair.body1) || loose(pair.body2) {
+        let (a, b) = (loose(pair.body1), loose(pair.body2));
+        let other = if a { pair.body2 } else { pair.body1 };
+        let kind = if a && b {
+            'p'
+        } else if other.is_some_and(|o| standing.contains(o)) {
+            's'
+        } else if other.is_some_and(|o| dynamic.get(o).is_ok_and(RigidBody::is_dynamic)) {
+            'h'
+        } else {
+            'g'
+        };
+        if (a || b) && scope.contains(kind) {
             for manifold in 0..pair.manifolds.len() {
                 laws.tune(pair.contact_id, manifold, spring);
             }
@@ -115,8 +130,32 @@ fn diag(
         Without<Piece>,
     >,
     mut tick: Local<u32>,
+    spatial: avian3d::prelude::SpatialQuery,
+    mut seen: Local<bevy::platform::collections::HashMap<Entity, (f32, bool)>>,
+    info_of: Query<&Piece>,
 ) {
     *tick += 1;
+    for (e, at, v, _, _) in &pieces {
+        let filter = avian3d::prelude::SpatialQueryFilter::from_mask(Layer::Terrain);
+        let entry = seen.entry(e).or_insert_with(|| {
+            let ground = spatial
+                .cast_ray(at.0 + Vec3::Y * 60.0, Dir3::NEG_Y, 200.0, true, &filter)
+                .map_or(f32::NAN, |hit| at.0.y + 60.0 - hit.distance);
+            let cells = info_of.get(e).map_or(0, |p| p.chunks.len());
+            info!(
+                "BORN tick={} piece={:?} cells={} y={} ground={} vy={}",
+                *tick, e, cells, at.0.y, ground, v.0.y
+            );
+            (ground, false)
+        });
+        if !entry.1 && at.0.y < entry.0 - 1.5 {
+            entry.1 = true;
+            info!(
+                "FELL tick={} piece={:?} y={} ground={} v={:?}",
+                *tick, e, at.0.y, entry.0, v.0
+            );
+        }
+    }
     if *tick % 4 != 0 {
         return;
     }
