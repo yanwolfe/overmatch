@@ -132,16 +132,20 @@ fn diag(
     mut tick: Local<u32>,
     spatial: avian3d::prelude::SpatialQuery,
     mut seen: Local<bevy::platform::collections::HashMap<Entity, (f32, bool)>>,
-    info_of: Query<&Piece>,
+    info_of: Query<(&Piece, &Rotation, &avian3d::prelude::ComputedCenterOfMass)>,
 ) {
     *tick += 1;
     for (e, at, v, _, _) in &pieces {
+        let Ok((piece, rotation, centre)) = info_of.get(e) else {
+            continue;
+        };
+        let at = Position(at.0 + rotation.0 * centre.0);
         let filter = avian3d::prelude::SpatialQueryFilter::from_mask(Layer::Terrain);
         let entry = seen.entry(e).or_insert_with(|| {
             let ground = spatial
                 .cast_ray(at.0 + Vec3::Y * 60.0, Dir3::NEG_Y, 200.0, true, &filter)
                 .map_or(f32::NAN, |hit| at.0.y + 60.0 - hit.distance);
-            let cells = info_of.get(e).map_or(0, |p| p.chunks.len());
+            let cells = piece.chunks.len();
             info!(
                 "BORN tick={} piece={:?} cells={} y={} ground={} vy={}",
                 *tick, e, cells, at.0.y, ground, v.0.y
