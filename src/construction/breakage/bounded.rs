@@ -56,6 +56,7 @@ pub(crate) struct Block {
 #[derive(Resource, Default, Debug)]
 pub(crate) struct Pressed {
     blocks: Vec<Block>,
+    held: Vec<HeldRow>,
     /// Cells a belt over-pushed before the step, by owner.
     belts: Vec<(Entity, Vec<usize>)>,
 }
@@ -87,12 +88,38 @@ pub(crate) struct BlockRow {
     pub(crate) yielded: bool,
     /// The share of its give crossed after the step; one or more frees it.
     pub(crate) spent: f64,
+    /// The push, unit, in the owner's frame.
+    pub(crate) along: DVec3,
+    /// The push runs into the ground or buried matter.
+    pub(crate) grounded: bool,
+}
+
+/// Why pressed standing matter answers rigidly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Held {
+    /// A buried cell.
+    Buried,
+    /// An element that does not break.
+    Unbreakable,
+    /// No way to give is open along any push.
+    NoWay,
+}
+
+/// Standing matter one body pressed that the step left rigid, for the operator's instruments.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HeldRow {
+    pub(crate) body: Entity,
+    pub(crate) construction: u16,
+    /// Cells for [`Held::NoWay`], contact points otherwise.
+    pub(crate) cells: usize,
+    pub(crate) why: Held,
 }
 
 /// The last step's account, for headless witnesses and operator instruments.
 #[derive(Resource, Default, Debug)]
 pub(crate) struct BoundAccount {
     pub(crate) blocks: Vec<BlockRow>,
+    pub(crate) held: Vec<HeldRow>,
     /// Freed cells: construction and chunk.
     pub(crate) freed: Vec<(u16, u16)>,
     /// Freed fragments shed to the players as decoration.
@@ -208,7 +235,7 @@ fn pushes(velocity: DVec3, acceleration: DVec3, touches: &[&Touch]) -> Vec<Push>
 }
 
 /// One body's blocks on one owner, and the bounds of their points by contact and manifold.
-type Priced = (Vec<Block>, Vec<((u32, usize), (usize, Bound))>);
+type Priced = (Vec<Block>, Vec<((u32, usize), (usize, Bound))>, Vec<usize>);
 
 /// Prices the cells `body` presses on `root` at `touches` ([`bound_contacts`]).
 fn price(
@@ -237,7 +264,7 @@ fn price(
     let mut cells: Vec<usize> = touches.iter().map(|touch| touch.cell).collect();
     cells.sort_unstable();
     cells.dedup();
-    let (mut blocks, mut limits) = (Vec::new(), Vec::new());
+    let (mut blocks, mut limits, mut held) = (Vec::new(), Vec::new(), Vec::new());
     for cells in standing.connected(&cells) {
         let on: Vec<&Touch> = (touches.iter())
             .filter(|touch| cells.binary_search(&touch.cell).is_ok())
@@ -263,6 +290,7 @@ fn price(
             .filter_map(|&push| standing.give_along(&cells, push, spent, dt))
             .collect();
         if gives.is_empty() {
+            held.push(cells.len());
             continue; // No way is open: the cells hold whatever presses them.
         }
         let mut most = vec![Bound::RIGID; on.len()];
@@ -299,7 +327,7 @@ fn price(
             points,
         });
     }
-    (blocks, limits)
+    (blocks, limits, held)
 }
 
 /// Inside the physics step, between the narrow phase and the solver's constraints (module doc).
@@ -319,6 +347,8 @@ fn bound_contacts(
 ) {
     let _bound = Stages::start(stages.as_deref(), Stage::Bound);
     pressed.blocks.clear();
+    pressed.held.clear();
+    let mut rigid = BTreeMap::<(Entity, u16, Held), usize>::new();
     let dt = f64::from(time.delta_secs());
     let mut touches = BTreeMap::<Entity, BTreeMap<Entity, Vec<Touch>>>::new();
     let mut sizes = BTreeMap::new();
@@ -352,6 +382,17 @@ fn bound_contacts(
                             at: point.point,
                             into,
                         });
+                    } else {
+                        let why = match (chunk, element) {
+                            (None, Some(element))
+                                if owner.kind.layout.chunks_of(usize::from(element.0)).count()
+                                    == 0 =>
+                            {
+                                Held::Unbreakable
+                            }
+                            _ => Held::Buried,
+                        };
+                        *rigid.entry((body, owner.construction, why)).or_default() += 1;
                     }
                 }
             }
@@ -362,6 +403,7 @@ fn bound_contacts(
         let (_, position, rotation, mut owner) = owners
             .get_mut(root)
             .expect("the owner was read from this query");
+        let construction = owner.construction;
         // The gravity field is a cache of the state, not a change to it.
         let owner = owner.bypass_change_detection();
         let to_owner = owner.physics_frame((position, rotation)).rotation.inverse();
@@ -381,19 +423,34 @@ fn bound_contacts(
             (bodies.iter())
                 .map(|(body, touches)| {
                     let pair = (root, *body);
-                    price(
+                    let priced = price(
                         pair, touches, standing, to_owner, movers, gravity.0, give, dt,
-                    )
+                    );
+                    (*body, priced)
                 })
-                .collect::<Vec<Priced>>()
+                .collect::<Vec<(Entity, Priced)>>()
         });
-        for (blocks, points) in priced.into_iter().flatten() {
+        for (body, (blocks, points, held)) in priced.into_iter().flatten() {
+            pressed.held.extend(held.into_iter().map(|cells| HeldRow {
+                body,
+                construction,
+                cells,
+                why: Held::NoWay,
+            }));
             pressed.blocks.extend(blocks);
             for (manifold, point) in points {
                 limits.entry(manifold).or_default().push(point);
             }
         }
     }
+    pressed.held.extend(
+        (rigid.into_iter()).map(|((body, construction, why), cells)| HeldRow {
+            body,
+            construction,
+            cells,
+            why,
+        }),
+    );
     for ((contact, manifold), points) in limits {
         let mut each = vec![Bound::RIGID; sizes[&(contact, manifold)]];
         for (point, most) in points {
@@ -425,8 +482,13 @@ fn release(
     let _release = Stages::start(stages.as_deref(), Stage::Release);
     let dt = f64::from(fixed.timestep().as_secs_f32());
     let tick = clock.as_deref().map_or(0, |clock| clock.0.raw());
-    let Pressed { blocks, belts } = std::mem::take(&mut *pressed);
+    let Pressed {
+        blocks,
+        held,
+        belts,
+    } = std::mem::take(&mut *pressed);
     account.blocks.clear();
+    account.held = held;
     account.freed.clear();
     account.shed = 0;
     let mut kept = if keep.is_some() {
@@ -460,6 +522,7 @@ fn release(
             push,
             price,
             leaves,
+            grounded,
             ..
         } = (block.gives.into_iter())
             .min_by(|a, b| returned(a).total_cmp(&returned(b)))
@@ -484,6 +547,8 @@ fn release(
                 bound: impulse,
                 yielded,
                 spent,
+                along: push.along,
+                grounded,
             });
         }
         if spent >= 1.0 {

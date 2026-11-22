@@ -3,9 +3,12 @@
 //! server, a comma list, read once at install; its user is the relay measurement of
 //! `lane/bounded`, which deletes it when it reports.
 //!
-//! * always: `RELAY born`, each new piece (its centre against the ground under it, its volume),
-//!   `RELAY birth`, its deepest overlap with a driven body after its first step, `RELAY freed`,
-//!   the cells the bound law freed and what pressed them, and `RELAY hull` every fourth tick.
+//! * always: `RELAY born`, each new piece (its centre against the height grid under it, its
+//!   volume), `RELAY birth`, its deepest overlap with a driven body after its first step, `RELAY
+//!   sunk`, a piece whose centre first lies under the grid, `RELAY freed`, the cells the bound law
+//!   freed and what pressed them, `RELAY held`, the blocks no way was open for, `RELAY hull` every
+//!   fourth tick, `RELAY rest` every second (the deepest overlap by pair kind), and `RELAY site`
+//!   once (each construction's chunks against the grid).
 //! * `verdicts`: pressed pieces are judged read-only (`debris::crumble::PressVerdicts`).
 //! * `keep`: a cell's crossed give is never forgotten (`bounded::KeepGive`).
 //! * `pushout=<m/s>`: Avian's `max_overlap_solve_speed`.
@@ -15,7 +18,6 @@ use avian3d::prelude::*;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
-use crate::Layer;
 use crate::construction::breakage::bounded::{BoundAccount, KeepGive};
 use crate::construction::breakage::{Breakage, Piece};
 use crate::debris::crumble::PressVerdicts;
@@ -72,8 +74,10 @@ fn read(
     pieces: Pieces,
     driven: Query<(&RigidBody, &Position, &LinearVelocity, &ComputedMass), Without<Piece>>,
     account: Res<BoundAccount>,
-    spatial: SpatialQuery,
+    grid: Option<Res<crate::terrain_grid::HeightGrid>>,
+    standing: Query<(&Breakage, &Position, &Rotation), Without<Piece>>,
     mut seen: Local<HashMap<Entity, u32>>,
+    mut sunk: Local<bevy::platform::collections::HashSet<Entity>>,
     mut tick: Local<u32>,
 ) {
     *tick += 1;
@@ -92,16 +96,53 @@ fn read(
             pieces.iter().len()
         );
     }
+    // The height grid is the ground: a ray on `Layer::Terrain` meets standing elements first.
+    let ground = |at: Vec3| (grid.as_deref()).map_or(f32::NAN, |grid| grid.height_at(at.x, at.z));
+    if tick == 1 {
+        for (owner, position, rotation) in &standing {
+            let pose = owner.physics_frame((position, rotation));
+            let chunks = &owner.live.structure.chunks;
+            let under = |c: usize| {
+                (owner.kind.layout.blocks[c].points.iter()).all(|&point| {
+                    let world = pose.transform_point(point);
+                    world.y <= ground(world)
+                })
+            };
+            let unburied_under = (0..chunks.len())
+                .filter(|&c| !chunks[c].buried && under(c))
+                .count();
+            let buried_above = (0..chunks.len())
+                .filter(|&c| chunks[c].buried && !under(c))
+                .count();
+            if unburied_under + buried_above > 0 {
+                info!(
+                    "RELAY site con={} chunks={} buried={} unburied_under_ground={unburied_under} buried_above_ground={buried_above} root_over_ground={}",
+                    owner.construction,
+                    chunks.len(),
+                    chunks.iter().filter(|chunk| chunk.buried).count(),
+                    pose.translation.y - ground(pose.translation),
+                );
+            }
+        }
+    }
     for (entity, piece, breakage, at, rotation, centre, velocity) in &pieces {
         let age = seen.entry(entity).or_insert(0);
         *age += 1;
+        let middle = at.0 + rotation.0 * centre.0;
+        if *age > 1 && middle.y < ground(middle) - 0.3 && sunk.insert(entity) {
+            info!(
+                "RELAY sunk tick={tick} piece={entity:?} age={} cells={} under_m={} v={:?} hull_at={:?}",
+                *age,
+                piece.chunks.len(),
+                ground(middle) - middle.y,
+                velocity.0,
+                hull.map(|(_, at, ..)| at.0 - middle),
+            );
+        }
         // A second after birth, with its mass properties computed: where it is now.
         if *age == 64 {
             let centre = at.0 + rotation.0 * centre.0;
-            let filter = SpatialQueryFilter::from_mask(Layer::Terrain);
-            let ground = spatial
-                .cast_ray(centre + Vec3::Y * 60.0, Dir3::NEG_Y, 200.0, true, &filter)
-                .map_or(f32::NAN, |hit| centre.y + 60.0 - hit.distance);
+            let ground = ground(centre);
             info!(
                 "RELAY later tick={tick} piece={entity:?} over_ground={} vy={}",
                 centre.y - ground,
@@ -110,10 +151,7 @@ fn read(
         }
         if *age == 1 {
             let centre = at.0 + rotation.0 * centre.0;
-            let filter = SpatialQueryFilter::from_mask(Layer::Terrain);
-            let ground = spatial
-                .cast_ray(centre + Vec3::Y * 60.0, Dir3::NEG_Y, 200.0, true, &filter)
-                .map_or(f32::NAN, |hit| centre.y + 60.0 - hit.distance);
+            let ground = ground(centre);
             let structure = &breakage.live.structure;
             let volume: f32 = (piece.chunks.iter())
                 .map(|&c| structure.chunks[usize::from(c)].volume)
@@ -152,6 +190,65 @@ fn read(
     }
     for (piece, deep) in deepest {
         info!("RELAY birth tick={tick} piece={piece:?} in_hull_m={deep} hull_v={speed}");
+    }
+    if tick % 64 == 0 {
+        // Deepest overlap by pair kind: piece on piece, on standing matter, on the ground, on a
+        // driven body; and a driven body on the ground.
+        let kind = |body: Entity| {
+            if pieces.contains(body) {
+                0
+            } else if standing.contains(body) {
+                1
+            } else if driven.get(body).is_ok_and(|(body, ..)| body.is_dynamic()) {
+                3
+            } else {
+                2
+            }
+        };
+        let mut deep = [0.0_f32; 5];
+        for pair in contacts.iter_active() {
+            let (Some(a), Some(b)) = (pair.body1, pair.body2) else {
+                continue;
+            };
+            let (a, b) = (kind(a).min(kind(b)), kind(a).max(kind(b)));
+            let slot = match (a, b) {
+                (0, 0) => 0,
+                (0, 1) => 1,
+                (0, 2) => 2,
+                (0, 3) => 3,
+                (2, 3) => 4,
+                _ => continue,
+            };
+            let most = (pair.manifolds.iter())
+                .flat_map(|manifold| &manifold.points)
+                .map(|point| point.penetration)
+                .fold(0.0, f32::max);
+            deep[slot] = deep[slot].max(most);
+        }
+        let speeds: Vec<f32> = pieces.iter().map(|piece| piece.6.0.length()).collect();
+        info!(
+            "RELAY rest tick={tick} pieces={} moving={} fastest={} deep_piece_piece={} deep_piece_standing={} deep_piece_ground={} deep_piece_driven={} deep_driven_ground={} under_ground={}",
+            speeds.len(),
+            speeds.iter().filter(|&&speed| speed > 0.05).count(),
+            speeds.iter().copied().fold(0.0, f32::max),
+            deep[0],
+            deep[1],
+            deep[2],
+            deep[3],
+            deep[4],
+            sunk.len(),
+        );
+    }
+    for held in &account.held {
+        if tick % 4 == 0 {
+            info!(
+                "RELAY held tick={tick} body={:?} piece={} cells={} why={:?}",
+                held.body,
+                pieces.contains(held.body),
+                held.cells,
+                held.why
+            );
+        }
     }
     if !account.freed.is_empty() {
         let rows: Vec<String> = (account.blocks.iter())

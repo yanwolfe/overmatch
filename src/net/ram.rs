@@ -271,6 +271,10 @@ struct BlockReadout {
     yielded: bool,
     /// The share of its give crossed; one frees it.
     spent: f32,
+    /// The push in the owner's frame, unit; y is up.
+    along: [f32; 3],
+    /// The push runs into the ground or buried matter.
+    grounded: bool,
 }
 
 /// Solver momentum into the hull along its forward over one step, N s, by the other body.
@@ -599,6 +603,8 @@ impl Hull<'_, '_> {
                     bound_ns: block.bound as f32,
                     yielded: block.yielded,
                     spent: block.spent as f32,
+                    along: block.along.as_vec3().to_array(),
+                    grounded: block.grounded,
                 })
                 .collect(),
             freed: self.bound.freed.len(),

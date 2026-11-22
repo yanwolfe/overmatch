@@ -125,6 +125,8 @@ pub(crate) struct Yield {
     pub impulse: f64,
     /// The cells that leave if it gives, ordered.
     pub leaves: Vec<usize>,
+    /// The push runs into the ground or buried matter ([`Plug::grounded`]).
+    pub grounded: bool,
 }
 
 /// The matter one push moves: the pressed cells and every cell behind them along it.
@@ -376,6 +378,7 @@ impl Standing<'_> {
                     price,
                     impulse,
                     leaves,
+                    grounded: plug.grounded,
                 });
             }
         }
