@@ -4748,15 +4748,18 @@ fn staged_members_leave_from_the_back_and_the_rest_keep_their_order() {
 }
 
 /// THE SOIL HOLDS WHAT THE GROUND COVERS. A chunk of a placed construction is buried exactly
-/// when the ground under it covers every corner of it. The contact law relies on it (a buried
-/// cell is never pressed, `bounded::cell`; a push that runs into one is grounded,
-/// `fracture::bound::Standing::plug`), and so does the support solve (a buried chunk is a fixed
-/// part). Fixture: the shipped house on ground rising 0.25 m per metre along world x through its
-/// root, read against the same plane stated analytically. Judging against the frame's grade
-/// instead leaves the uphill chunks the slope covers unburied and the downhill foundation it
-/// bares buried. A bared chunk stays held: every chunk is still joined to a buried one or to a
-/// ground joint (the support check would otherwise drop it at spawn); a siting that took the
-/// ground joints of the chunks it bares would strand them.
+/// when the ground under it covers its centroid. The contact law relies on it (a buried cell is
+/// never pressed, `bounded::cell`; a push that runs into one is grounded,
+/// `fracture::bound::Standing::plug`), so does the support solve (a buried chunk is a fixed
+/// part), and so does every freed body: the terrain is a surface with nothing under it, which
+/// answers a body only while the body's shorter way out is up, so a chunk freed with its centroid
+/// under the ground falls through. Fixture: the shipped house on ground rising 0.25 m per metre
+/// along world x through its root, read against the same plane stated analytically. Judging
+/// against the frame's grade instead leaves the uphill chunks the slope covers unburied and the
+/// downhill foundation it bares buried; judging corner for corner frees the chunks the slope
+/// cuts through below their centroid. A bared chunk stays held: every chunk is still joined to a
+/// buried one or to a ground joint (the support check would otherwise drop it at spawn); a
+/// siting that took the ground joints of the chunks it bares would strand them.
 #[test]
 fn the_ground_under_a_placed_construction_buries_what_it_covers() {
     const RISE: f32 = 0.25;
@@ -4773,27 +4776,32 @@ fn the_ground_under_a_placed_construction_buries_what_it_covers() {
     let pose = Isometry3d::new(at.with_y(RISE * at.x), Quat::from_rotation_y(0.4));
     let sited = Breakage::sited(kind.clone(), 0, Site::Terrain(&grid, pose));
     let level = Breakage::new(kind.clone(), 0);
-    let (mut covered, mut bared) = (0, 0);
+    let (mut covered, mut bared, mut cut) = (0, 0, 0);
     for (c, block) in kind.layout.blocks.iter().enumerate() {
-        // Resolution: a corner within a millimetre of the plane is either side of the grid's
+        let over = |point: Vec3| {
+            let world = pose * point;
+            world.y - RISE * world.x
+        };
+        let height = over(kind.structure.chunks[c].centroid);
+        // Resolution: a centroid within a millimetre of the plane is either side of the grid's
         // triangle arithmetic; the fixture's chunks are judged by the rest.
-        let heights: Vec<f32> = (block.points.iter())
-            .map(|&corner| {
-                let world = pose * corner;
-                world.y - RISE * world.x
-            })
-            .collect();
-        if heights.iter().any(|height| height.abs() < 1e-3) {
+        if height.abs() < 1e-3 {
             continue;
         }
-        let under = heights.iter().all(|&height| height < 0.0);
+        let under = height < 0.0;
         assert_eq!(
             sited.live.structure.chunks[c].buried, under,
-            "chunk {c}, corners {heights:?} m over the ground"
+            "chunk {c}, centroid {height} m over the ground"
         );
         covered += usize::from(under && !level.live.structure.chunks[c].buried);
         bared += usize::from(!under && level.live.structure.chunks[c].buried);
+        cut += usize::from(under && block.points.iter().any(|&corner| over(corner) > 0.0));
     }
+    assert!(
+        cut > 0,
+        "the slope must cut through a chunk below its centroid, or the fixture cannot tell the \
+         centroid from the corners"
+    );
     assert!(
         covered > 0 && bared > 0,
         "the slope must differ from level ground both ways: covered {covered}, bared {bared}"
