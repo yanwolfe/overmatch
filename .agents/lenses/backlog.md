@@ -25,8 +25,7 @@ This file only shrinks, and a closed row is deleted, never struck through.
 | net-13 | P3 | `scripts/perf/collapse.py::ram_summary` | error-handling: Invented default | An impact row with no plan reads admitted speeds as `(0, None)` and admits unseen. | Raise "impact without a plan". | ratchet |
 | net-14 | P3 | `src/net/harness.rs::Drive::Ram` | error-handling: Invented default | `hold_m_s: Option<f32>` means an omitted field parses as full throttle. | A required two-variant field (`Full` / `Hold(f32)`). | ratchet |
 | net-15 | P3 | `src/net/ram.rs`, `scripts/perf/collapse.md`, `scripts/perf/proving.py`, `assets/maps/kalinovo/prototypes.ron` | brevity: Stale or repeated | `ram.rs:1` says "full-speed" though Rest and Held exist; its unknown-field test keeps retired names `runup_margin` and `drive_s` as arms; `prototypes.ron` cites `scripts/perf/proving/`, which does not exist; `collapse.md` restates 0.5 m/s beside its pointer to `HOLD_BAND_M_S` and omits the board wall's `at_most_m_s`; `proving.py` holds a fourth copy of port 5888. | Fix each line; export the port from `collapse`. | ratchet |
-| net-16 | P3 | `src/net/harness.rs::Drive::Ram` | testing: Unrepeatable instrument | A held-speed scripted client computes its throttle from the replicated speed, so the demand follows arrival timing and held-speed ram passes do not repeat run to run (governed passes do, bit for bit). | Hold the speed on the authority, or state the passes' run-to-run spread beside their readings. | ratchet |
-
+| net-16 | P3 | `src/net/harness.rs::Drive::Ram` | testing: Substituted composition | A held-speed scripted client computes its throttle from the replicated speed, so the demand follows arrival timing and held-speed ram passes do not repeat run to run (governed passes do, bit for bit). | Hold the speed on the authority, or state the passes' run-to-run spread beside their readings. | ratchet |
 
 ## view
 
@@ -34,7 +33,6 @@ This file only shrinks, and a closed row is deleted, never struck through.
 |---|---|---|---|---|---|---|
 | view-26 | P2 | `src/construction/view.rs::run`; `ElementLook::of` | base-truths: Inferred construction | An element's run is guessed as its hull's longest level edge and its depth as run × Y, its leaves counted from the face that edge's sign picks, so an element narrower than its wall is thick swaps run and depth (none shipped: the narrowest brick pier is 0.55 m against a 0.25 m wall). | Bake each element's run into the construction asset and read it in the view (a FORMAT bump and a re-bake of every construction). | ratchet |
 | view-27 | P3 | `src/construction/view/relief.rs::tests::assert_drawn` | testing: Tolerance without a derivation | The mesh check lets a fan triangle of a straight run turn away by up to twice the rounding allowance; the factor is an estimate, so a real inside-out triangle within it would pass. | Derive the bound from how far a fan's apex can sit from its chord under `Relief::rounding`, or assert the fan's triangles by construction instead of by turn. | ratchet |
-
 
 ## dev
 
@@ -45,7 +43,6 @@ This file only shrinks, and a closed row is deleted, never struck through.
 | dev-19 | P3 | `scripts/hooks/pushed_assets.sh::assets_push_targets` | code-branching: Kept alternative | The retired pre-push selection and hydration route stays implemented and tested with no production caller; CI uses the range route. | Delete the route, its exclusive helpers and test arms; keep the shared predicates and CI-range evidence. | ratchet |
 | dev-20 | P3 | `scripts/tank/trio.py::coherence` | brevity: Repeated why | The inline paragraph repeats the docstring's reason that hashes exclude certificate-body claims and verification checks constructive laws. | Delete the inline paragraph; net 4 lines (DERIVED). | ratchet |
 | dev-23 | P3 | `src/headless_test.rs` (`OVERMATCH_THROW_VARIANT`); `src/headless_test/track_scorecard/rubble_climb.rs` (`RUBBLE_CLIMB_ONLY`, `RUBBLE_CLIMB_TAG`) | code-branching: Switch without a user | Three environment switches name no player, operator, hosting contract or tracked script that sets them. | Name each one's tracked user beside it, or delete it with its arms. | ratchet |
-
 
 ## destruction
 
@@ -60,7 +57,6 @@ This file only shrinks, and a closed row is deleted, never struck through.
 | destruction-08 | P3 | `src/construction/breakage/bounded.rs::bound_contacts`; `bound_belts`; `per_owner` | testing: Unwitnessed arm | Nothing witnesses that pricing is independent of worker assignment; `breakage/tests.rs::owner_laws_and_prepared_groups_do_not_depend_on_worker_assignment` covers `evaluate_owner` only, and the compute pool is one global, so a witness needs the pool passed in. | Pass the pool to `per_owner` and compare one, two and many threads over two pressed owners. | ratchet |
 | destruction-09 | P3 | `src/avian_ext/reaction_bound.rs::Bounds::group`; `shares` | code-branching: Kept alternative | The work-only bound (an infinite impulse with a finite work) has no game writer: only the fork guard `src/tests/avian_reaction_bound.rs` hands one over. | Delete the arm and its guard case, or name the game writer that needs it. | ratchet |
 | destruction-10 | P3 | `assets/maps/kalinovo` placements; `src/construction/breakage.rs::Site` | base-truths: Missing truth | 161 of 5,732 ground joints (MEASURED at the lane's checkpoint 5) lie over the terrain by up to 0.46 m where a slope drops below a foundation plane: the joint holds its chunk to ground that is not there. | Carry a foundation down to the terrain at placement, or refuse a placement whose ground joints stand clear of the ground. | ratchet |
-
 
 ## ballistics
 
