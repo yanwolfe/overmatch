@@ -48,8 +48,36 @@ pub(crate) struct Block {
     arm: Vec3,
     /// The world's rotation into the owner's frame at the step's start.
     to_owner: Quat,
-    /// Its bounded points: contact pair, manifold, point.
-    points: Vec<(u32, usize, usize)>,
+    /// Its bounded points: contact pair, manifold and point; the point's normal into the cell
+    /// in the owner's frame; and the impulse it carried into this step.
+    points: Vec<((u32, usize, usize), DVec3, f64)>,
+}
+
+/// Resolution: the share of a block's bound its points split equally, whatever each carried last
+/// step, so a point that takes load this step answers within it; the rest follows last step's
+/// load. A block has yielded when the points at their bound hold the rest between them: its
+/// loaded points all returned what its bonds allow.
+const EVEN_SHARE: f64 = 0.25;
+
+/// Each point's share of a block's bound among the points leaning along a push (`leans` and
+/// `loads` point for point): zero for a point that does not lean that way.
+fn shares(leans: &[f64], loads: &[f64]) -> Vec<f64> {
+    let leaning = leans.iter().filter(|&&lean| lean > 0.0).count() as f64;
+    let carried: f64 = (leans.iter().zip(loads))
+        .filter(|&(&lean, _)| lean > 0.0)
+        .map(|(_, &load)| load)
+        .sum();
+    (leans.iter().zip(loads))
+        .map(|(&lean, &load)| {
+            if lean <= 0.0 {
+                0.0
+            } else if carried > 0.0 {
+                EVEN_SHARE / leaning + (1.0 - EVEN_SHARE) * load / carried
+            } else {
+                1.0 / leaning
+            }
+        })
+        .collect()
 }
 
 /// The blocks the last physics step bounded; [`release`] takes them.
@@ -71,6 +99,11 @@ pub(crate) struct Give(BTreeMap<(Entity, usize), f64>);
 #[derive(Resource)]
 pub(crate) struct KeepGive;
 
+/// The ram instrument's relay arm (`net::ram::relay`): while present, a joint the push closes
+/// resists a sideways shed with nothing ([`Standing::bare`]).
+#[derive(Resource)]
+pub(crate) struct BareShed;
+
 /// One block's step, for the operator's instruments.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BlockRow {
@@ -84,7 +117,7 @@ pub(crate) struct BlockRow {
     pub(crate) closing: f64,
     /// The most the block returned along the push, N·s.
     pub(crate) bound: f64,
-    /// A point ended the step at its bound: the block did not stop the body.
+    /// Its loaded points ended the step at their bounds: the block did not stop the body.
     pub(crate) yielded: bool,
     /// The share of its give crossed after the step; one or more frees it.
     pub(crate) spent: f64,
@@ -203,6 +236,8 @@ struct Touch {
     at: Vec3,
     /// Unit, from the body into the cell, in the owner's frame.
     into: DVec3,
+    /// The normal impulse the point carried into this step (the solver's warm start), N·s.
+    load: f64,
 }
 
 /// The ways a body moving at `velocity` under `acceleration` (both in the owner's frame) pushes
@@ -281,9 +316,9 @@ fn price(
             (to_owner * acceleration).as_dvec3(),
             &on,
         );
-        // Every push bounds the points that lean its way, each by an equal share of what the
-        // cells hold and of the work they take before they let go; a point takes the least of
-        // each, which is the cheapest way at whatever speed the solve finds the body closing:
+        // Every push bounds the points that lean its way, each by its share ([`shares`]) of what
+        // the cells hold and of the work they take before they let go; a point takes the least
+        // of each, which is the cheapest way at whatever speed the solve finds the body closing:
         // min over ways of min(F dt, W / v) is min(least F dt, least W / v).
         let gives: Vec<Yield> = (pushes.iter())
             .filter(|push| push.lean > 0.0)
@@ -293,18 +328,19 @@ fn price(
             held.push(cells.len());
             continue; // No way is open: the cells hold whatever presses them.
         }
+        let loads: Vec<f64> = on.iter().map(|touch| touch.load).collect();
         let mut most = vec![Bound::RIGID; on.len()];
         for given in &gives {
             let leans: Vec<f64> = (on.iter())
                 .map(|touch| touch.into.dot(given.push.along))
                 .collect();
-            let sharing = leans.iter().filter(|&&lean| lean > 0.0).count() as f64;
-            let work = (1.0 - spent) * given.price.work / sharing;
-            for (most, lean) in most.iter_mut().zip(leans) {
+            let shares = shares(&leans, &loads);
+            let work = (1.0 - spent) * given.price.work;
+            for ((most, lean), share) in most.iter_mut().zip(leans).zip(shares) {
                 if lean > 0.0 {
-                    let impulse = given.price.force * dt / (sharing * lean);
+                    let impulse = given.price.force * dt * share / lean;
                     most.impulse = most.impulse.min(impulse as f32);
-                    most.work = most.work.min(work as f32);
+                    most.work = most.work.min((work * share) as f32);
                 }
             }
         }
@@ -313,7 +349,7 @@ fn price(
             if most != Bound::RIGID {
                 let (contact, manifold, point) = touch.point;
                 limits.push(((contact, manifold), (point, most)));
-                points.push(touch.point);
+                points.push((touch.point, touch.into, touch.load));
             }
         }
         blocks.push(Block {
@@ -344,6 +380,7 @@ fn bound_contacts(
     mut bounds: ResMut<Bounds>,
     mut pressed: ResMut<Pressed>,
     stages: Option<Res<Stages>>,
+    bare: Option<Res<BareShed>>,
 ) {
     let _bound = Stages::start(stages.as_deref(), Stage::Bound);
     pressed.blocks.clear();
@@ -381,6 +418,7 @@ fn bound_contacts(
                             cell,
                             at: point.point,
                             into,
+                            load: f64::from(point.warm_start_normal_impulse),
                         });
                     } else {
                         let why = match (chunk, element) {
@@ -412,10 +450,10 @@ fn bound_contacts(
             structure: &live.structure,
             state: &live.state,
             shapes: &owner.kind.layout.blocks,
-            faces: &owner.kind.bound,
             preload: live
                 .gravity
                 .get(&live.structure, &live.state, &live.assessment),
+            bare: bare.is_some(),
         };
         let bodies: Vec<(Entity, Vec<Touch>)> = bodies.into_iter().collect();
         let (movers, give) = (&movers, &*give);
@@ -501,11 +539,6 @@ fn release(
         leaving.entry(root).or_default().extend(cells);
     }
     for block in blocks {
-        let yielded = block.points.iter().any(|&(contact, manifold, point)| {
-            bounds
-                .held(ContactId(contact), manifold)
-                .is_some_and(|held| held[point])
-        });
         // What the body crossed is how far the step moved it into the cells: its speed as the
         // solve left it, which a third body pushing it inside the step made. The way that gave
         // is the one that returns least at that speed.
@@ -529,6 +562,20 @@ fn release(
             .expect("a block holds a way to give");
         let closing = velocity.dot(push.along);
         let impulse = reaction(price, block.spent, closing, dt);
+        let leans: Vec<f64> = (block.points.iter())
+            .map(|(_, into, _)| into.dot(push.along))
+            .collect();
+        let loads: Vec<f64> = block.points.iter().map(|&(_, _, load)| load).collect();
+        let at_bound: f64 = (block.points.iter())
+            .zip(shares(&leans, &loads))
+            .filter(|&(&((contact, manifold, point), ..), _)| {
+                bounds
+                    .held(ContactId(contact), manifold)
+                    .is_some_and(|held| held[point])
+            })
+            .map(|(_, share)| share)
+            .sum();
+        let yielded = at_bound >= 1.0 - EVEN_SHARE;
         let spent = if yielded {
             block.spent + crossed(price, closing, dt)
         } else if keep.is_some() {
@@ -612,6 +659,7 @@ fn bound_belts(
     mut pressed: ResMut<Pressed>,
     mut account: ResMut<BoundAccount>,
     stages: Option<Res<Stages>>,
+    bare: Option<Res<BareShed>>,
 ) {
     let _bound = Stages::start(stages.as_deref(), Stage::Bound);
     account.capped_belts.clear();
@@ -651,10 +699,10 @@ fn bound_belts(
             structure: &live.structure,
             state: &live.state,
             shapes: &owner.kind.layout.blocks,
-            faces: &owner.kind.bound,
             preload: live
                 .gravity
                 .get(&live.structure, &live.state, &live.assessment),
+            bare: bare.is_some(),
         };
         for cells in standing.connected(&cells) {
             let on: Vec<_> = (forces.iter())

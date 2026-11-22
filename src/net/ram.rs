@@ -595,7 +595,7 @@ impl Hull<'_, '_> {
                     cells: block.cells,
                     way: match block.way {
                         Way::ShearOut => "shear_out",
-                        Way::Crush => "crush",
+                        Way::Shed => "shed",
                     },
                     force_n: block.price[0] as f32,
                     work_j: block.price[1] as f32,

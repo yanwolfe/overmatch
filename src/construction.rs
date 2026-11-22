@@ -75,8 +75,6 @@ pub(crate) struct ConstructionKind {
     structure: Arc<fracture::Structure>,
     pub(crate) equilibrium: Arc<fracture::parts::Assessment>,
     pub(crate) sweep: sweep::Geometry,
-    /// Each chunk's faces and the joints on them, for the contact law.
-    pub(crate) bound: fracture::bound::Faces,
 }
 
 impl ConstructionKind {
@@ -150,7 +148,6 @@ impl ConstructionKind {
         let equilibrium = Arc::new(fracture::parts::Assessment::at_rest(&structure));
         let kind = Self {
             sweep: sweep::Geometry::new(&layout.blocks, &structure)?,
-            bound: fracture::bound::Faces::new(&layout.blocks, &structure),
             dressing: view::Dressing::bare(&layout)?,
             asset,
             materials,

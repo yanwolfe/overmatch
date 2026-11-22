@@ -11,6 +11,7 @@
 //!   once (each construction's chunks against the grid).
 //! * `verdicts`: pressed pieces are judged read-only (`debris::crumble::PressVerdicts`).
 //! * `keep`: a cell's crossed give is never forgotten (`bounded::KeepGive`).
+//! * `bare`: a joint the push closes resists a sideways shed with nothing (`bounded::BareShed`).
 //! * `pushout=<m/s>`: Avian's `max_overlap_solve_speed`.
 
 use avian3d::dynamics::solver::SolverConfig;
@@ -18,7 +19,7 @@ use avian3d::prelude::*;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
-use crate::construction::breakage::bounded::{BoundAccount, KeepGive};
+use crate::construction::breakage::bounded::{BareShed, BoundAccount, KeepGive};
 use crate::construction::breakage::{Breakage, Piece};
 use crate::debris::crumble::PressVerdicts;
 
@@ -37,6 +38,9 @@ pub(super) fn install(app: &mut App) {
             _ if word == "keep" => {
                 app.insert_resource(KeepGive);
             }
+            _ if word == "bare" => {
+                app.insert_resource(BareShed);
+            }
             Some(("pushout", speed)) => {
                 let speed: f32 = speed
                     .parse()
@@ -45,7 +49,9 @@ pub(super) fn install(app: &mut App) {
                     .resource_mut::<SolverConfig>()
                     .max_overlap_solve_speed = speed;
             }
-            _ => panic!("{LEVER}: unknown word {word:?}; use log, verdicts, keep, pushout=<m/s>"),
+            _ => panic!(
+                "{LEVER}: unknown word {word:?}; use log, verdicts, keep, bare, pushout=<m/s>"
+            ),
         }
     }
     app.add_systems(

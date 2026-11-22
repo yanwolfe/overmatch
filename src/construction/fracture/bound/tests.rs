@@ -12,7 +12,8 @@ struct Wall {
     kind: Arc<ConstructionKind>,
     state: State,
     preload: Vec<f64>,
-    faces: Faces,
+    /// The instrument's arm ([`Standing::bare`]).
+    bare: bool,
 }
 
 impl Wall {
@@ -24,12 +25,11 @@ impl Wall {
         let preload = Gravity::default()
             .get(&kind.structure, &state, &kind.equilibrium)
             .to_vec();
-        let faces = Faces::new(&kind.layout.blocks, &kind.structure);
         Self {
             kind,
             state,
             preload,
-            faces,
+            bare: false,
         }
     }
 
@@ -38,8 +38,8 @@ impl Wall {
             structure: &self.kind.structure,
             state: &self.state,
             shapes: &self.kind.layout.blocks,
-            faces: &self.faces,
             preload: &self.preload,
+            bare: self.bare,
         }
     }
 
@@ -112,35 +112,6 @@ fn a_backed_block_leaves_through_the_free_face_behind_it() {
     );
 }
 
-/// Invariant: a pressed cell with standing wall on every other face must be compacted, and one
-/// with a side open (or giving way with it) splits, each at its material row's own energy.
-/// Relied on by a thick mass stopping what a thin wall cannot. Mutant: the two swapped.
-#[test]
-fn a_boxed_in_cell_costs_its_compaction_and_an_open_one_its_splitting() {
-    let wall = Wall::new(Vec3::splat(1.5), [3, 3, 3]);
-    let standing = wall.standing();
-    let material = wall.kind.structure.chunks[0].material;
-    let (strength, volume) = (material.compressive_strength, 0.125);
-    let work = |pressed: Vec<usize>| {
-        let plug = standing.plug(&pressed, THROUGH);
-        assert!(plug.cells.len() > pressed.len(), "the mass backs them");
-        standing.crush(&pressed, &plug, THROUGH).unwrap().work / pressed.len() as f64
-    };
-    // The middle cell of the entered face, and that whole face.
-    let boxed = work(vec![4]);
-    let open = work((0..9).collect());
-    let compaction = strength * f64::from(material.compaction.lock_up) * volume;
-    let splitting = strength * strength / (2.0 * material.young) * volume;
-    assert!(
-        close(boxed, compaction, 1e-6) && close(open, splitting, 1e-6),
-        "boxed in {boxed} J against {compaction}; open {open} J against {splitting}"
-    );
-    assert!(
-        compaction > 10.0 * splitting,
-        "the rows make boxing in dear"
-    );
-}
-
 /// Invariant: a cell returns its strength for no longer than a body takes to cross its give, so
 /// what a fast body loses to it is `W / v` whatever the step, and what a slow one loses is
 /// `F dt`. Relied on by the tick-rate independence of a ram. Mutant: `F dt` alone (the fast
@@ -176,36 +147,84 @@ fn a_cell_returns_its_strength_for_no_longer_than_its_give() {
     assert!(close(crossed(price, slow, dt), slow * dt / give, 1e-12));
 }
 
-/// Invariant: a push that runs into the ground shears nothing out, and a face slid along is not
-/// bounded, so a body resting on a wall is borne at the wall's crushing strength and a body
-/// passing along it is not held by it. Relied on by rubble at rest and by a hull grazing a wall.
-/// Mutant: the ground treated as a free face (the wall top prices at its seams).
+/// Invariant: a leaf pressed along its own length sheds the cells pressed, through its face, at
+/// a price that is theirs alone: no dearer for the wall that stands behind them along the push.
+/// Relied on by a body, or a piece a body pins, meeting a wall end-on (`breakage::bounded`).
+/// Mutants: the plug behind the cells priced (the longer wall dearer), or the cells shed along
+/// the wall (more than the pressed leave). Fixture: two walls, one twice the other's length.
 #[test]
-fn a_push_into_the_ground_crushes_or_holds() {
-    let wall = Wall::new(WALL, [16, 12, 1]);
-    let standing = wall.standing();
+fn a_leaf_pressed_along_its_length_sheds_the_pressed_cells_through_its_face() {
+    let end_on = DVec3::X;
+    let shed = |length: f32, cells: usize| {
+        let wall = Wall::new(WALL.with_x(length), [cells, 12, 1]);
+        let pressed = wall.within(
+            Vec3::new(-length / 2.0, 0.8, -1.0),
+            Vec3::new(-length / 2.0 + 0.25, 1.6, 1.0),
+        );
+        assert_eq!(pressed.len(), 4, "the end column's middle cells");
+        let standing = wall.standing();
+        let plug = standing.plug(&pressed, end_on);
+        assert_eq!(
+            plug.cells.len(),
+            pressed.len() * cells,
+            "their courses back them"
+        );
+        let through = standing.shear_out(&plug, end_on).unwrap();
+        let (price, leaves) = standing.shed(&pressed, end_on).unwrap();
+        assert_eq!(leaves, pressed);
+        assert!(price.force < through.force, "{price:?} against {through:?}");
+        price
+    };
+    let (short, long) = (shed(4.0, 16), shed(8.0, 32));
+    assert!(
+        close(short.force, long.force, 1e-6) && close(short.work, long.work, 1e-6),
+        "one price whatever stands behind: {short:?} against {long:?}"
+    );
+}
+
+/// Invariant: a push that runs into the ground shears nothing out; the cells it presses can
+/// only slide off sideways, and the joint the push closes holds them by its friction under the
+/// push itself, so they return at least what their joints hold over `1 − μ` (Coulomb; `μ` is
+/// the substance pair's). A face slid along is not bounded. Relied on by rubble and a hull
+/// borne on a wall, and by a hull grazing one. Mutants: the ground treated as a free face (the
+/// wall top prices at its seams), the closed joint carrying nothing (the top is shed at its
+/// head joints' price).
+#[test]
+fn a_push_into_the_ground_sheds_sideways_against_its_own_friction() {
+    let mut wall = Wall::new(WALL, [16, 12, 1]);
     let top = wall.within(Vec3::new(-0.5, 2.2, -1.0), Vec3::new(0.5, 2.4, 1.0));
     let down = Push {
         along: DVec3::NEG_Y,
         closing: 0.0,
         lean: 1.0,
     };
-    let plug = standing.plug(&top, down.along);
-    assert!(plug.grounded && plug.cells.len() == top.len() * 12);
-    assert_eq!(standing.shear_out(&plug, down.along), None);
     let dt = 1.0 / 64.0;
-    let given = standing.give(&top, &[down], 0.0, dt).unwrap();
     let material = wall.kind.structure.chunks[0].material;
-    assert_eq!(given.way, Way::Crush);
-    assert!(close(
-        given.price.force,
-        material.compressive_strength * 1.0 * 0.25,
-        1e-5
+    let friction = f64::from(crate::substances::pair_friction(
+        material.friction,
+        material.friction,
     ));
-    let along_the_face = Push {
-        along: DVec3::X,
-        closing: 5.0,
-        lean: 0.0,
+    assert!(friction < 1.0, "fixture: the pair slides");
+    let given = {
+        let standing = wall.standing();
+        let plug = standing.plug(&top, down.along);
+        assert!(plug.grounded && plug.cells.len() == top.len() * 12);
+        assert_eq!(standing.shear_out(&plug, down.along), None);
+        let along_the_face = Push {
+            along: DVec3::X,
+            closing: 5.0,
+            lean: 0.0,
+        };
+        assert_eq!(standing.give(&top, &[along_the_face], 0.0, dt), None);
+        standing.give(&top, &[down], 0.0, dt).unwrap()
     };
-    assert_eq!(standing.give(&top, &[along_the_face], 0.0, dt), None);
+    assert_eq!((given.way, &given.leaves), (Way::Shed, &top));
+    wall.bare = true;
+    let bare = wall.standing().give(&top, &[down], 0.0, dt).unwrap();
+    assert!(
+        given.price.force * (1.0 - friction) > bare.price.force,
+        "{:?} against the joints beside alone, {:?}, at friction {friction}",
+        given.price,
+        bare.price
+    );
 }

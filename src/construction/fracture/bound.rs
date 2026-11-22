@@ -11,47 +11,15 @@
 use bevy::math::{DVec3, Vec3};
 
 use super::bondsolve::{joint_normal, pair_friction};
-use super::{Block, Joint, Side, State, Structure, joint_face, silhouette};
+use super::{Block, Joint, Side, State, Structure};
 
 /// A neighbour is behind a cell along a push when the push closes their joint more than it
 /// slides along it. DERIVED: cos 45°, where the two modes of one rigid translation are equal.
 const BEHIND: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
-/// Per chunk, per face of its shape: the face and the joints lying on it, baked at admission.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Faces(Vec<Vec<Face>>);
-
-#[derive(Debug, Clone, PartialEq)]
-struct Face {
-    /// Outward unit normal and area, m².
-    plane: (Vec3, f32),
-    joints: Vec<usize>,
-}
-
-impl Faces {
-    pub(crate) fn new(shapes: &[Block], structure: &Structure) -> Self {
-        let mut faces: Vec<Vec<Face>> = (shapes.iter())
-            .map(|shape| {
-                (shape.face_areas().into_iter())
-                    .map(|plane| Face {
-                        plane,
-                        joints: Vec::new(),
-                    })
-                    .collect()
-            })
-            .collect();
-        for (j, joint) in structure.joints.iter().enumerate() {
-            let sides = [Some(joint.a), chunk(joint.b)];
-            for c in sides.into_iter().flatten() {
-                // A ground anchor may lie on no face (soil bearing a chunk's side): it covers none.
-                if let Some(face) = joint_face(&shapes[c], joint) {
-                    faces[c][face].joints.push(j);
-                }
-            }
-        }
-        Self(faces)
-    }
-}
+/// Resolution: two faces' sideways directions within about 8 degrees are one side to shed
+/// through (cos); baked faces of one wall plane differ by rounding only.
+const SAME_SIDE: f64 = 0.99;
 
 fn chunk(side: Side) -> Option<usize> {
     match side {
@@ -99,8 +67,9 @@ pub(crate) enum Way {
     /// The pressed cells and the matter behind them part from the rest at their boundary and
     /// leave through the free face behind.
     ShearOut,
-    /// The pressed cells are crushed against what backs them.
-    Crush,
+    /// The pressed cells, and the matter beside them, leave sideways through a free face the
+    /// push runs along: a leaf pressed along its own plane sheds its pressed layer.
+    Shed,
 }
 
 /// One direction a body pushes pressed cells in.
@@ -138,15 +107,17 @@ pub(crate) struct Plug {
     pub grounded: bool,
 }
 
-/// One structure as the law reads it: its graph and live state, its chunk shapes and their faces,
-/// and its gravity preload per joint (N, tension positive; `parts::Gravity`).
+/// One structure as the law reads it: its graph and live state, its chunk shapes, and its gravity
+/// preload per joint (N, tension positive; `parts::Gravity`).
 #[derive(Clone, Copy)]
 pub(crate) struct Standing<'a> {
     pub structure: &'a Structure,
     pub state: &'a State,
     pub shapes: &'a [Block],
-    pub faces: &'a Faces,
     pub preload: &'a [f64],
+    /// The ram instrument's arm (`net::ram::relay`, `bare`): a joint the push closes resists a
+    /// sideways shed with nothing.
+    pub bare: bool,
 }
 
 impl Standing<'_> {
@@ -239,12 +210,16 @@ impl Standing<'_> {
     /// preload (`bondsolve::JointStrength`), and spends its fracture energy. `None` when the push
     /// runs into the ground.
     pub(crate) fn shear_out(&self, plug: &Plug, along: DVec3) -> Option<Price> {
-        if plug.grounded {
-            return None;
-        }
+        (!plug.grounded).then(|| self.boundary(&plug.cells, along, None).0)
+    }
+
+    /// What `cells` (ordered) hold against leaving along `slide`, summed over the joints on
+    /// their boundary, and of those joints the ones a push along `push` closes: their area, m²,
+    /// and that area weighted by their friction.
+    fn boundary(&self, cells: &[usize], slide: DVec3, push: Option<DVec3>) -> (Price, f64, f64) {
         let reach =
-            |c: &usize| (self.shapes[*c].points.iter()).map(|point| point.as_dvec3().dot(along));
-        let (near, far) = (plug.cells.iter().flat_map(reach))
+            |c: &usize| (self.shapes[*c].points.iter()).map(|point| point.as_dvec3().dot(slide));
+        let (near, far) = (cells.iter().flat_map(reach))
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), at| {
                 (lo.min(at), hi.max(at))
             });
@@ -253,7 +228,8 @@ impl Standing<'_> {
             force: 0.0,
             work: 0.0,
         };
-        for &c in &plug.cells {
+        let (mut closed, mut rough) = (0.0, 0.0);
+        for &c in cells {
             for &j in &self.state.topology.incident[c] {
                 let joint = &self.structure.joints[j];
                 let across = if joint.a == c {
@@ -261,19 +237,26 @@ impl Standing<'_> {
                 } else {
                     Some(joint.a)
                 };
-                let internal = across.is_some_and(|d| plug.cells.binary_search(&d).is_ok());
+                let internal = across.is_some_and(|d| cells.binary_search(&d).is_ok());
                 if internal || !self.touching(j, joint) {
                     continue;
                 }
                 let normal = self.toward(joint, c);
                 let area = f64::from(joint.area);
+                if push.is_some_and(|push| -normal.dot(push) > BEHIND) {
+                    if self.bare {
+                        continue;
+                    }
+                    closed += area;
+                    rough += area * pair_friction(self.structure, joint);
+                }
                 let cracked = self.state.cracked[j];
-                // No bearing term: a boundary joint the push closes is slid along, and the
+                // No bearing term: a boundary joint the slide closes is slid along, and the
                 // closing part is borne by the matter behind it.
                 price.force += super::bondsolve::JointStrength::of(self.structure, joint, cracked)
-                    .translation_resistance(area, normal, along, self.preload[j], 0.0);
-                let opening = normal.dot(along).max(0.0);
-                let sliding = normal.cross(along).length();
+                    .translation_resistance(area, normal, slide, self.preload[j], 0.0);
+                let opening = normal.dot(slide).max(0.0);
+                let sliding = normal.cross(slide).length();
                 if let Some(seam) = joint.seam().filter(|_| !cracked) {
                     price.work += area
                         * (f64::from(seam.fracture_energy) * opening
@@ -281,69 +264,59 @@ impl Standing<'_> {
                 }
                 // StandIn for the grip of standing matter on a loosened plug, which the solver
                 // does not carry (a static neighbour bears on nothing): the preload's friction
-                // over the plug's depth along the push.
+                // over the plug's depth along the slide.
                 price.work += pair_friction(self.structure, joint)
                     * (-self.preload[j]).max(0.0)
                     * sliding
                     * depth;
             }
         }
-        Some(price)
+        (price, closed, rough)
     }
 
-    /// What `pressed` holds against being crushed `along` where they stand, backed by the rest of
-    /// `plug`: their compressive strength over the face they show the push. A cell with a free
-    /// side splits, for the elastic energy at crushing, `σ_c² / 2E` per volume (DERIVED; the
-    /// compressive fracture energy is `Unknown`, and a measured value would replace the form); a
-    /// cell boxed in must be compacted to lock-up, `σ_c ε_v` per volume (the blast law's
-    /// [`super::Compaction`] facts). `None` when nothing backs them.
-    pub(crate) fn crush(&self, pressed: &[usize], plug: &Plug, along: DVec3) -> Option<Price> {
-        if !plug.grounded && plug.cells.len() == pressed.len() {
-            return None;
-        }
-        let mut price = Price {
-            force: 0.0,
-            work: 0.0,
-        };
+    /// What `pressed` hold against being shed sideways by a push `along`, and the cells that
+    /// leave: over the directions the push slides a pressed cell's face along, the cheapest
+    /// whose matter can move (its plug is not grounded). The joints the push closes slide under
+    /// the push itself, so their friction grows with the reaction `P`: sliding starts at
+    /// `P = R + μ P`, `R` the boundary's resistance at its gravity preload and `μ` the closed
+    /// joints' friction, area-weighted (the push bears on them evenly): `P = R / (1 − μ)`
+    /// (exact, Coulomb). Closed joints at `μ ≥ 1` never slide. `None` when no side is open.
+    pub(crate) fn shed(&self, pressed: &[usize], along: DVec3) -> Option<(Price, Vec<usize>)> {
+        let mut sides: Vec<DVec3> = Vec::new();
         for &c in pressed {
-            let cell = &self.structure.chunks[c];
-            let strength = cell.material.bearing(along);
-            let planes: Vec<_> = self.faces.0[c].iter().map(|face| face.plane).collect();
-            price.force += strength * f64::from(silhouette(&planes, along.as_vec3()));
-            let per_volume = if self.boxed_in(pressed, c, along) {
-                strength * f64::from(cell.material.compaction.lock_up)
-            } else {
-                strength * strength / (2.0 * cell.material.young)
-            };
-            price.work += per_volume * f64::from(cell.volume);
-        }
-        Some(price)
-    }
-
-    /// Whether pressed cell `c` has nowhere to go: every face but the one the push enters by is
-    /// covered, over most of its area, by standing matter that is not itself pressed (a pressed
-    /// neighbour is giving way too and confines nothing).
-    fn boxed_in(&self, pressed: &[usize], c: usize, along: DVec3) -> bool {
-        self.faces.0[c].iter().all(|face| {
-            let (normal, area) = face.plane;
-            if -normal.as_dvec3().dot(along) > BEHIND {
-                return true; // The face the push enters by.
+            for &(normal, _) in &self.shapes[c].planes {
+                let normal = normal.as_dvec3();
+                if normal.dot(along).abs() >= BEHIND {
+                    continue; // The push closes or opens this face more than it slides along it.
+                }
+                let side = (normal - along * normal.dot(along)).normalize();
+                if !sides.iter().any(|known| known.dot(side) > SAME_SIDE) {
+                    sides.push(side);
+                }
             }
-            let covered: f32 = (face.joints.iter())
-                .map(|&j| (j, &self.structure.joints[j]))
-                .filter(|&(j, joint)| {
-                    let across = if joint.a == c {
-                        chunk(joint.b)
-                    } else {
-                        Some(joint.a)
-                    };
-                    self.touching(j, joint)
-                        && across.is_none_or(|d| pressed.binary_search(&d).is_err())
-                })
-                .map(|(_, joint)| joint.area)
-                .sum();
-            covered > 0.5 * area
-        })
+        }
+        let mut least: Option<(Price, Vec<usize>)> = None;
+        for side in sides {
+            let plug = self.plug(pressed, side);
+            if plug.grounded {
+                continue;
+            }
+            let (mut price, closed, rough) = self.boundary(&plug.cells, side, Some(along));
+            if closed > 0.0 {
+                let friction = rough / closed;
+                if friction >= 1.0 {
+                    continue;
+                }
+                price.force /= 1.0 - friction;
+            }
+            if least
+                .as_ref()
+                .is_none_or(|(least, _)| price.force < least.force)
+            {
+                least = Some((price, plug.cells));
+            }
+        }
+        least
     }
 
     /// How `pressed` (ordered) give to a body pushing them along `push`, `spent` of their give
@@ -357,28 +330,22 @@ impl Standing<'_> {
         dt: f64,
     ) -> Option<Yield> {
         let plug = self.plug(pressed, push.along);
+        let grounded = plug.grounded;
         let ways = [
-            (Way::ShearOut, self.shear_out(&plug, push.along)),
-            (Way::Crush, self.crush(pressed, &plug, push.along)),
+            (self.shear_out(&plug, push.along)).map(|price| (Way::ShearOut, price, plug.cells)),
+            (self.shed(pressed, push.along)).map(|(price, leaves)| (Way::Shed, price, leaves)),
         ];
         let mut least: Option<Yield> = None;
-        for (way, price) in ways {
-            let Some(price) = price else {
-                continue; // The way is closed this direction.
-            };
+        for (way, price, leaves) in ways.into_iter().flatten() {
             let impulse = reaction(price, spent, push.closing, dt);
             if least.as_ref().is_none_or(|least| impulse < least.impulse) {
-                let leaves = match way {
-                    Way::ShearOut => plug.cells.clone(),
-                    Way::Crush => pressed.to_vec(),
-                };
                 least = Some(Yield {
                     way,
                     push,
                     price,
                     impulse,
                     leaves,
-                    grounded: plug.grounded,
+                    grounded,
                 });
             }
         }
