@@ -112,15 +112,16 @@ pub fn contact_manifold_pfm_pfm<'a, ManifoldData, ContactData, S1, S2>(
                 false,
             );
 
+            // OVERMATCH PATCH: upstream keeps the closest-point pair only where the constraints
+            // left the direction bit-equal. Kept here: a direction unchanged within rounding,
+            // and a turned pair that overlaps (`dist`, the pair's own signed distance; touching,
+            // `dist == 0.0`, counts as a gap). A turned pair with a gap stays dropped: read
+            // along the corrected normal its gap shrinks by the cosine of the turn.
+            // `dir` and `local_n1` are finite unit vectors, so their dot is that cosine.
+            // Resolution: 1.0e-6, over the 1e-7 by which an f32 unit vector rotated into
+            // another frame and back differs from itself.
             if (cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty())
-                // If normal constraints changed the GJK direction, it is no longer valid so we cant use it for this additional contact.
-                // OVERMATCH PATCH: "changed" is judged within rounding, not bit for bit. The
-                // projection rewrites an unchanged direction (rotated into shape 2's frame and
-                // back, or replaced by the face normal it already equals), and a bitwise test
-                // then drops the deepest point of the pair. The bound admits a turn of up to
-                // 0.081 degrees (acos(1 - 1e-6)); the witness then reads its depth along the
-                // projected normal, off by at most 1e-6 of the pair's distance (1 - cos).
-                && local_n1.dot(dir) >= 1.0 - 1.0e-6
+                && (local_n1.dot(dir) >= 1.0 - 1.0e-6 || dist < 0.0)
             {
                 let contact = TrackedContact::new(
                     p1,
