@@ -949,3 +949,74 @@ Left `f3193ea8`, right the new build, labels burned in:
   thread cap without its own probe.
 - One run a pass except the wall at 10 km/h; the halls vary run to run.
 - Friction work on standing cells (the attack's 1c) was not read.
+
+# One budget: spent-budget mechanism
+
+Subject: the game's building model (game state only). Measurement only, code at `b6b776d5`; a
+temporary probe, never committed (kept at
+`.agents/scratch/rubble-explore/clips-work/instrument/budget/probe-mechanism-on-4060e8f0.patch`).
+Eight logged passes: hall long wall 20 km/h twice and 10 km/h, house long wall 10 and 20,
+hall junction 20, end-on lines 0 and +1. All numbers MEASURED unless marked. No timing.
+
+**Which holds: (a) in its cause, not in its letter.** A point's cut assumes only its own
+response, from a closing speed read in the middle of the pass, and that is what marks the
+budget spent. But the summed predictions pass the budget only at the moment of that point's
+solve: at the substep's end they are under it in every outlier. (b) does not hold.
+
+121 piece partings by a spent budget, every one with a cutting substep; 3 outside the
+allowance (one substep's work at the way's strength at the substep's fastest closing).
+
+| pass, tick | W J | points | budget at substep start J | summed predicted, substep end J | summed true J | allowance J | points cut in the last limiter call | cut impulses changed after | dynamic bodies touching | own energy along the push J |
+|---|---|---|---|---|---|---|---|---|---|---|
+| hall wall 20, 1417 | 10,194 | 84 | 8,023 | 4,301 | 1,650 | 3,665 | 9 | 0 | 45 | 0.00 |
+| hall wall 10, 1103 | 8,171 | 28 | 2,471 | 1,250 | 764 | 1,634 | 4 | 0 | 15 | 0.00 |
+| end-on +1, 1545 | 20.5 | 8 | 19.8 | 6.7 | 4.9 | 13.0 | 1 | 0 | 529 | 89 |
+
+1. **Per point.** The limiter runs twice a substep on each point (the biased solve, then the
+   relax solve). In the outliers the marking points were cut in the second call with a few
+   joules left for them (hall wall 20: 123, 70, 57, 49 J of an 8,023 J budget), and each
+   predicted exactly what was left for it. The closing speed after the substep that those cuts
+   assumed was 2.5 to 4.0 m/s; the true one was 0.1 to 0.6 m/s (before the substep 0.1 to
+   0.6 m/s). Their true work was 8 to 27 % of their prediction (9.2 J of 122.6, 19.0 of 70.0).
+   The points never cut predicted 300 J each and did 87 to 98 J. Over the 61 points with
+   impulse in the three rows, the assumed speed after less the true one: p50 +0.25 m/s, p90
+   +3.3 m/s. True over summed predicted: 0.38, 0.61, 0.73. Over the 118 inside the allowance:
+   p50 0.92, p10 0.39; 89 had the summed prediction at the budget at the substep's end, 29
+   under it.
+2. **The relax solve after the cut.** No marking cut was changed afterwards: the mark is set
+   only by a cut in the substep's last limiter call, and in the three outliers no cut point's
+   impulse differs between its cut and the substep's end. (In 39 of the 118 others a point cut
+   in the first call was changed by the second; those cuts do not mark.)
+3. **Pressed, and own energy.** All three bodies touched other dynamic bodies at the step's
+   start (15, 45 and 529 contact pairs); 119 of the 121 did. Two were at rest at the step's
+   start (kinetic energy 0.00 J) with 2,471 J and 8,023 J of budget; the third had 89 J along
+   the push (290 J in all, 2,397 kg) against 19.8 J. In 93 of the 121 the body's own energy
+   along the push was under the budget. The impulse those contacts carried was not read (the
+   contact graph holds none at the gather).
+4. **Negative cutting substeps.** The two of checkpoint 2 did not recur as outliers; 5
+   cutting substeps did negative work in this set, all inside the allowance. What turns is the
+   body: its points close at +0.00 to +0.19 m/s before the substep and separate at −0.4 to
+   −5.4 m/s after it. Hall wall 20, tick 1417, 237 kg, 15 points: six points carry about
+   152 N·s each and end at −2.3 to −5.4 m/s (−277, −415, −176, −208, −389, −201 J), one point
+   is cut in the last call at an assumed +13.4 m/s (true +5.3) and marks the budget; the
+   substep's work is −1,874 J on a budget of 850 J. End-on 0, tick 1493: the marking point
+   closes at +0.19 and leaves at −0.39 m/s, predicted +0.30 J, did −0.07 J.
+
+DERIVED from the rows: pairs between dynamic bodies are solved before pairs with standing
+cells, so inside a pass the pusher drives the piece's solver velocity to several m/s before
+the piece's other points on the block take it back; a point solved in between reads that
+speed, predicts work at it, finds the running tally at the budget and is cut with a positive
+remainder. The later points revise their predictions down, the tally ends under the budget,
+and the mark stays.
+
+**Where the latch would have to read from** (DERIVED, nothing built): `account` would set
+it from the substep's true work reaching the budget (the remainder at or under zero after the
+true work is taken), the cut left as it is; a body that keeps paying a shrinking remainder
+would then not part the block on a cut alone: each substep it does a share of what is left
+(median 0.92 here, 0.38 to 0.73 in the outliers), so the remainder falls by that share a
+substep and the block parts when the counted work reaches W, one or more steps later than
+now, with the body held at the block meanwhile.
+
+Not verified: the solve-order reading above (no row records the order of solves); the
+impulse the dynamic contacts carried; the two negative outliers of checkpoint 2 themselves
+(they did not recur); one run a pass, two for hall wall 20.
