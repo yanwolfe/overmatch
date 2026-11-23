@@ -55,9 +55,8 @@ impl Price {
 /// The work the bonds of `cells` have taken, J, `work` their structure's per chunk
 /// ([`Standing::work`]). Work is one scalar per cell, whoever did it and along whichever way:
 /// every way a block gives is charged with all of it, so a way may part on work done along
-/// another, or by another body. That is a simplification, and its cost is MEASURED on a wall, a
-/// house and a hall a 57 t hull drives through: of the cells that part, 12 to 30 % leave through
-/// a way whose own body added under a tenth of the work on it.
+/// another, or by another body. That is a simplification; its measured cost is in the design
+/// narrative (the module doc).
 pub(crate) fn taken(work: &[f64], cells: &[usize]) -> f64 {
     cells.iter().map(|&c| work[c]).sum()
 }
@@ -69,8 +68,8 @@ fn give_left(price: Price, taken: f64) -> f64 {
 }
 
 /// Whether a body closing at `closing` m/s on cells priced at `price` crosses the give they have
-/// left ([`give_left`]) within a step of `dt` s: the step then holds all the work the bonds can
-/// still take. Cells that hold nothing have no give to cross.
+/// left ([`give_left`]) within a step of `dt` s, if it keeps that speed. Cells that hold nothing
+/// have no give to cross.
 pub(crate) fn crosses(price: Price, taken: f64, closing: f64, dt: f64) -> bool {
     price.force > 0.0 && closing * dt > give_left(price, taken)
 }

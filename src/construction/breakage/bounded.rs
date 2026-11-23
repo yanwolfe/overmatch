@@ -1,8 +1,10 @@
 //! AUTHORITY: the game's building model meeting bodies (game state only). A standing cell returns
 //! a body no more than its bonds can ([`fracture::bound`]), and its bonds take the work the body
-//! does on it; when the work on a block reaches what a way of giving takes, the block is freed
-//! at rest and is ordinary rubble from the next step on. Nothing is predicted: the cells are the
-//! ones the narrow phase found pressed, and no rule reads which body presses.
+//! does on it; a block one of whose ways of giving is spent ([`settle`]) is freed at rest and is
+//! ordinary rubble from the next step on. Nothing is predicted: the cells are the ones the narrow
+//! phase found pressed, and no rule reads which dynamic body presses. A static or kinematic body
+//! is not read: the solver moves neither it nor a fixed owner, so their contact returns nothing
+//! to bound.
 //!
 //! * [`bound_contacts`], inside the physics step after the narrow phase: groups each body's
 //!   contact points on one construction into blocks of connected pressed cells, prices each
@@ -11,15 +13,12 @@
 //!   unbreakable element, a buried cell, a face slid along) stays rigid.
 //! * [`bound_belts`], before the step: the force a belt takes from standing matter, which has no
 //!   solver point, is bounded by the same price; the belt keeps what the cells can return.
-//! * [`release`], after the step: every point adds to its cell ([`Live::work`]) what it returned
-//!   times how fast its body advanced into the cell there, the mean of the step's start and
-//!   end; nothing removes it. A block leaves a way when its cells' work has reached the way's,
-//!   or when the step held all the work the way had left and still did not stop the body
-//!   ([`settle`]). Work is one number per cell, whoever did it ([`fracture::bound::taken`]).
+//! * [`release`], after the step: counts the step's work on each cell ([`Live::work`]) and frees
+//!   the blocks a way of which is spent ([`settle`]).
 //!
-//! One physics step runs between two [`release`]s: [`Pressed`] holds the step's solver point
-//! keys, and `Bounds` holds a step's impulses only until the next step clears them, so a second
-//! step before the release would leave [`Bounds::impulse`] no point to read, and it panics.
+//! One physics step runs between two [`release`]s: [`Pressed`] holds one step's points and group
+//! indices, and `Bounds` holds a step's impulses and groups only until the next step starts.
+//! [`bound_contacts`] asserts it.
 //!
 //! The support check hears none of this: a freed owner is queued for it as changed, and it reads
 //! weights alone.
@@ -91,7 +90,7 @@ struct Press {
     points: Vec<Point>,
     blocks: Vec<Block>,
     /// The cells (ordered) each belt bears on as one block, how they give to it, and whether
-    /// the belt pressed harder than they returned.
+    /// the belt pressed harder than the most they return ([`Yield::impulse`]).
     belts: Vec<(Vec<usize>, Yield, bool)>,
 }
 
@@ -112,9 +111,10 @@ pub(crate) struct BlockRow {
     pub(crate) price: [f64; 2],
     /// The body's speed along the push at the step's start, m/s.
     pub(crate) closing: f64,
-    /// The most the block returned along the push, N·s.
+    /// What the way's price returns along the push over a step at `closing`, N·s
+    /// ([`fracture::bound::reaction`]); the solver is dealt the way's strength and its work left.
     pub(crate) bound: f64,
-    /// The work its cells' bonds have taken after the step, J; the price's work frees it.
+    /// The work its cells' bonds have taken after the step, J.
     pub(crate) taken: f64,
     /// What its points returned along the push over the step, N·s.
     pub(crate) returned: f32,
@@ -597,13 +597,17 @@ struct Release<'w, 's> {
 /// on that mean did none.
 ///
 /// A block then leaves by the first of its ways, cheapest in work first, that is spent: its
-/// cells' work has reached the way's; or the body was crossing all the give the way had left
-/// within the step ([`Yield::crossing`]), so the step held every joule the bonds could still
-/// take, and the way did not stop it (`Bounds::limited`; a belt pressed harder than the cells
-/// returned). The solve rations that last work at its own closing speed, which the count above
-/// does not read, so the count alone lands under the way's work on every such step and never
-/// reaches it. The cells a block presses all leave with it, so that work has no cell left to be
-/// written on. Returns the contact blocks' rows and the cells that leave.
+/// cells' work has reached the way's; or the body took the last work the way dealt one of its
+/// points and kept closing. The second is two readings: at the step's start the body was
+/// closing on the block's mean pressed point fast enough to cross the give the way had left
+/// within the step ([`Yield::crossing`]), and the step's last solve left a point of the way
+/// holding an impulse at the work bound the way dealt it (`Bounds::limited`); a belt pressed
+/// harder than the ration that crossing left it. It holds no tolerance, and it is one point at
+/// the last substep, not a sum of the step's work. The solve rations a way's last work at its
+/// own closing speed, which the count above does not read, so the count alone lands under the
+/// way's work on every such step and never reaches it. The cells a block presses all leave with
+/// it, so the work not counted has no cell left to be written on. Returns the contact blocks'
+/// rows and the cells that leave.
 fn settle(
     work: &mut [f64],
     press: &Press,

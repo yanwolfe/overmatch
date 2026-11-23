@@ -50,22 +50,30 @@ returned times the body's speed into the cell there, the mean of the step's star
 step's forces) and its end, negatives adding nothing. For a force constant over the step that is
 the work it did (DERIVED: the speed is then linear in time), so a body stopped inside one step
 is charged half its entry speed times the impulse, and a body held or resting is charged nothing.
-Nothing removes the work: it is kept per cell on the construction (`Live::work`) and leaves with
-the cell.
+Nothing removes the work while the cell stands: it is kept per cell on the construction
+(`Live::work`), and a cell that leaves carries none as a piece.
 
 A way of a block is spent, cheapest in work first, when the work on the block's cells has
-reached the way's, or when the step held all the work the way had left and still did not stop
-the body: the body was crossing the give left within the step, and the solve left a point at the
-bound that way dealt it. The second clause is exact, not a tolerance. The solve rations the
-last work at its own closing speed and the count reads another, so without it the count closes
-on `W` from below and never arrives: cells stood for a median 8 steps at 10 km/h inside a hull
-they returned nothing to, and the hull sank 0.11 to 0.25 m into standing matter (MEASURED,
-`work-form.md` checkpoint 2); with it the deepest overlap is 0.003 to 0.050 m at 10 km/h
-(MEASURED, checkpoint 3). A spent way's boundary joints part, and its cells and whatever they
-alone held up leave at rest as ordinary rubble. A belt's sampled support on standing matter is
-bounded by the same price before the step, counted the same way from the force the belt kept,
-and spent the same way when the belt pressed harder than the cells returned. The support check
-hears no contact: it reads weights.
+reached the way's, or when the body took the last work the way dealt one of its points and kept
+closing. That second clause is two readings, neither a tolerance: at the step's start the body
+was closing on the block's mean pressed point fast enough to cross the give the way had left
+within the step; and the step's last solve left a point of the way holding an impulse at the
+work bound the way dealt it. A point held at the way's strength says nothing: such a step did
+`F v dt`, under the work left. The clause is one point at the last substep, not a sum of the
+step's work, so a way can part with work left that the body never did (not measured apart).
+Without the clause the solve rations the last work at its own closing speed while the count
+reads another, so the count closes on `W` from below and never arrives: a cell in a hull's way
+stood a median 8 steps overlapped by more than 2 cm at 10 km/h, 51 to 72 % of those cell-steps
+returning under 1 N·s, and the hull sank 0.11 to 0.25 m into standing matter (MEASURED,
+`work-form.md` checkpoint 2); with it the deepest overlap at 10 km/h is under 0.06 m (MEASURED,
+`work-form.md`, the fix pass). A spent way's boundary joints part, and its cells and whatever
+they alone held up leave at rest as ordinary rubble.
+
+A belt's sampled support on standing matter has no solver point. Its staged force, support and
+both tangent terms together, is bounded whole by the same price before the step and counted
+along itself by the same mean speed, where a solver point counts its normal impulse alone; its
+way is spent by the same two clauses, the second reading that the belt pressed harder than the
+ration the crossing left it. The support check hears no contact: it reads weights.
 
 **Work is one scalar per cell**, whoever did it and along whichever way: a block is charged with
 all the work on its cells, so a way may part on work done along another way or by another body.

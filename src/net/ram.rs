@@ -1,4 +1,4 @@
-//! Tracked full-speed ram instrument for the game's environment destruction model, game state only.
+//! Tracked ram instrument for the game's environment destruction model, game state only.
 //! `scripts/perf/collapse.py --ram` owns `OVERMATCH_RAM`. Default-feature servers derive the
 //! run-up from their loaded drive data and resolve ground height at spawn, without view assets.
 //!
@@ -245,7 +245,7 @@ pub(super) struct HullRow {
     solver_ns: Channels,
     /// Every block of standing cells the step bounded (`construction::breakage::bounded`).
     blocks: Vec<BlockReadout>,
-    /// Cells the step's over-pushed blocks freed.
+    /// Cells the step freed.
     freed: usize,
 }
 
@@ -263,9 +263,9 @@ struct BlockReadout {
     work_j: f32,
     /// The pressing body's speed along the push at the step's start.
     closing_m_s: f32,
-    /// The most it returned along the push over the step, N s.
+    /// What the way's price returns along the push over a step at `closing_m_s`, N s.
     bound_ns: f32,
-    /// The work its cells' bonds have taken after the step; `work_j` frees it.
+    /// The work its cells' bonds have taken after the step, J.
     taken_j: f32,
     /// What its points returned along the push over the step, N s.
     returned_ns: f32,
@@ -950,7 +950,6 @@ mod tests {
         for (field, bad) in [
             ("instance", json!("")),
             ("lateral_m", json!("1")),
-            ("runup_margin", json!(2.0)),
             ("contact", json!("Rest")),
             (
                 "contact",
@@ -975,7 +974,6 @@ mod tests {
             ("settle_s", json!(0)),
             ("deadline_s", json!(-1)),
             ("approach_s", json!("60")),
-            ("drive_s", json!(18)),
             ("typo", json!(1)),
             ("in_place_m", json!(0.1)),
             ("in_place_m", json!([0.0, {"Unit": "a scale"}])),

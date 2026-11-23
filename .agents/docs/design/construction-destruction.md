@@ -349,8 +349,7 @@ Existing ring geometry may remain an angular sampling stand-in if it passes the 
 ### Bodies in contact
 
 Subject: the game's environment destruction, game state only. A standing cell returns a body no
-more than its bonds can, through the physics contact solver, and a cell whose bonds have taken
-their work from the bodies pressing it, or cannot stop a body with all the work they have left,
+more than its bonds can, through the physics contact solver, and a cell whose bonds are spent
 leaves at rest as ordinary rubble. Structural collapse remains the part graph's decision. Neither
 law names a vehicle or construction. The law, its terms, what was tried and lost (the hull sweep
 that stood here until 2026-11-22 among them) and what is known and accepted are in
@@ -1141,7 +1140,7 @@ Measure server cost on deployment hardware before selecting runtime refinement a
 | 4 — partial removal | Shared sub-chunk geometry and depth refinement. |
 | 5 — strength-scaled inertia | Independent target density and resistance terms; porous-material validity remains a validation gate. |
 | 6 — fracture versus toppling | Cohesive work separates seams; gravity and unilateral contact decide rocking and toppling. |
-| 7 — sustained pushing | The contact law: a standing cell returns a body no more than its bonds can, and leaves once the work done on it reaches what they take (see Bodies in contact). |
+| 7 — sustained pushing | The contact law: a standing cell returns a body no more than its bonds can (see Bodies in contact). |
 | 8 — universal Lamé field | Restricted embedded-cavity domain; transient local response near boundaries. |
 | 9 — connection mechanisms | Symmetric opening, frictional sliding, crushing and cohesive softening; timber awaits directional data. |
 | 10 — ejecta budget | Ejection response determines mass and velocity; complete energy and momentum accounts constrain it. |
@@ -1168,7 +1167,7 @@ A quoted spring force alone supplies none of the missing acceleration coupling.
 |---|---|
 | Small-hole fidelity | **Decided:** a hole is a negative volume, drawn only; rounds, mass and strength ignore it (see Local response and holes). |
 | Rubble persistence and mobility | **Provisional (2026-10-31):** retain gameplay-relevant occupied geometry throughout the match; let mass, friction and track contact determine climbing or pushing. Fine presentation debris may fade. |
-| Collision loads | **Decided:** standing matter answers a body through the solver, bounded by its bonds' force and work, and leaves when the work done on it reaches theirs; the structural check hears no contact (see Bodies in contact). |
+| Collision loads | **Decided:** standing matter answers a body through the solver, bounded by its bonds' force and work; the structural check hears no contact (see Bodies in contact). |
 | Contact-damage scope | **Decided (2026-10-31):** wall material never doses a tank, whether it falls, is pushed or is thrown off a hit; walls still fracture on landing and under pushing loads. |
 | Accepted strength-scaled spall | **Decided (2026-10-31):** wall ejecta are debris with no dose; the tanks' strength-scaled spall cone stays (see Spall as ejecta). |
 | Three-property material model | **Provisional (2026-10-31):** keep the summary, add sourced constitutive and attachment profiles; do not infer missing properties from strength. |

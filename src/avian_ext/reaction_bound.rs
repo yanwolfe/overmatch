@@ -16,7 +16,8 @@
 //! wanting more ([`shares`]). The points' bounds always sum to the group's, whatever the split,
 //! so the group returns at most its bound over the step and Coulomb friction, which the solve
 //! clamps to the normal impulse, at most its coefficient times that. A point in several groups
-//! takes the least of them. A manifold point in no group is Avian's rigid contact bit for bit.
+//! takes the least of them. A manifold point in no group is Avian's rigid contact bit for bit,
+//! and may still be read ([`Bounds::read`]).
 //!
 //! Who relies on it: the game's building model (`construction::breakage::bounded`), where a block of
 //! standing cells returns no more than its bonds can, wherever a body presses it.

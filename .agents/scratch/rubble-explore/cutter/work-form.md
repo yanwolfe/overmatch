@@ -1,3 +1,7 @@
+# Work form: the lane's checkpoints, as run
+
+The law as built is stated once, in `.agents/scratch/strength-limited-contact-design-2026-11-21.md`, "As built". The checkpoints below are kept as they were run; a statement marked SUPERSEDED describes code a later checkpoint replaced.
+
 # Work form: checkpoint 1
 
 Subject: the game's building model (game state only). Lane `lane/work-form`, law commit `e9751c45` on `4edd1852`.
@@ -5,22 +9,22 @@ Subject: the game's building model (game state only). Lane `lane/work-form`, law
 The stall is gone at the plain wall: 9 of 9 passes at 10 km/h cross, and 2 km/h and the standing start cross too (MEASURED).
 Over-freeing is real: with the work form 29 to 96 % of the cells the contact law frees leave on ticks when only loose pieces, not the hull, parted a block (today 8 to 81 %), and every building keeps less in place (MEASURED).
 
-## The law as built
+## The law as built at checkpoint 1 (SUPERSEDED: the count reads the step's mean speed and a second clause spends a way; see the design doc)
 
 Every step, each contact point on a standing cell adds to that cell the normal impulse the solver returned there times the speed its body advances into the cell there as the solve left it (negatives add nothing). Impulse (N s) times speed (m/s) is the step's work (J): the step length is inside the impulse. Nothing removes it. A block is charged with all the work on its pressed cells; when that reaches the work `W` of a way the block gives, that way's `leaves` part.
 
-## Design points settled
+## Design points settled at checkpoint 1
 
 - **Where the work lives.** `Live::work`, one `f64` per law chunk, on the owner's `Breakage` (`src/construction/breakage.rs`). Zero at spawn, built from the structure, never from an asset.
-- **Written** only in `release` (`src/construction/breakage/bounded.rs`), after the physics step, by `settle`, once per owner. Owners settle in parallel (`per_owner`, compute pool): each writes only its own `Live::work` and reads the solver's impulses (`Bounds`) and the bodies' post-step velocities, both immutable there. Cuts and departures then commit serially in owner order.
+- (SUPERSEDED in part: an owner's cut now runs in its task; entries, deposits and departures commit in owner order.) **Written** only in `release` (`src/construction/breakage/bounded.rs`), after the physics step, by `settle`, once per owner. Owners settle in parallel (`per_owner`, compute pool): each writes only its own `Live::work` and reads the solver's impulses (`Bounds`) and the bodies' post-step velocities, both immutable there. Cuts and departures then commit serially in owner order.
 - **Read** in `bound_contacts` and `bound_belts` before the step (`Standing::work`, `give_along` takes `taken(work, pressed)`), to size the bound's work left, and in `settle` to decide parting.
 - **Ordering relied on.** `bound_belts` and `bound_contacts` before the solve; `read_bounds` after the last substep; `release` after that and before the support check. Within an owner the sum runs belts first, then contacts in body-entity then narrow-phase order, so it does not depend on worker assignment (DERIVED from the code; no test).
 - **Impulse source.** `Bounds` now keeps the returned impulse per contact point (`Bounds::read`, `Bounds::impulse`), summed over substeps. `ContactTransfers` was not used: it has no contact-id key. The two agree at warm-start coefficient 1 (DERIVED, not tested).
-- **A give's sum** is over the block's pressed cells, whatever body or direction did the work. Of a block's ways the least `W` is reached first (work only rises), so that one parts. Parting frees the give's `leaves`.
+- (SUPERSEDED in part: a block parts by the first spent of its ways.) **A give's sum** is over the block's pressed cells, whatever body or direction did the work. Of a block's ways the least `W` is reached first (work only rises), so that one parts. Parting frees the give's `leaves`.
 - **No double count.** Work is added once per point to its cell; gives only read it. `Bounds::spent`, the group's `room` and the per-group `returned` state are gone.
 - **Belts: same form.** A staged belt force on standing matter is capped at the cells' bound as before; the kept impulse times the belt body's advance into the cell is added to the cell; the cells leave when their work reaches `W`. The belt no longer frees a cell merely for pushing harder than `F`.
 - **Rollback and wire.** The work is server state only. It is not in a replicated type and not in a rollback-registered component, so `net::protocol` is unchanged and `PROTOCOL_REV` stays 108 (DERIVED from the diff: no replicated type edited; the ADR texts were not re-read in full).
-- **Cells that leave take their work.** `Live::group` clones the vector into the piece; nothing reads it there. Remaining cells keep theirs.
+- (SUPERSEDED: a piece carries no work; the cell's count is dropped when it leaves.) **Cells that leave take their work.** `Live::group` clones the vector into the piece; nothing reads it there. Remaining cells keep theirs.
 - **Points with no open give** are still read and still add work.
 
 ## What the statement does when taken literally
@@ -90,12 +94,12 @@ Two-thread p95 stays under 15.6 ms in every pass except the end-on house (15.27 
 
 `construction::breakage::bounded` (5), `construction::fracture::bound`, `avian_ext::reaction_bound`, `tests::avian_reaction_bound`:
 
-- work per cell never decreases, a cell leaves if and only if a row's taken work reached its way's, and the work counted is at most the kinetic energy the body lost (a double count would break that bound; there is no separate duplicated-give fixture);
+- (SUPERSEDED: cells also leave by the second clause.) work per cell never decreases, a cell leaves if and only if a row's taken work reached its way's, and the work counted is at most the kinetic energy the body lost (a double count would break that bound; there is no separate duplicated-give fixture);
 - a body placed inside and pushed out adds exactly none; a held body adds 1.5e-3 J in 6 s (asserted small, not zero);
 - a belt keeps what standing matter returns, and the cells it advances into leave when their work reaches their price;
 - the read impulse equals the momentum the body lost.
 
-Deleted with the old counting: the `crossed` assertion, the spent-report assertions, the tests' `spent` arguments. Worker-assignment independence has no test.
+Deleted with the old counting: the `crossed` assertion, the spent-report assertions, the tests' `spent` arguments. Worker-assignment independence has no test (SUPERSEDED: `owners_come_back_in_their_order_on_any_pool`).
 
 ## Deleted
 
@@ -123,7 +127,7 @@ Probe patch, run scripts, analysis scripts and their outputs: `/Users/Yan/github
 - One run per building pass and arm; today's wall, house and hall wall outcomes vary run to run (wall 10 km/h held 2 of 3 here, house 10 km/h held 1 of 3).
 - The work on cells with no open way, and the total work on a building over time, were not logged.
 - The residue lag and the with-no-press parting were seen in fixtures only; their share of the passes' overlap is not isolated.
-- Summation order independent of worker assignment, and `Bounds` agreeing with `ContactTransfers`: derived, untested.
+- (SUPERSEDED for the order, as above.) Summation order independent of worker assignment, and `Bounds` agreeing with `ContactTransfers`: derived, untested.
 - No hosted run, no play by a person, no two-core machine: the pool cap is not a two-core allocation.
 - The six lenses were not run by this lane.
 
@@ -259,11 +263,9 @@ The re-measure is clean on the three stop conditions, so the commitment pass was
 
 ## The two fixes as built
 
-**The advance.** A point's work is the impulse it returned times the mean of the body's speed into the cell at the step's start and at its end, negatives adding nothing. `bound_contacts` reads the start speed from `LinearVelocity` and `AngularVelocity` inside the physics step before the solve; those are the step's start, before its forces: the fork adds gravity and applied forces to its solver bodies inside each substep (`integrate_velocities`, `vendor/avian3d-0.8.0-overmatch/src/dynamics/integrator/mod.rs:373`) and writes velocities back to the components after the solve. A belt's staged force reads its body's velocity before the step the same way. So a body at rest under gravity reads zero at both ends and is charged nothing.
+The law is in the design doc, "As built"; what this checkpoint found on the way to it:
 
 **The lag, verified in the code before building.** The advisor's reading holds, with one correction: the game does not size the solver's ration with `reaction`. It hands the solver the block's strength for the step and the work its way has left (`W − taken`); the fork clamps each point at `max_work / v` with `v` the closing speed the solve finds at that iteration. A fully delivered ration therefore satisfies `Σ p·v_solve ≤ left`, and the count reads another speed, so the count closes on `W` from below. The mean-speed read does not make them agree.
-
-**The statement built.** A way is spent when the work on the block's cells has reached the way's, or when the body was crossing all the give the way had left within the step (`fracture::bound::crosses`, the comparison `reaction` makes) and the step's last solve left one of the way's points holding an impulse at the bound that way dealt it. No constant. The cells a block presses all leave with it, so "charged the work left" writes on no cell that stays. A belt's way is spent the same way when the belt pressed harder than the cells returned.
 
 One thing the first form got wrong, found by the law's own test: a point sits in several ways' groups and takes the least of their bounds, so "a point of the way ended clamped" also fired for a way whose points a cheaper way was holding (a block of 2384 J parted after returning 34 N.s of 543). `Bounds` now records which group dealt each point its impulse bound and its work bound, and a group is limited only by a point held at its own.
 
