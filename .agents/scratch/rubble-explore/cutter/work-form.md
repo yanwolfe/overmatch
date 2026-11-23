@@ -802,3 +802,150 @@ probe run, not a pass).
   not re-measured.
 - `net::protocol` passes; `WIRE_TYPE_DEFS` is untouched.
 
+
+# One budget: checkpoint 2
+
+Subject: the game's building model (game state only). The pass set on the build of `b6b776d5`
+(the law) with a temporary probe, never committed (kept at
+`.agents/scratch/rubble-explore/clips-work/instrument/budget/`). Every number is MEASURED unless
+marked. Release build, ordinary input path (`scripts/perf/collapse.sh --ram`), one tank, two
+compute threads. The machine was shared throughout (load average 5 to 15, other sessions'
+processes), so tick times are upper readings and are not comparable with earlier checkpoints.
+
+## Not explained by the law as built
+
+One thing. A piece's budget is marked spent by a cut whose substep then does far less than the
+budget, and the block parts under its work by more than the solve-lag allowance.
+- Read at the cutting substep (8 passes rerun with the reading): of 123 partings by a piece's
+  spent budget, 4 had the budget left before that substep, less the work the substep did, over
+  one substep's work at the way's strength at the substep's fastest closing (`F dt/6 v`): by
+  1.15, 1.28, 2.4 and 7.1 times. Largest: hall long wall 20 km/h, a way of 9,557 J and
+  3.85 MN, 8,761 J left, the substep did 437 J at 0.35 m/s, the block parted at about 12 % of
+  its work. In two rows the substep's work was negative (−1.6 J and −4.9 J).
+- The bodies have many points on the block (8, 16, 56, 83). DERIVED, not verified: each
+  point's cut assumes its own response only, the body's other points on the same block slow it
+  further, and the sum of their predictions passes the budget when the true work does not.
+- The hull does not show it: 33 partings by the hull's spent budget, the same reading at most
+  0.0015.
+- In the 23-pass set, with the allowance read at the step's start and end speeds, 5 of 374
+  spent partings were outside it, all pieces. 7 of 3,031 piece partings were a piece with less
+  energy than the budget, not driven from behind, parting a block by its own spent budget; the
+  budgets were 0.2 to 52 J (blocks already near their work).
+
+Everything else below is explained by the law or by a named residual.
+
+## Passes
+
+Columns: result; speed at contact m/s; least forward speed m/s; worst one-tick speed change m/s;
+deepest hull-to-standing overlap m; cells that left standing (by contact; by lost support);
+share in place; cells of blocks only pieces parted (share of contact-law cells); bodies at end;
+tick mean / p95 ms / ticks over 15.6 ms, with the probe's logging.
+
+| pass | result | contact | least fwd | worst dv | overlap | left (contact; support) | in place | piece-parted | bodies | tick |
+|---|---|---|---|---|---|---|---|---|---|---|
+| wall 2 km/h | crossed 15.16 s | 0.45 | -0.03 | +0.09 | 0.046 | 191 (190; 1) | 0.53 | 110 (58 %) | 190 | 5.10 / 9.98 / 22 of 1921 |
+| wall, standing start | crossed 3.86 s | 0.36 | 0.38 | -0.08 | 0.027 | 215 (214; 1) | 0.49 | 132 (62 %) | 214 | 3.90 / 9.56 / 29 of 1921 |
+| wall 10 km/h a | crossed 3.31 s | 2.65 | 1.39 | -0.08 | 0.027 | 205 (204; 1) | 0.49 | 108 (53 %) | 205 | 4.54 / 9.54 / 5 of 641 |
+| wall 10 km/h b | crossed 3.27 s | 2.65 | 1.58 | -0.09 | 0.017 | 202 (200; 2) | 0.51 | 96 (48 %) | 201 | 4.45 / 9.65 / 2 of 641 |
+| wall 10 km/h c | crossed 3.23 s | 2.65 | 1.50 | -0.08 | 0.024 | 218 (217; 1) | 0.50 | 120 (56 %) | 214 | 4.85 / 11.75 / 9 of 641 |
+| wall 10 km/h d | crossed 3.23 s | 2.65 | 1.53 | -0.07 | 0.036 | 202 (190; 12) | 0.50 | 103 (54 %) | 202 | 4.30 / 9.52 / 5 of 641 |
+| wall 10 km/h e | crossed 3.23 s | 2.65 | 1.61 | -0.09 | 0.015 | 207 (206; 1) | 0.52 | 111 (54 %) | 206 | 4.75 / 10.00 / 2 of 641 |
+| wall 10 km/h f | crossed 3.20 s | 2.65 | 1.61 | -0.10 | 0.032 | 197 (197; 0) | 0.53 | 101 (51 %) | 196 | 4.11 / 9.01 / 2 of 641 |
+| wall 10 km/h g | crossed 3.27 s | 2.65 | 1.48 | -0.08 | 0.061 | 226 (223; 3) | 0.45 | 135 (61 %) | 225 | 3.86 / 8.11 / 2 of 641 |
+| wall 10 km/h h | crossed 3.33 s | 2.65 | 1.34 | -0.10 | 0.063 | 205 (196; 9) | 0.50 | 113 (58 %) | 205 | 4.65 / 10.56 / 5 of 641 |
+| wall 20 km/h | crossed 1.73 s | 5.39 | 3.98 | -0.16 | 0.014 | 205 (205; 0) | 0.50 | 134 (65 %) | 205 | 3.56 / 8.88 / 7 of 641 |
+| house long wall 10 | crossed 4.70 s | 2.67 | 1.45 | -0.25 | 0.045 | 414 (341; 73) | 0.66 | 238 (70 %) | 327 | 7.08 / 13.82 / 7 of 641 |
+| house long wall 20 | crossed 2.44 s | 5.46 | 4.35 | -0.15 | 0.093 | 403 (327; 76) | 0.62 | 243 (74 %) | 348 | 8.17 / 14.22 / 28 of 641 |
+| hall long wall 10 | held (run invalid) | 2.67 | -0.16 | -0.53 | 0.058 | 414 (209; 205) | 0.69 | 190 (91 %) | 337 | 38.76 / 81.11 / 633 of 641 |
+| hall long wall 20 | crossed 7.16 s | 5.43 | 0.85 | -0.90 | 0.000 | 317 (107; 210) | 0.74 | 80 (75 %) | 219 | 12.92 / 30.67 / 125 of 641 |
+| hall junction 20 | held | 5.42 | -0.26 | -0.53 | 0.000 | 415 (273; 142) | 0.62 | 260 (95 %) | 376 | 11.10 / 13.12 / 17 of 641 |
+| end-on, line -2 | crossed 2.77 s | 10.87 | 4.07 | -1.20 | 0.000 | 875 (728; 147) | 0.10 | 699 (96 %) | 856 | 14.79 / 19.21 / 232 of 641 |
+| end-on, line -1 | crossed 2.08 s | 10.87 | 5.73 | -1.33 | 0.000 | 791 (648; 143) | 0.19 | 619 (96 %) | 765 | 9.25 / 15.77 / 39 of 641 |
+| end-on, line 0 | crossed 1.92 s | 10.87 | 6.32 | -0.32 | 0.000 | 882 (546; 336) | 0.10 | 511 (94 %) | 845 | 13.77 / 19.49 / 167 of 641 |
+| end-on, line +1 | crossed 1.98 s | 10.87 | 6.51 | -0.47 | 0.000 | 919 (478; 441) | 0.05 | 441 (92 %) | 886 | 14.42 / 21.03 / 195 of 641 |
+| end-on, line +2 | crossed 2.03 s | 10.87 | 5.32 | -0.47 | 0.000 | 782 (551; 231) | 0.20 | 519 (94 %) | 751 | 17.14 / 30.18 / 293 of 641 |
+
+Mechanisms.
+- **Walls**: all eleven cross. The hull parts 21 to 43 blocks a pass by its own work (its own
+  work over its budget 1.000 at the median); pieces part 73 to 95.
+- **House long wall**: crosses at both speeds; a fifth of the cells leave by lost support.
+- **Hall long wall 10 km/h**: the logged run is invalid (the server ran at 37.6 Hz under the
+  machine's load, mean tick 38.8 ms) and held; two unlogged runs of the same binary crossed in
+  9.89 s and 9.75 s. In the logged run the hull was slowed with the belts at 59 kN of a
+  122 kN capacity and standing cells returning under 10 kN along travel: pieces ahead and
+  under the belts, not standing masonry.
+- **Hall junction 20 km/h**: held, in the logged run and the unlogged one (stall 0.80 to
+  0.91 s). The hull parts 5 blocks and is on 5 overlapped cell-steps in the whole pass; in the
+  last 2 s the belts carry no load (capacity 0 kN) and standing cells return nothing along
+  travel: the hull rides on pieces. Lost traction and mass ahead.
+- **End-on**: all five lines cross with 5 to 20 % in place; pieces part 92 to 96 % of the
+  contact-law cells.
+- **Parked hulls**: both sleep. Touching the wall: the hull parts 4 blocks arriving, then no
+  point on a standing cell and no work for 60 s. Stopped in the breach: 16 J over the 5 s it
+  takes to stop, then nothing for 60 s; no parting after the hull stops. No work at rest.
+
+## True count over W at every parting (23 passes, 3,558 partings)
+
+| who, cause | partings | counted / W p10, p50, p90 | under W | outside the lag allowance | over W |
+|---|---|---|---|---|---|
+| hull, work reached | 407 | 1.000, 1.00 to 1.03, up to 1.8 | 0 | 0 | 245, all by other bodies' work on the same cells |
+| hull, budget spent | 120 | 1.000, 1.000, 1.000 (least 0.999) | 94 | 0; shortfall over allowance at most 0.007 | 0 |
+| piece, work reached | 2,777 | 1.00, 1.1 to 1.9, 3 to 9 | 0 | 0 | 2,724; 3 not covered by the same step's other bodies (work counted on the cells in earlier steps) |
+| piece, budget spent | 254 | 0.7 to 0.99, 0.89 to 0.99, 0.99 to 1.00 (least 0.14) | 254 | 5 (above) | 0 |
+
+The hull's partings sit on W: a real pass uses under 1 % of the solve-lag allowance. Pieces'
+spent-budget partings use a median 0.3 to 5 % of it and reach it on fast pieces at small
+blocks (least counted over W 0.14, inside the allowance). The count over W by pieces is the
+several-bodies residual: up to tens of bodies press one block and each may lose the work left.
+
+## Overlapped cell-steps returning nothing
+
+817 hull cell-steps overlapped over 2 cm across the set; 66 returned under 1 N·s: 48 on a
+block that parts that step, 10 on a way whose points are at its strength between them (the
+deal gives the strength to its other points), 8 not closing at the step's start or end. None
+closing with budget left and its way under its strength.
+
+## The advisor's four readings
+
+| reading | holds? | size |
+|---|---|---|
+| 1. floored work under a rocking body | Not for the hull. Yes for pieces. | Hull: signed over counted work per cell p10 1.000, least 0.81, on every pass, holds included. Pieces: at 348 of 3,558 partings (9.8 %) the signed work on the block's cells was under half the counted; at 272 (7.6 %) it was under half of W. Example: W 533 J, counted 549 J, signed −453 J. |
+| 2. starved points seeded by the budget | No. | 0 of the 66 idle overlapped cell-steps had a point cut by the budget in an earlier substep with the budget standing at the step's end. The deal's own starvation is the 10 above (1.2 % of overlapped cell-steps). |
+| 3. way parted against way pushed | Yes. | Hull: 71 of 527 partings (13 %) along a way whose group returned nothing on any step of the block, 89 (17 %) nothing that step; the parted way's W under 0.9 of the most loaded way's in 136 (26 %), p10 0.72 to 0.85. Pieces: 917 of 3,031 (30 %) never, 1,167 (39 %) not that step, cheaper in 811 (27 %); a piece's row also reads nothing when other bodies did the work. |
+| 4. belt partings | Not observed. | 4 belt partings in 23 passes, all by the work clause, none by the start-speed crossing clause; counted over W 1.009, 1.042, 1.185, 2.556. |
+
+## Cost
+
+Seam stages in place, ms a tick, mean / p95, from first contact (probe timers, logging on):
+
+| pass | pricing | deal | account | locate | limiter calls a tick | limiter, timed in place |
+|---|---|---|---|---|---|---|
+| wall 10 km/h (8 runs) | 0.23 to 0.33 / 0.5 to 2.2 | 0.010 / 0.05 | 0.005 / 0.02 | 0.005 / 0.015 | 420 to 630 / 2,300 to 2,800 | 0.003 / 0.013 |
+| house long wall 10 | 0.90 / 2.69 | 0.128 / 0.565 | 0.020 / 0.065 | 0.011 / 0.023 | 2,202 / 6,624 | 0.012 / 0.037 |
+| hall long wall 20 | 2.29 / 5.62 | 0.258 / 0.576 | 0.075 / 0.184 | 0.023 / 0.057 | 6,608 / 7,992 | 0.023 / 0.002 |
+| hall junction 20 | 1.55 / 1.90 | 0.145 / 0.180 | 0.047 / 0.056 | 0.015 / 0.020 | 5,913 / 7,164 | 0.025 / 0.042 |
+| end-on, line 0 | 0.52 / 2.52 | 0.040 / 0.154 | 0.019 / 0.055 | 0.015 / 0.033 | 1,617 / 5,652 | 0.014 / 0.028 |
+
+The limiter is timed on one call in 32 with a clock pair, less the pair's own cost (15 to
+25 ns, calibrated at start): 4 to 9 ns a call, 0.003 to 0.03 ms a tick.
+
+Tick time without logging (same binary, one run each, machine shared): wall 10 km/h mean
+4.4 ms, p95 9.3, 6 ticks over 15.6 of 641; house 10 mean 10.5, p95 18.3, 81 over; hall wall 10
+mean 13.5 and 8.7 (two runs), p95 20.9 and 10.4, 77 and 13 over; hall wall 20 mean 12.4, p95
+18.7, 91 over; junction mean 13.1, p95 19.3, 92 over; end-on mean 13.1, p95 17.4, 98 over. The
+two hall runs differ by 1.6 times on one binary, which is the machine's load.
+
+## Clips
+
+Left `f3193ea8`, right the new build, labels burned in:
+`.agents/scratch/rubble-explore/clips-budget/wall-10kmh.mp4`,
+`house-long-wall-10kmh-exit.mp4`, `house-end-on-raised.mp4`,
+`hall-junction-20kmh-raised.mp4`, each with three stills.
+
+## Not verified
+
+- The mechanism of the spent-budget finding (many points' predictions summed) is DERIVED.
+- Tick times against `f3193ea8`: the machine was shared, and the earlier build's binary has no
+  thread cap without its own probe.
+- One run a pass except the wall at 10 km/h; the halls vary run to run.
+- Friction work on standing cells (the attack's 1c) was not read.
