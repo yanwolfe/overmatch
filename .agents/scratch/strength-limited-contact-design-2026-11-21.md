@@ -44,11 +44,9 @@ bounded twice, and a seam in `avian_ext` (`reaction_bound`) carries both into th
   every substep, each keeping what it carries and the rest going to the points the last solve
   left wanting, so the points' bounds always sum to the way's.
 - **Work.** Over a step all the points of one body on the block do at most the least work its
-  ways have left (one budget per body and block). The work of an impulse `p` over a substep, on
-  bodies closing at the point at `c0` before the substep's forces and `c1` after its last solve,
-  is `p · ½(c0 + c1)` (DERIVED: a body's kinetic-energy change is each impulse on it times the
-  mean of the speeds across it, so the two speeds carry every other point, body and force). The
-  seam sums that over the budget's points after every substep, signed: the sum is the net work
+  ways have left (one budget per body and block). The seam sums each point's work over the
+  budget's points after every substep, signed (the formula, its units and the cut's root are
+  the seam's: `reaction_bound`'s module doc and `cap`): the sum is the net work
   the bodies did through the block in the substep, a point pushed while the bodies part there
   taking from what the others did. The sum floored at nothing is the budget's count for the
   substep: bonds take work irreversibly, so a substep in which the block worked on the bodies
@@ -56,28 +54,23 @@ bounded twice, and a seam in `avian_ext` (`reaction_bound`) carries both into th
   work given back inside a substep cancels, across substeps it does not, so the count depends
   on the substep count. A body closing and backing off on alternate substeps with no net work
   is counted for the closing ones. The count is taken from what the budget has left and given
-  to the points that did positive work by their share of it. Inside a solve a limiter hook in
-  the fork judges the impulse the solve found: if it does more than the budget has left, it is
-  cut to the impulse that does exactly that; if it does less, it stands. So a body that cannot
-  do the work is stopped at the block's strength and the block stands, and a body held still
-  does none however hard it presses. The work is judged at the impulse the solve found, never
-  at a lesser one that would do the work left: a point's own response is not the response of
-  the bodies behind it, so at a lesser impulse a light body a heavy one holds against a block
-  reads as flying into it alone. Counterexample, cutting whenever some lesser impulse does the
-  work left (MEASURED, the seam's fixtures at `b6b776d5`): a 2 kg box held still under a
-  2,000 kg box had its 100 J budget used up at rest by step 19, and the same pair at 4 m/s lost
-  1,055 J to a budget of 1,000 J. A budget whose count has reached its work has nothing left:
-  its points do no more work that step. The formula, its units and the cut's root are the
-  seam's (`reaction_bound`'s module doc and `cap`).
+  to the points that did positive work by their share of it. Inside a solve the seam cuts only
+  an impulse the solve found (`limit`), so a body that cannot do the work is stopped at the
+  block's strength and the block stands, and a body held still does none however hard it
+  presses. Cutting whenever some lesser impulse would do the work left is rejected: a point's
+  own response is not the response of the bodies behind it, so at a lesser impulse a light
+  body a heavy one holds against a block reads as flying into it alone. Counterexample
+  (MEASURED, the seam's fixtures at `b6b776d5`): a 2 kg box held still under a 2,000 kg box
+  had its 100 J budget used up at rest by step 19.
 
 The fork carries the per-point impulse clamp and the limiter's call (`OVERMATCH_PATCH.md`,
 "Bounded contact"); the arithmetic is the seam's.
 
 After the step, every contact point on a standing cell adds its share of its budget's count to
 that cell. Nothing removes the work while the cell stands: it is kept per cell on the
-construction (`Live::work`), and a cell that leaves carries none as a piece. A block parts by
-the way that takes least work when the work on its cells is at least that way's, and on
-nothing else (`Price::spent`, an exact comparison). Its boundary joints part, and its cells and
+construction (`Live::work`), and a cell that leaves carries none as a piece. A contact block
+parts by the way that takes least work when the work on its cells is at least that way's, and
+on nothing else (`Price::spent`, an exact comparison); a belt's block is below. Its boundary joints part, and its cells and
 whatever they alone held up leave at rest as ordinary rubble.
 
 Residuals of the form (sizes MEASURED; the fixtures are `src/tests/avian_reaction_bound.rs`
@@ -95,8 +88,9 @@ and `breakage/bounded/tests.rs`, the passes `work-form.md`, "One budget: fix pas
 - **What rounding leaves.** A step hands the points what is left, and the count meets it but
   for the rounding of the points' moves; the comparison is exact, so the block may stand one
   more step on a remainder under a millionth of its work, returning almost nothing in it
-  (DERIVED bound: `ln ε64 / ln(ε32 · points)` steps, 3 to 4; MEASURED on 540 fixture budgets:
-  none in 479, one step in 61, never more). In the pass set 24 of 530 partings by the hull
+  (the bound is DERIVED and asserted in
+  `a_paying_body_reaches_the_work_exactly_within_the_remainders_bound`; MEASURED on 540
+  fixture budgets: none in 479, one step in 61, never more). In the pass set 24 of 530 partings by the hull
   and 5 of 3,395 by pieces followed such a step, one of them two.
 - **A light piece driven by a far heavier body.** The contact between the two is Avian's, and
   what it passes on in a step rises with the lighter body's mass: until it passes on the
@@ -107,8 +101,8 @@ and `breakage/bounded/tests.rs`, the passes `work-form.md`, "One budget: fix pas
   at 10,000 on step 8 (four points) and 6 (sixteen), the driver having lost 1,897 J and
   1,465 J; at 30,000 not within 64 steps, the driver having lost 9,445 J and 8,432 J and
   sunk through the piece. The same readings precede the count-only form. A 57 t hull on a
-  piece of 2 to 6 kg is a ratio of 10,000 to 30,000. Not fixed; the missing truth is what a
-  small rigid piece passes on between a heavy body and a block.
+  piece of 2 to 6 kg is a ratio of 10,000 to 30,000. Not fixed (backlog destruction-20); the missing truth is
+  what a small rigid piece passes on between a heavy body and a block.
 - **Several bodies.** The work left is read once, before the step, and a budget is one body's:
   `n` bodies parting one block in one step do up to `n` times the work it had left (MEASURED:
   two boxes on one block of 3,111 J did 6,222 J). In the pass set the count on a parting block
@@ -131,7 +125,7 @@ weights.
 
 **Work is one scalar per cell**, whoever did it and along whichever way: a block is charged with
 all the work on its cells, so a way may part on work done along another way or by another body.
-The cost, MEASURED (`work-form.md`, the fix pass; wall, house and hall, a 57 t hull): 12 to 31 %
+The cost, MEASURED (`work-form.md`, "Work form: fix pass"; wall, house and hall, a 57 t hull): 12 to 31 %
 of the cells that part leave through a way whose own body added under a tenth of the work on it,
 and 30 to 45 % of the blocks a loose piece parts are of that kind. Accepted: a wall worked on from
 several sides is a damaged wall. A charge per direction is the alternative, not built. With the
@@ -149,9 +143,9 @@ construction with a loose group is refused.
   parted when a solve had cut one of its points with budget left. The limiter runs twice a
   point a substep, and a cut made in a pass reads a closing speed the pass then takes back,
   so the mark was set on substeps whose true work was a fraction of the budget: blocks parted
-  at down to 12 % of their work, the true work 19 to 31 % of the budget in the outliers
-  (MEASURED, `work-form.md`, "One budget: spent-budget mechanism"). The count alone parts a
-  block now.
+  at down to 12 % of their work (MEASURED, `work-form.md`, "One budget: checkpoint 2"), the
+  true work 21 to 31 % of the budget in the outliers (MEASURED, `work-form.md`, "One budget:
+  spent-budget mechanism").
 - **The parting test at f32 resolution** (`taken as f32 >= work as f32`): it parted a block up
   to half an f32 step of its work early, on the reason that the solve could do no less work,
   which is false: the budget is handed in f32, which holds a small remainder exactly, and the

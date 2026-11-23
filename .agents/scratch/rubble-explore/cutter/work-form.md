@@ -1043,8 +1043,8 @@ impulse the dynamic contacts carried; the two negative outliers of checkpoint 2 
 
 Subject: the game's building model (game state only). Law as of `df693670`: the count is the
 budget's own work per substep, signed over its points and floored per substep, shared to
-cells by positive share; a block parts when the work on its cells is at least its way's
-(`taken >= work`, exact), and on nothing else. The cut is unchanged. Every number is MEASURED
+cells by positive share; a contact block parts when the work on its cells is at least its
+way's (`taken >= work`, exact), and on nothing else. The cut is unchanged. Every number is MEASURED
 unless marked. Passes: release build of `be9bc72a` with a temporary probe, never committed
 (kept at `.agents/scratch/rubble-explore/clips-work/instrument/budget/probe-fix-pass-on-be9bc72a.patch`),
 ordinary input path, one tank, two compute threads, one run a pass except the wall at 10 km/h.
@@ -1060,12 +1060,8 @@ The machine's load average was 8 to 15 throughout, so the passes are untimed.
   never later, never not at all. The remainders that waited a step were `1.5e-5` to
   `1.2e-4` J (1 to 8 hundred-millionths of the work) and `1.8e-12` to `3.6e-12` J; each was
   done exactly on the next step, in which the points returned under 0.001 N·s.
-- DERIVED bound, asserted by
-  `a_paying_body_reaches_the_work_exactly_within_the_remainders_bound`: a step hands the
-  points what is left and the count meets it but for the rounding of the points' moves, a
-  fraction `ε32 · points` of what was handed at most, so what is left shrinks by that factor
-  a step until it is under the grain of the f64 the work is kept in:
-  `ln ε64 / ln(ε32 · points)` steps, 3 on one point and 4 on sixteen.
+- The bound on the wait is DERIVED in, and asserted by,
+  `a_paying_body_reaches_the_work_exactly_within_the_remainders_bound`.
 - The guess that the solve rounds a small increment away does not hold: the cut sets the
   point's whole impulse for the substep to the small value, it is not an increment on a large
   one, and the remainder was done exactly in every arm.
