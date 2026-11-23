@@ -458,3 +458,121 @@ What was done with it: the gather and commit do not dominate, so the walk is unc
 - The commitment of comments in the last commit ran the gates, not the passes.
 - No hosted run, no two-core machine, no play by a person. No independent reviewer has read the fix pass.
 - The clips in `clips-work/` are checkpoint 3's (`a0839b2d`) and do not show this code.
+
+# Work form: end-on and lag measurement
+
+Subject: the game's building model (game state only). Measurement only: no law changed, the
+lane's code is `f3193ea8`. Every result is an observation; a crossed or held pass and a larger or
+smaller standing share are not findings. Builds, each with the census probe and a two-thread pool:
+**c3** = `5c0181ab`; **fix** = `f3193ea8`; **a2r** = `f3193ea8` with a scratch patch (never
+committed) under which a way also reads limited through a point held at the impulse bound this
+group dealt it, the checkpoint-3 reading. Checkpoint 3 gave a tie to the first group only; the
+patch gives it to every equal dealer, as the fix pass does. Passes vary the pass file's
+`lateral_m`. All numbers MEASURED from the probe log or `result.json` unless marked DERIVED.
+
+## What the law as built does not explain
+
+One thing, and it is not in the brief's list: **blocks part by the second clause (`crossing` and
+`limited`) on steps in which the way's group returned almost nothing.** On the fix build the
+group's return over that step, as a share of its impulse bound `F·dt`, is p50 0.8 % (end-on,
+417 such blocks, 1068 cells), 0.8 % (long wall, 508 blocks, 1480 cells) and 1.7 % (wall at
+2 km/h, 660 blocks, 1783 cells); the work counted on the block when it parts is p50 0.56, 0.52
+and 0.45 of the way's work, p10 0.04, 0.01 and 0.06; in 74, 127 and 94 of them the step added
+under 1 % of the work the way had left. 5 % to 24 % of these blocks are the hull's, the rest
+loose pieces'. `limited` reads true from one member point held at its ration; it does not read
+what the group returned. Mechanism not isolated (the bodies' masses are not logged, so whether
+the body could have paid the work left is not known). Pointer, not built: read the second
+clause from what the way's group returned or the solve rationed over the step, not from one
+point's last hold.
+
+Not seen: work on a cell from no contact (every solved point sat in a block with an open way,
+and every block that parted with its way's work already reached at the step's start was either
+a new block over cells that kept their work, 500, or a block whose way's work had fallen, 130);
+a way approaching its work in ever smaller steps; a point returning nothing while its block
+neither answered elsewhere nor was being left.
+
+## End-on house, governed speed, five entry lines, three builds
+
+In place = `structure.in_place_share`. Contact = cells parted by the contact law; support =
+cells gone less those (DERIVED), parted by lost support. The hull crossed in every run, contact
+speed 10.87 m/s.
+
+| line, m | c3 in place | c3 contact / support / gone | a2r in place | a2r contact / support / gone | fix in place | fix contact / support / gone |
+|---|---|---|---|---|---|---|
+| -0.2 | 0.049 | 603 / 313 / 916 | 0.039 | 665 / 255 / 920 | 0.043 | 599 / 317 / 916 |
+| -0.1 | 0.128 | 546 / 318 / 864 | 0.063 | 603 / 317 / 920 | 0.137 | 551 / 317 / 868 |
+| 0 | 0.194 | 542 / 312 / 854 | 0.101 | 576 / 338 / 914 | 0.087 | 537 / 377 / 914 |
+| +0.1 | 0.147 | 611 / 249 / 860 | 0.159 | 601 / 248 / 849 | 0.129 | 590 / 277 / 867 |
+| +0.2 | 0.106 | 473 / 425 / 898 | 0.167 | 435 / 385 / 820 | 0.176 | 443 / 386 / 829 |
+| range | 0.049 to 0.194 | | 0.039 to 0.167 | | 0.043 to 0.176 | |
+
+The three ranges overlap. A 0.1 m change of line moves the share by up to 0.09 within one
+build, as much as the two builds differ on the pass file's line; the line is repeatable (the
+two filmed runs of each build reproduce 0.194 and 0.087 to three figures). Neither A1 nor A2
+carries a direction: the path A1 opened carried 0 J in all ten probed runs (no solved point sat
+in a block with no open way), and a2r against fix moves single lines both ways (-0.1 m: 0.063
+against 0.137; 0: 0.101 against 0.087).
+
+House long wall at 10 km/h, same five lines, hull crossed in 4.31 to 4.48 s in every run:
+
+| line, m | c3 in place | c3 contact / gone | fix in place | fix contact / gone |
+|---|---|---|---|---|
+| -0.2 | 0.455 | 515 / 596 | 0.570 | 391 / 481 |
+| -0.1 | 0.511 | 469 / 642 | 0.534 | 432 / 515 |
+| 0 | 0.529 | 428 / 529 | 0.498 | 449 / 526 |
+| +0.1 | 0.484 | 454 / 547 | 0.555 | 403 / 484 |
+| +0.2 | 0.522 | 417 / 513 | 0.544 | 402 / 485 |
+| range | 0.455 to 0.529 | | 0.498 to 0.570 | |
+
+## The 2 km/h wall pass
+
+The 124 of 263 lag cell-steps of the fix pass was one run and did not recur: eleven runs of
+the same pass on the fix build give 16, 3, 0, 0, 0, 0, 19, 0, 6, 3, 3 lag cell-steps of 134,
+145, 31, 138, 73, 38, 133, 46, 119, 112, 132 overlapped (0 % to 14 %; 50 of 1101, 5 %). That
+run's log was deleted with the fix pass, so its steps' state is not known. The hull crossed in
+all eleven, in 15.30 to 16.08 s, in place 0.42 to 0.51. Deepest overlap 0.055 m. Longest run of
+consecutive lag steps on one cell: 14 steps, 0.22 s; the next longest 6 steps, 0.09 s.
+
+A lag cell-step: a standing cell the hull's solver points overlap by over 2 cm while returning
+under 1 N·s between them. Bounds are the last substep's deal times six.
+
+| state | cell-steps | bound dealt | impulse bound, N·s a step, p50 | work dealt, J a step, p50 | group returned over `F·dt`, p50 | least work left on the cell's ways, J, p50 | hull normal speed, start / end, m/s, p50 | open way |
+|---|---|---|---|---|---|---|---|---|
+| point dealt nothing in a group at its impulse bound | 22 | force | 0.00 | 0.000 | 1.00 | 893 | +0.307 / +0.307 | yes |
+| hull leaving the cell | 19 | none binding | 355 | 94 | 0.00 | 263 | -0.047 / -0.049 | yes |
+| way's work already reached at the step's start, block parts this step | 8 | work | 262 | 0.000 | 0.00 | 0.0 | +0.342 / +0.367 | yes |
+| point dealt nothing, group at 0.55 of its bound | 1 | force | 0.00 | 0.000 | 0.55 | 246 | -0.036 / +0.017 | yes |
+
+The steps are three explained states. In 22 the block is returning its whole impulse bound
+through its other points and a point that carries nothing is dealt nothing (`shares`, the
+saturated branch): the wall is answering at full strength. In 19 the hull is moving away from
+the cell: in the 14-step run a four-cell block with 254 J left of 2769 stopped the hull, which
+rolled back about 1.6 cm on the 3 degree upslope and came again at its traction limit; a
+contact returns nothing to a body that is leaving it. In 8 the way's work was already reached
+when the step began (a new block over cells that kept their work, or a way whose work fell),
+so the way dealt nothing and the block parted at that step's end. No cell had no open way.
+
+## The attack's three guesses
+
+| reading | measured | holds |
+|---|---|---|
+| 1. Lag points starved in a saturated group | 22 of 50 lag cell-steps: point's bound 0, group at 1.00 of `F·dt`. Over all hull point-steps of the eleven runs, 6456 of 38911 end the step dealt a zero impulse bound, 4958 of them in a group at 0.9 of `F·dt` or more | Holds for 22 of 50; the other 28 are a leaving hull or a block's last step |
+| 2. Work through points at no bound (A1's path), end-on | fix: 0 J against 821 kJ through bounded points; a2r: 0 J against 764 kJ (DERIVED: impulse times mean normal speed per logged point, five lines each) | Does not hold: the path was never taken |
+| 3. Cells parted on the first step a way opens, its work already reached, end-on | fix: 23 of 2720 cells parted by the contact law; a2r: 21 of 2879. With the work already reached on any step: 648 and 642, of which 543 and 512 on a way whose work fell | Does not hold as a path of any size |
+
+Also read for the attack's Z1 and Z2 (fix build, wall at 2 km/h, 124989 block-steps): a block
+stands with a way limited and not crossing in 3701 (40 the hull's), 1639 of them with no
+closing at the step's start, 207 with another way crossing; the longest such run is 10 steps
+there and 15 on the end-on house, where a loose piece resting on a ten-cell block read limited
+in 332 steps over 9 s with 3415 to 3418 J left of 3445 and the group returning nothing.
+
+## Clips, saved state, not verified
+
+Two-panel clips of the end-on pass on the pass file's line, c3 left and fix right, filmed runs
+reading 0.194 and 0.087 in place: `clips-work/house-end-on-before-vs-after-raised.mp4` and
+`clips-work/house-end-on-before-vs-after-exit-side.mp4`. Probe patches, scripts, pass files and
+tables: `clips-work/instrument/measure/`.
+
+Not verified: the state of the unreproduced 124-step run; why the second clause's blocks return
+so little (masses not logged); checkpoint 3's tie rule under the a2r patch; the 2 km/h pass on
+c3 or a2r; any pass at more than five lines or on another machine load.
