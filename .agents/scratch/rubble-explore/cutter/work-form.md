@@ -246,3 +246,125 @@ Scripts, plans, outputs and the unbuilt patch: `/Users/Yan/github/vikng-dev/over
 - The junction's hull mass is taken as 57 t; the piece speed under the hull was not logged.
 - B's own share uses the built reading, summed from the log's start, per body; work added before a body was renumbered by a split is another body's.
 - Gates for `844fb673`: fmt check, CI clippy, 671 targeted tests (`construction::`, `avian_ext`, `avian_reaction_bound`, `net::ram`, `net::protocol`, `net::construction`, `track::`, `contact_transfer`, `debris::`), the server check. `PROTOCOL_REV` unchanged at 108. The six lenses were not run by this lane.
+
+# Work form: checkpoint 3
+
+Subject: the game's building model (game state only). Lane `lane/work-form` on main `6a443e8f`; law commit `a0839b2d`, commitment pass `325c6083`. Passes: release build of `a0839b2d` with the per-point probe, pool capped at two threads, one tank. The commitment pass changed no arithmetic after that build and was not re-measured.
+
+Stall: gone, 11 of 11 plain-wall passes cross; deepest hull-to-standing overlap 0.001 to 0.066 m at the wall and 0.000 to 0.101 m over all passes (MEASURED; checkpoint 2: 0.056 to 0.253 m at the wall).
+Lag (cell-steps overlapped by more than 2 cm while returning under 1 N.s): 51 to 72 % at 10 km/h before, 0 % in seven of eight passes and 4 % in the eighth after (MEASURED).
+In-place shares against checkpoint 2: no pass falls by a third; the largest fall is the hall long wall at 20 km/h, 0.75 to 0.55 (27 %), and the house at 10 km/h rises, 0.56 to 0.65 (MEASURED).
+
+The re-measure is clean on the three stop conditions, so the commitment pass was done.
+
+## The two fixes as built
+
+**The advance.** A point's work is the impulse it returned times the mean of the body's speed into the cell at the step's start and at its end, negatives adding nothing. `bound_contacts` reads the start speed from `LinearVelocity` and `AngularVelocity` inside the physics step before the solve; those are the step's start, before its forces: the fork adds gravity and applied forces to its solver bodies inside each substep (`integrate_velocities`, `vendor/avian3d-0.8.0-overmatch/src/dynamics/integrator/mod.rs:373`) and writes velocities back to the components after the solve. A belt's staged force reads its body's velocity before the step the same way. So a body at rest under gravity reads zero at both ends and is charged nothing.
+
+**The lag, verified in the code before building.** The advisor's reading holds, with one correction: the game does not size the solver's ration with `reaction`. It hands the solver the block's strength for the step and the work its way has left (`W − taken`); the fork clamps each point at `max_work / v` with `v` the closing speed the solve finds at that iteration. A fully delivered ration therefore satisfies `Σ p·v_solve ≤ left`, and the count reads another speed, so the count closes on `W` from below. The mean-speed read does not make them agree.
+
+**The statement built.** A way is spent when the work on the block's cells has reached the way's, or when the body was crossing all the give the way had left within the step (`fracture::bound::crosses`, the comparison `reaction` makes) and the step's last solve left one of the way's points holding an impulse at the bound that way dealt it. No constant. The cells a block presses all leave with it, so "charged the work left" writes on no cell that stays. A belt's way is spent the same way when the belt pressed harder than the cells returned.
+
+One thing the first form got wrong, found by the law's own test: a point sits in several ways' groups and takes the least of their bounds, so "a point of the way ended clamped" also fired for a way whose points a cheaper way was holding (a block of 2384 J parted after returning 34 N.s of 543). `Bounds` now records which group dealt each point its impulse bound and its work bound, and a group is limited only by a point held at its own.
+
+## Passes
+
+Columns as checkpoint 2, plus that checkpoint's in-place share and the lag measure. Tick times carry the probe's logging.
+
+| pass | result | least fwd m/s | worst tick dv | deepest overlap m | left standing (contact law) | in place | in place, checkpoint 2 | freed on piece-only ticks | bodies | tick p50 / p95 ms / over 15.6 | overlapped cell-steps returning under 1 N.s |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wall 2 km/h | crossed 15.14 s | 0.00 | -0.12 | 0.066 | 243 (240) | 0.42 | 0.49 | 95 (40 %) | 238 | 4.72 / 6.36 / 2 | 8 of 113 (7 %) |
+| wall, standing start | crossed 3.44 s | 0.38 | -0.08 | 0.029 | 213 (211) | 0.49 | 0.44 | 49 (23 %) | 212 | 3.51 / 5.67 / 0 | 3 of 69 (4 %) |
+| wall 10 km/h a | crossed 3.14 s | 1.74 | -0.06 | 0.012 | 193 (192) | 0.55 | 0.51 | 94 (49 %) | 190 | 3.48 / 6.64 / 2 | 0 of 23 |
+| wall 10 km/h b | crossed 3.17 s | 1.60 | -0.10 | 0.010 | 225 (225) | 0.45 | 0.52 | 102 (45 %) | 223 | 4.35 / 6.95 / 2 | 0 of 25 |
+| wall 10 km/h c | crossed 3.12 s | 1.66 | -0.06 | 0.011 | 209 (209) | 0.50 | 0.52 | 116 (56 %) | 204 | 3.95 / 6.68 / 2 | 0 of 24 |
+| wall 10 km/h d | crossed 3.08 s | 1.81 | -0.06 | 0.003 | 204 (203) | 0.52 | 0.53 | 92 (45 %) | 202 | 3.74 / 7.06 / 2 | 0 of 24 |
+| wall 10 km/h e | crossed 3.14 s | 1.60 | -0.07 | 0.050 | 244 (241) | 0.42 | 0.52 | 89 (37 %) | 239 | 3.80 / 7.05 / 2 | 1 of 27 (4 %) |
+| wall 10 km/h f | crossed 3.16 s | 1.66 | -0.10 | 0.003 | 225 (222) | 0.47 | 0.48 | 72 (32 %) | 222 | 3.94 / 6.64 / 2 | 0 of 23 |
+| wall 10 km/h g | crossed 3.09 s | 1.78 | -0.06 | 0.020 | 199 (198) | 0.52 | 0.51 | 59 (30 %) | 196 | 3.58 / 6.78 / 2 | 0 of 25 |
+| wall 10 km/h h | crossed 3.16 s | 1.70 | -0.07 | 0.009 | 231 (228) | 0.45 | 0.50 | 90 (39 %) | 225 | 4.36 / 7.03 / 2 | 0 of 22 |
+| wall 20 km/h | crossed 1.69 s | 4.36 | -0.14 | 0.001 | 217 (217) | 0.48 | 0.52 | 92 (42 %) | 215 | 3.61 / 6.35 / 1 | 6 of 30 (20 %) |
+| house long wall 10 | crossed 4.30 s | 2.22 | -0.08 | 0.000 | 455 (382) | 0.65 | 0.56 | 154 (40 %) | 329 | 4.85 / 12.50 / 2 | 0 of 11 |
+| house long wall 20 | crossed 2.36 s | 4.52 | -0.13 | 0.101 | 509 (438) | 0.55 | 0.58 | 202 (46 %) | 438 | 8.45 / 12.98 / 2 | 3 of 15 (20 %) |
+| hall long wall 10 | crossed 9.06 s | 0.51 | -0.28 | 0.010 | 414 (201) | 0.67 | 0.73 | 127 (63 %) | 329 | 9.58 / 11.64 / 8 | 0 of 8 |
+| hall long wall 20 | crossed 5.44 s | 2.03 | -0.57 | 0.001 | 510 (304) | 0.55 | 0.75 | 134 (44 %) | 447 | 10.66 / 12.47 / 14 | 0 of 7 |
+| hall junction 20 | held | -0.17 | -0.52 | 0.000 | 714 (617) | 0.46 | 0.55 | 327 (53 %) | 674 | 13.86 / 17.39 / 186 | 0 of 5 |
+| house end-on governed | crossed 1.80 s | 6.06 | -0.49 | 0.000 | 855 (542) | 0.19 | 0.18 | 321 (59 %) | 807 | 11.13 / 14.61 / 21 | 0 of 17 |
+
+Lag at checkpoint 2, same measure: 2 km/h 38 %, 10 km/h 51, 67 and 72 % (three passes read), 20 km/h 11 %, house 24 %, hall 17 %. What is left at 20 km/h is 6 cell-steps on the wall and 3 on the house.
+
+Of the parting rows, about half are by the second clause (wall 10 km/h a: 58 held, 48 by work; house 10: 92 and 76; hall 20: 86 and 99; junction: 149 and 195).
+
+Tick time without logging (same binary, one run each): junction 20 km/h mean 11.6 ms, p99 15.0, 6 ticks over; hall wall 20 mean 9.6, p99 17.2, 11 over; house 10 mean 7.8, p99 19.2, 26 over; wall 10 mean 4.1, p99 9.3, 2 over; end-on mean 11.1, p99 15.4, 2 over. The junction's 186 ticks over in the table are the probe's logging. The house's 26 against 2 in the logged run is run-to-run spread.
+
+### Parked hulls (MEASURED)
+
+| run | while driven | after demand ended | all at rest |
+|---|---|---|---|
+| hull nudged into the wall, demand off | 42 cells left (3 hull rows, 6 piece rows), deepest overlap 0.026 m | pieces settle for 0.5 s, 0 cells | 64.8 s: 0 cells, 0 contact rows |
+| hull driven half through, stops in the breach | 177 cells (13 hull rows, 56 piece rows), deepest overlap 0.036 m | hull and pieces come to rest over 8.8 s: 6 cells (1 hull row, 3 piece rows) | 55.6 s: 0 cells, 0 contact rows |
+
+No parked hull parts a cell.
+
+### Hull pose travel against speed x dt (MEASURED)
+
+The stall of the pose survives. Impulse-weighted over the hull's points on standing cells, pose travel over end speed x dt: 2 km/h 0.93, 10 km/h 0.65 and 0.60, 20 km/h 0.28 (checkpoint 2: 0.38), house 0.57 and 0.54, hall wall 1.01 and 0.85, junction 0.35, end-on 0.10. The step of highest return at 20 km/h moved the pressing points 3.9 mm where their end speed times the step is 37 mm. The advisor's guess, that it was the cells standing while returning nothing, is refuted: those are gone and the ratio did not move. Unexplained; backlog row destruction-11.
+
+### Own share (MEASURED)
+
+| pass | piece rows | own share p10 / p25 / p50 / p75 / p90 | rows under 10 % | cells parted | through a way with own share under 10 % | at checkpoint 2 |
+|---|---|---|---|---|---|---|
+| wall 2 km/h | 83 | 0 / 0.004 / 0.47 / 0.87 / 0.97 | 31 (37 %) | 240 | 53 (22 %) | 23 % |
+| wall 10 km/h a | 62 | 0 / 0.001 / 0.43 / 0.86 / 0.96 | 20 (32 %) | 192 | 23 (12 %) | 30 % |
+| wall 10 km/h b | 91 | 0 / 0.04 / 0.36 / 0.70 / 0.96 | 32 (35 %) | 225 | 51 (23 %) | 35 % |
+| wall 20 km/h | 85 | 0 / 0.01 / 0.26 / 0.66 / 0.96 | 32 (38 %) | 217 | 49 (23 %) | 30 % |
+| house long wall 10 | 131 | 0 / 0.02 / 0.28 / 0.88 / 1.00 | 52 (40 %) | 382 | 66 (17 %) | 32 % |
+| house long wall 20 | 177 | 0 / 0 / 0.17 / 0.58 / 0.92 | 81 (46 %) | 438 | 124 (28 %) | 29 % |
+| hall long wall 10 | 148 | 0 / 0.02 / 0.12 / 0.60 / 0.97 | 70 (47 %) | 201 | 40 (20 %) | 40 % |
+| hall long wall 20 | 173 | 0 / 0.05 / 0.36 / 0.90 / 1.00 | 53 (31 %) | 304 | 64 (21 %) | 44 % |
+| hall junction 20 | 339 | 0 / 0.04 / 0.34 / 0.76 / 0.99 | 119 (35 %) | 617 | 188 (30 %) | 40 % |
+
+A piece's median own share rises from 0.00 to 0.10 to 0.12 to 0.47; rows under a tenth fall from 42 to 67 % to 31 to 47 %. A piece's speed change over its parting step is now about zero at the median (-0.02 to +0.11 m/s; checkpoint 2: +0.06 to +0.20).
+
+### The junction
+
+Still held at 20 km/h. Last 2 s: the belt law loads nothing and has no traction; the solver carries the hull through the belt-face colliders (8101 N.s a step) and the belly (721 N.s); the hull stands 0.49 m above where it met the wall and creeps at 1.07 m/s. More cells leave than at checkpoint 2 (714 against 484; in place 0.46 against 0.55). Backlog row driving-22.
+
+## Commitment pass
+
+Done, in `325c6083`:
+
+- **One path.** The end-speed count is gone with the belt test's six-tick allowance, which existed for the lag. No flag, lever or probe is in the tree.
+- **Deleted.** The work-only bound (`Bounds::group` accepted an infinite impulse for one point; `shares`' arm for it); `shares`' three vectors per group per substep (one buffer, reused); the `usize::MAX` sentinel never written; the unbuilt depth patch; checkpoint 1's wall and house clips.
+- **Narrative.** `.agents/scratch/strength-limited-contact-design-2026-11-21.md`, "As built", states the law once: the mean-speed count, the spent clause with its before and after, the scalar-work simplification with its cost, and three rejected alternatives in prose with the measurement that refuted each (end-speed count, depth read from the contact and depth gained, spent when clamped). `construction-destruction.md` and `scripts/perf/collapse.md` had one sentence each made false; fixed.
+- **Scalar work.** Stated where it is defined, `fracture::bound::taken`: one scalar per cell, a way may part on work done along another or by another body; 12 to 30 % of parted cells leave through a way whose own body added under a tenth of the work on it (MEASURED above). The module doc of `bounded` points there.
+- **Tests** (each names its invariant, its reliers and its mutants): the work of a stopped body is the kinetic energy it lost, between the two mutants (end speed alone: 14 J of 186 J; start speed alone: twice); a body pushed out, held under a force or resting under gravity does none; a cell does not stand in a body past its give plus two steps' travel; a belt's cell leaves on tick `ceil(W / (F v dt))` exactly; cells leave only on a step that spent a way; a group is limited by its own bound alone (fork guard); owners come back in their order on pools of one, two and eight threads. The three mutants (both clauses off, end speed alone) were run once: three tests fail.
+- **Backlog.** Closed: destruction-06 (the deal says why groups go in order, and reuses its buffer), destruction-08 (`per_owner` takes its pool; the witness above; an owner's work reads nothing another writes, so result order is all of the dependence), destruction-09. Added: destruction-11 (pose stall), destruction-12 (pieces under the terrain), driving-22 (the junction hold).
+- **Not closed, and why.** destruction-07: its fix is a price on a hosted step, which this lane cannot run; the row now carries the local price of the whole stage (0.26 ms a tick at a wall, 1.8 to 2.3 ms at a hall) and says the gather's share is not isolated. The other fix, walking only construction colliders' pairs, would change the gather for an unmeasured gain. destruction-05 also names `bounded.rs` (bonded cells in a moving group answer rigidly): pricing them means parting a moving body inside the solve, which is the landing law's job and a design of its own.
+
+## Clips
+
+Two panels, `MAIN` (`6a443e8f`) | `WORK FORM` (`a0839b2d`), labels burned in, 8 frames per second of game time, stills at 3, 6 and 10 s beside each:
+
+- `/Users/Yan/github/vikng-dev/overmatch/.agents/scratch/rubble-explore/clips-work/wall-10kmh-main-vs-work-form.mp4`: does the hull come out the far side, or stop inside the wall. `MAIN` holds; `WORK FORM` crosses in 3.13 s.
+- `/Users/Yan/github/vikng-dev/overmatch/.agents/scratch/rubble-explore/clips-work/house-long-wall-10kmh-exit-side.mp4`: how much of the house still stands once the hull is through. Both cross, 4.48 and 4.50 s.
+- `/Users/Yan/github/vikng-dev/overmatch/.agents/scratch/rubble-explore/clips-work/hall-long-wall-20kmh-raised.mp4`: does the hull get through the hall, and how much wall and roof falls around it. Both cross, 5.20 and 5.03 s; the `WORK FORM` hall loses most of its roof over the path.
+
+The wall clip has a new name (its label changed); the old wall and house files are deleted. Checkpoint 1's `hall-junction-20kmh-raised.mp4` is left and is stale.
+
+## Commits
+
+- `a0839b2d` the two fixes and their tests.
+- `325c6083` the commitment pass.
+- this report.
+
+Probe patch, scripts, plans and outputs: `/Users/Yan/github/vikng-dev/overmatch/.agents/scratch/rubble-explore/clips-work/instrument/c3/` and `work-probe-c3.patch` beside it.
+
+## Not verified
+
+- The commitment pass's code (the deal's buffer, the optional dealer, `per_owner`'s pool argument) ran the tests, not the passes.
+- One run per pass apart from the wall at 10 km/h; `MAIN` was run for the clips only, not timed.
+- Why the hull's pose stalls; how a piece ends under the terrain. One piece was retired below the play-area floor, at 50 m/s, in 4 of this checkpoint's 27 runs: the end-on house (both runs), the hall long wall at 20 km/h and the junction (the unlogged run of each) (MEASURED from the server logs).
+- The second clause's lag of one substep: a point held at its share while its group still has room reads as limited. Half the partings go by that clause and over-freeing did not rise (freed on piece-only ticks 23 to 63 %, checkpoint 2: 25 to 87 %), but the two are not separated.
+- No hosted run, no play by a person, no two-core machine. The six lenses were read and applied by this lane to what it edited; no independent reviewer ran them.
+- Gates for both commits: fmt check, CI clippy, 675 targeted tests (`construction::`, `avian_ext`, `avian_reaction_bound`, `net::ram`, `net::protocol`, `net::construction`, `track::`, `contact_transfer`, `debris::`), the server check. `PROTOCOL_REV` unchanged at 108.
