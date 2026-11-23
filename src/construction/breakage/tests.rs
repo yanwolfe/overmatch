@@ -4230,7 +4230,7 @@ fn a_freed_block_leaves_at_rest_with_its_occupied_mass() {
     // Fixture: the upper pair leaves.
     let group = vec![1, 2];
     let expected_mass: f32 = group.iter().map(|&c| kind.hulls.occupied(c).1.mass).sum();
-    let cut = bounded::cut(&mut owner, &group, 7, &mut record);
+    let cut = bounded::cut(&mut owner, &group, 7, &mut record.entries);
     let departures = bounded::depart(
         &owner,
         Transform::IDENTITY,
@@ -4638,7 +4638,7 @@ fn a_cut_frees_unsupported_matter_without_building_standing_colliders() {
     let mut record = Record::default();
     let departures = {
         let mut owner = app.world_mut().get_mut::<Breakage>(root).unwrap();
-        let cut = bounded::cut(&mut owner, &[1], 7, &mut record);
+        let cut = bounded::cut(&mut owner, &[1], 7, &mut record.entries);
         bounded::depart(
             &owner,
             Transform::IDENTITY,

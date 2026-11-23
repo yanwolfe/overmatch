@@ -45,6 +45,11 @@ impl Price {
     pub(crate) fn spent(&self, taken: f64) -> bool {
         taken >= self.work
     }
+
+    /// The work the bonds still take, J, having taken `taken`.
+    pub(crate) fn left(&self, taken: f64) -> f64 {
+        (self.work - taken).max(0.0)
+    }
 }
 
 /// The work the bonds of `cells` have taken, J, `work` their structure's per chunk
@@ -60,7 +65,7 @@ pub(crate) fn taken(work: &[f64], cells: &[usize]) -> f64 {
 /// The give cells priced at `price` have left, m, their bonds having taken `taken` J: the
 /// distance over which they still return their strength.
 fn give_left(price: Price, taken: f64) -> f64 {
-    (price.work - taken).max(0.0) / price.force
+    price.left(taken) / price.force
 }
 
 /// Whether a body closing at `closing` m/s on cells priced at `price` crosses the give they have
