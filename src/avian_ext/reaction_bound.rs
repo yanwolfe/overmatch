@@ -32,10 +32,8 @@
 //! budget is one dynamic body's, and its cell lives on that solver body, which has one writer
 //! at a time (the fork's `OVERMATCH_PATCH.md`, "Bounded contact"). A budget whose count has
 //! reached its work has nothing left: its points do no more work for the rest of the step.
-//! The cut reads a speed inside a pass, and a later solve of another constraint may move it:
-//! the substep that reaches the budget may pass it, by less than a substep's work at the
-//! points' impulse bound, and a body driven by one far heavier may close at no speed and
-//! count nothing (the design narrative's residuals).
+//! What the form leaves over is the design narrative's ("Residuals of the form",
+//! `.agents/scratch/strength-limited-contact-design-2026-11-21.md`).
 //!
 //! A manifold point in no group and no budget is Avian's rigid contact bit for bit, and may
 //! still be read ([`Bounds::read`]).
@@ -87,12 +85,14 @@ struct Budget {
 }
 
 /// One read point: this substep's impulse bound, the least its groups dealt it; the normal
-/// impulse it has returned over the step, N·s; and its share of its budget's count, J.
+/// impulse it has returned over the step, N·s; its share of its budget's count, J; and
+/// whether a budget holds it.
 #[derive(Debug, Clone, Copy)]
 struct Record {
     bound: f32,
     returned: f32,
     work: f32,
+    budgeted: bool,
 }
 
 /// A read manifold: its prepared constraint and its points' records.
@@ -177,6 +177,7 @@ impl Bounds {
                     bound: f32::INFINITY,
                     returned: 0.0,
                     work: 0.0,
+                    budgeted: false,
                 },
             );
         }
@@ -206,10 +207,15 @@ impl Bounds {
     pub fn budget(&mut self, body: Entity, points: Vec<At>, work: f32) {
         assert!(
             work >= 0.0 && work.is_finite(),
-            "a budget of {work} J is negative, NaN or no budget"
+            "a budget of {work} J is negative, NaN or infinite"
         );
         for &at in &points {
             self.read(at);
+            let record = Manifold::of(&self.manifolds, at).record(at);
+            assert!(
+                !std::mem::replace(&mut self.points[record].budgeted, true),
+                "a point is in one budget: {at:?} is in a second, {body:?}'s"
+            );
         }
         (self.budgets).push(Budget { body, points, work });
     }
@@ -352,11 +358,6 @@ fn locate(
                 scratch.len() / CELL - 1
             });
             let part = &mut constraint.points[at.point].normal_part;
-            assert!(
-                part.limit == u32::MAX,
-                "a point is in one budget: {at:?} is in a second, {:?}'s",
-                budget.body
-            );
             // A point of no effective mass moves nothing and does no work.
             if part.effective_mass > 0.0 {
                 part.limit = (cell << 1 | side) as u32;
@@ -379,10 +380,10 @@ fn cap(left: f32, sum: f32, k: f32) -> f32 {
 
 /// The fork's normal limiter (`NORMAL_LIMIT`), for a point [`locate`] gave a budget's token.
 /// `ContactNormalPart::limit_state` is the point's closing speed before the substep's forces
-/// and the work it does this substep as of its last solve. A solve
-/// found the point's impulse, `increment` more than it held, the bodies closing at `closing`
-/// m/s there before it; where that impulse does more work than the point's budget has left
-/// after the budget's other points, it is cut to the impulse that does what is left ([`cap`]).
+/// and the work it does this substep as of its last solve. A solve found the point's impulse,
+/// `increment` more than it held, the bodies closing at `closing` m/s there before it; where
+/// that impulse does more work than the point's budget has left after the budget's other
+/// points, it is cut to the impulse that does what is left ([`cap`]).
 /// The work is judged at the impulse the solve found, never at a lesser one: a body the contact
 /// stops did what it had, and a body held still does none, however hard it is pressed.
 fn limit(
@@ -466,6 +467,10 @@ fn account(
             }
             if *opened {
                 let work = part.impulse * 0.5 * (part.limit_state[0] + speed);
+                assert!(
+                    work.is_finite(),
+                    "a point's work is finite: {at:?} did {work} J"
+                );
                 works.push((manifold.record(at), work));
                 did += work;
             }
@@ -483,8 +488,7 @@ fn account(
         let scratch = &mut (bodies.get_mut(body))
             .expect("`locate` found the body at this index")
             .limit_scratch[cell * CELL..][..CELL];
-        // What one point gave back is taken from what another did; a substep the bodies left
-        // on the whole counts nothing.
+        // The floor and its grain: the design narrative, "Work".
         let count = did.max(0.0);
         if count > 0.0 {
             let positive: f32 = works.iter().map(|&(_, work)| work.max(0.0)).sum();

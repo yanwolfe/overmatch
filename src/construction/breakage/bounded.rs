@@ -617,7 +617,14 @@ fn settle(
 ) -> (Vec<BlockRow>, BTreeSet<usize>) {
     for point in &press.points {
         let (cell, joules) = match *point {
-            Point::Solved { cell, at } => (cell, f64::from(bounds.work(at))),
+            Point::Solved { cell, at } => {
+                let share = bounds.work(at);
+                assert!(
+                    share >= 0.0,
+                    "a share of a count is finite and not negative: {point:?} holds {share} J"
+                );
+                (cell, f64::from(share))
+            }
             Point::Staged {
                 body,
                 cell,
@@ -630,18 +637,13 @@ fn settle(
                     continue; // The body left the world inside the tick: it advanced into nothing.
                 };
                 let leaving = speed_into(linear.0, angular.0, arm, into);
-                (
-                    cell,
-                    f64::from(kept) * f64::from(0.5 * (entering + leaving)),
-                )
+                let joules = f64::from(kept) * f64::from(0.5 * (entering + leaving));
+                assert!(joules.is_finite(), "{point:?} did {joules} J");
+                // A belt the cells pushed back did them no work.
+                (cell, joules.max(0.0))
             }
         };
-        assert!(
-            joules.is_finite(),
-            "work is kept for good, and {point:?} did {joules} J"
-        );
-        // A belt the cells pushed back did them no work; a solver point's share is never negative.
-        work[cell] += joules.max(0.0);
+        work[cell] += joules;
     }
     let mut leaving = BTreeSet::new();
     let mut rows = Vec::with_capacity(press.blocks.len());
