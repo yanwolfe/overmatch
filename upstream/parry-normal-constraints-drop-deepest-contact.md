@@ -84,7 +84,7 @@ that end more than 1 m under the surface:
 | gate | the splinter | a beam 4.39 m by 0.19 m by 0.16 m |
 |---|---|---|
 | judged within rounding | 142 of 1200 | 30 of 1200 |
-| removed (the fix below) | 13 of 1200 | 4 of 1200 |
+| removed | 13 of 1200 | 4 of 1200 |
 | removed, and a triangle overlapped towards its back answers along its cone ("Not covered") | 0 of 1200 | 3 of 1200 |
 
 MEASURED, the same bed rebuilt (other draws), the three forms of the gate:
@@ -119,6 +119,11 @@ against a plane that has no surface there. Among coplanar neighbours the plane i
 own, which is why level ground and the slope show nothing. This is the catching an internal-edge
 correction exists to remove, and upstream's gate holds it off.
 
+MEASURED statically (`src/tests/parry_manifold_witness.rs`, the box on an edge 10 to 50 mm over
+creased ground, 0.1 m prediction, 10,800 poses): stepping from each reported point along its normal
+by its gap ends on the surface within 3.3e-6 m under the fix, and up to 9.4 mm off it with the
+gate removed.
+
 A turned pair that overlaps is another matter: the shapes intersect at that pair, on the triangle
 itself, and the depth read along the corrected normal is at most the pair's.
 
@@ -131,10 +136,13 @@ the fix it stays on the surface in all nine.
 Keep the pair where the direction is unchanged within rounding, or where the pair overlaps:
 
 ```rust
-let pair_dist = (p2_1 - p1).dot(local_n1);
 if (cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty())
-    && (local_n1.dot(dir) >= 1.0 - 1.0e-6 || pair_dist < 0.0)
+    && (local_n1.dot(dir) >= 1.0 - 1.0e-6 || dist < 0.0)
 ```
+
+`dist` is the pair's own signed distance, as the function already has it; a touching pair counts
+as a gap. `1.0e-6` is a resolution: an f32 unit vector rotated into another frame and back differs
+from itself by about 1e-7.
 
 The comment at the gate says the direction is no longer valid for this contact once the
 constraints changed it. The contact does not use the direction: its depth is

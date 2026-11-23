@@ -112,31 +112,23 @@ pub fn contact_manifold_pfm_pfm<'a, ManifoldData, ContactData, S1, S2>(
                 false,
             );
 
-            // The closest-point pair's distance along the corrected normal: the pair's distance
-            // times the cosine of the turn.
-            let pair_dist = (p2_1 - p1).dot(local_n1);
-            // OVERMATCH PATCH: upstream drops the pair wherever the normal constraints changed
-            // the direction, tested bit for bit. Two cases keep it:
-            // - "changed" is judged within rounding. The projection rewrites an unchanged
-            //   direction (rotated into shape 2's frame and back, or replaced by the face normal
-            //   it already equals). The bound admits a turn of up to 0.081 degrees
-            //   (acos(1 - 1e-6)), a depth off by at most 1e-6 of the pair's distance.
-            // - a turned pair that overlaps. The shapes themselves intersect there, and the
-            //   depth read along the corrected normal is never more than the pair's. Dropped, a
-            //   body overlapping a triangle beside its deepest feature reports no overlapping
-            //   point (clipping along the corrected normal finds none) and goes through.
-            // A turned pair with a gap stays dropped: read along the corrected normal the gap
-            // shrinks by the cosine, which makes the triangle's plane a surface beyond its
-            // outline, and a body sliding past a crease is stopped against it.
+            // OVERMATCH PATCH: upstream keeps the closest-point pair only where the constraints
+            // left the direction bit-equal. Kept here: a direction unchanged within rounding,
+            // and a turned pair that overlaps (`dist`, the pair's own signed distance; touching,
+            // `dist == 0.0`, counts as a gap). A turned pair with a gap stays dropped: read
+            // along the corrected normal its gap shrinks by the cosine of the turn.
+            // `dir` and `local_n1` are finite unit vectors, so their dot is that cosine.
+            // Resolution: 1.0e-6, over the 1e-7 by which an f32 unit vector rotated into
+            // another frame and back differs from itself.
             if (cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty())
-                && (local_n1.dot(dir) >= 1.0 - 1.0e-6 || pair_dist < 0.0)
+                && (local_n1.dot(dir) >= 1.0 - 1.0e-6 || dist < 0.0)
             {
                 let contact = TrackedContact::new(
                     p1,
                     pos12.inverse_transform_point(p2_1),
                     PackedFeatureId::UNKNOWN, // TODO: We don't know what features are involved.
                     PackedFeatureId::UNKNOWN,
-                    pair_dist,
+                    (p2_1 - p1).dot(local_n1),
                 );
                 manifold.points.push(contact);
             }
