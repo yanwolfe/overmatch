@@ -1038,3 +1038,224 @@ now, with the body held at the block meanwhile.
 Not verified: the solve-order reading above (no row records the order of solves); the
 impulse the dynamic contacts carried; the two negative outliers of checkpoint 2 themselves
 (they did not recur); one run a pass, two for hall wall 20.
+
+# One budget: fix pass
+
+Subject: the game's building model (game state only). Law as of `df693670`: the count is the
+budget's own work per substep, signed over its points and floored per substep, shared to
+cells by positive share; a block parts when the work on its cells is at least its way's
+(`taken >= work`, exact), and on nothing else. The cut is unchanged. Every number is MEASURED
+unless marked. Passes: release build of `be9bc72a` with a temporary probe, never committed
+(kept at `.agents/scratch/rubble-explore/clips-work/instrument/budget/probe-fix-pass-on-be9bc72a.patch`),
+ordinary input path, one tank, two compute threads, one run a pass except the wall at 10 km/h.
+The machine's load average was 8 to 15 throughout, so the passes are untimed.
+
+## R1a: the parting test without the cast
+
+`taken as f32 >= work as f32` is gone; the test is `taken >= work`. The remainder closes.
+- Seam fixtures under the plain test, 540 arms (a 2,000 kg body at 4 m/s free, held at
+  100 N·s a step, and a 2 kg piece pressed by it; one, four and sixteen points; 60 budgets
+  from 300 J in steps of 37.37 J): the count reaches the work on the step it comes within
+  rounding of it in 479 arms and one step later in 61 (free 10 of 180, held 42, pressed 9);
+  never later, never not at all. The remainders that waited a step were `1.5e-5` to
+  `1.2e-4` J (1 to 8 hundred-millionths of the work) and `1.8e-12` to `3.6e-12` J; each was
+  done exactly on the next step, in which the points returned under 0.001 N·s.
+- DERIVED bound, asserted by
+  `a_paying_body_reaches_the_work_exactly_within_the_remainders_bound`: a step hands the
+  points what is left and the count meets it but for the rounding of the points' moves, a
+  fraction `ε32 · points` of what was handed at most, so what is left shrinks by that factor
+  a step until it is under the grain of the f64 the work is kept in:
+  `ln ε64 / ln(ε32 · points)` steps, 3 on one point and 4 on sixteen.
+- The guess that the solve rounds a small increment away does not hold: the cut sets the
+  point's whole impulse for the substep to the small value, it is not an increment on a large
+  one, and the remainder was done exactly in every arm.
+- Pass set: 24 of 530 partings by the hull and 5 of 3,395 by pieces came after the block
+  had stood one step (one of them two) on a remainder under a millionth of its work. In
+  that step the block returns almost nothing to a body that is still moving. 89 of 267,816
+  standing block-steps were on such a remainder; the ones that did not part that way lost
+  the body or changed cells.
+- With the cast (`8679d1e7`, same pass set) 22 standing block-steps were within a millionth
+  of the work, the cast's own half-step straddle, against 89 here.
+
+## R1b: a light piece driven by a far heavier body
+
+Seam fixture: a 2,000 kg box driving a piece onto the slab, both at 4 m/s, the piece's points
+in a group of 100 N·s a step on a budget of 1,000 J; a step is due about 400 J and the
+count is due on step 3. "Slab side" is what the piece's points returned over the run,
+"driver side" the driver's momentum change.
+
+| ratio | piece | points | count reached on step | count J | driver lost J | slab side N·s | driver side N·s |
+|---|---|---|---|---|---|---|---|
+| 10 | 200 kg | 4 | 3 | 1,000.0 | 914 | 253.6 | 231.9 |
+| 100 | 20 kg | 4 | 3 | 1,000.0 | 997 | 253.7 | 253.3 |
+| 1,000 | 2 kg | 4 | 3 | 1,015.5 | 1,101 | 273.1 | 280.2 |
+| 10,000 | 0.2 kg | 4 | 8 | 1,017.7 | 1,897 | 473.9 | 489.2 |
+| 30,000 | 0.067 kg | 4 | not in 64 | 20.0 | 9,445 | 892.5 | 2,879.3 |
+| 10 | 200 kg | 16 | 3 | 1,000.0 | 910 | 253.6 | 230.7 |
+| 100 | 20 kg | 16 | 3 | 1,000.0 | 983 | 252.6 | 249.6 |
+| 1,000 | 2 kg | 16 | 3 | 1,018.0 | 1,078 | 270.0 | 274.1 |
+| 10,000 | 0.2 kg | 16 | 6 | 1,005.8 | 1,465 | 374.7 | 375.0 |
+| 30,000 | 0.067 kg | 16 | not in 64 | 964.7 | 8,432 | 580.6 | 2,497.8 |
+
+Where the uncounted work goes, ratio 10,000 on four points, step by step: the contact between
+the two boxes passes on 35.5 N·s in step 1, 82.5 in step 2 and 100 from step 3; the slab's
+points return the same (35.5, 82.5, 100.0). Until that reaches the group's bound the piece
+does not move: its speed into the slab goes 4.0 to −0.24 to −0.01 m/s, so its points close at
+no speed and count 3.3 J, while the driver keeps 3.98 and 3.94 m/s and sinks 6.2 and then
+10.9 cm into the piece, losing 138 J and then 327 J there. From step 3 the piece is driven at
+the driver's speed (3.81 m/s) and the count rises 349 and 342 J a step, as at the lower
+ratios; on step 5 the piece is thrown ahead (2.4 m/s, 37 cm into the slab), bounces for two
+steps counting nothing, and the count is reached on step 8. At 30,000 the contact passes on
+11.8, 27.6, 40.7, 51.6, 61.0, 70.9, 78.5, 84.3 N·s over eight steps and never the bound
+before the driver is 36 cm into a 1 m piece; the fixture then leaves the configuration it
+states (the driver passes through the piece and meets the slab itself). What the contact
+between the two bodies passes on in the first step scales with the piece's mass (35.5 N·s at
+0.2 kg, 11.8 at 0.067 kg). The readings up to the first parting are the same on the law
+before the count-only form (`b6b776d5`: the same driver losses step by step); there the
+cut's mark parted the 10,000 arm on step 5, and an arm at 28,571 not within 16 steps.
+
+Plainly: yes. A body that keeps losing energy through a light enough piece can fail to part
+the block, because the work is lost in Avian's contact between the body and the piece and
+never reaches the block's points as work. In this fixture the count is on time to a ratio of
+1,000, late at 10,000 (5 and 3 steps), and absent at 30,000. A 57 t hull on a 2 to 6 kg
+piece is 10,000 to 30,000. Not fixed, nothing built against it. What the passes show of it
+is not measured here: the probe does not read the contact between two dynamic bodies.
+
+## A1 fixtures
+
+- Free body (2,000 kg, 4 m/s, 400 J, no impulse bound): count 400.0 J on step 1; loss
+  400.003, 400.000, 400.000 J on one, four and sixteen points.
+- Held at 100 N·s a step, 1,000 J: counts 397.5, 790.0, 1,000.0 on steps 1 to 3 for every
+  shape; loss 1,000.01, 999.99, 1,000.21 J.
+- Pressed (2 kg under 2,000 kg): reached on step 3; count 1,015.5 (four points) and 1,018.0 J
+  (sixteen); the pair lost 1,036 and 1,057 J.
+- Points of both signs in one substep: only a driven piece has them. On 400 arms of one body
+  falling and turning on the slab, flooring each point first moved no count by a
+  thousandth. The witness is a 2 kg sixteen-point piece under a 2,000 kg box at 0.25 m/s:
+  count 20.92 J, the pair lost 21.28 J, the per-point floor counts 23.02 J.
+- Closing and backing off on alternate substeps with no net work: not written. Under a
+  floor per substep the closing substeps count; the design narrative states it where the
+  floor is stated.
+- Rest under gravity, 100 J: a 2,000 kg box counts 1.898622 J in 64 steps of settling and
+  0.000024 J over the next 576; a 2 kg box under it 34.42105 J and then nothing.
+
+## Passes
+
+Columns as at checkpoint 2, without the tick column: result; speed at contact m/s; least
+forward speed m/s; worst one-tick speed change m/s; deepest hull-to-standing overlap m;
+cells that left standing (by contact; by lost support); share in place; cells of blocks only
+pieces parted (share of contact-law cells); bodies at end.
+
+| pass | result | contact | least fwd | worst dv | overlap | left (contact; support) | in place | piece-parted | bodies |
+|---|---|---|---|---|---|---|---|---|---|
+| wall 2 km/h | crossed 15.72 s | 0.45 | -0.05 | +0.08 | 0.048 | 198 (198; 0) | 0.50 | 102 (52 %) | 196 |
+| wall, standing start | crossed 3.91 s | 0.36 | 0.38 | -0.08 | 0.055 | 232 (228; 4) | 0.45 | 137 (60 %) | 230 |
+| wall 10 km/h a | crossed 3.25 s | 2.65 | 1.57 | -0.08 | 0.030 | 202 (201; 1) | 0.50 | 106 (53 %) | 202 |
+| wall 10 km/h b | crossed 3.30 s | 2.65 | 1.30 | -0.08 | 0.055 | 195 (195; 0) | 0.52 | 106 (54 %) | 194 |
+| wall 10 km/h c | crossed 3.31 s | 2.65 | 1.49 | -0.12 | 0.037 | 204 (204; 0) | 0.49 | 119 (58 %) | 204 |
+| wall 10 km/h d | crossed 3.25 s | 2.65 | 1.48 | -0.15 | 0.015 | 215 (215; 0) | 0.47 | 117 (55 %) | 215 |
+| wall 10 km/h e | crossed 3.33 s | 2.65 | 1.40 | -0.15 | 0.016 | 210 (209; 1) | 0.50 | 115 (55 %) | 209 |
+| wall 10 km/h f | crossed 3.22 s | 2.65 | 1.39 | -0.05 | 0.016 | 199 (199; 0) | 0.52 | 112 (56 %) | 198 |
+| wall 10 km/h g | crossed 3.30 s | 2.65 | 1.44 | -0.15 | 0.044 | 204 (203; 1) | 0.51 | 105 (52 %) | 204 |
+| wall 10 km/h h | crossed 3.23 s | 2.65 | 1.51 | -0.16 | 0.021 | 201 (184; 17) | 0.51 | 97 (53 %) | 201 |
+| wall 20 km/h | crossed 1.78 s | 5.39 | 3.96 | -0.22 | 0.009 | 201 (201; 0) | 0.53 | 116 (58 %) | 201 |
+| house long wall 10 | crossed 4.73 s | 2.67 | 1.53 | -0.11 | 0.032 | 387 (302; 85) | 0.64 | 204 (68 %) | 301 |
+| house long wall 20 | crossed 2.53 s | 5.46 | 4.20 | -0.21 | 0.006 | 427 (338; 89) | 0.56 | 261 (77 %) | 383 |
+| hall long wall 10 | crossed 9.69 s | 2.67 | 0.76 | -0.43 | 0.000 | 339 (140; 199) | 0.74 | 125 (89 %) | 268 |
+| hall long wall 20 | crossed 7.75 s | 5.43 | 0.67 | -1.33 | 0.053 | 399 (215; 184) | 0.71 | 188 (88 %) | 310 |
+| hall junction 20 | held | 5.42 | -0.51 | -0.91 | 0.000 | 452 (269; 183) | 0.61 | 254 (94 %) | 411 |
+| end-on, line -2 | crossed 2.75 s | 10.87 | 3.77 | -0.66 | 0.000 | 918 (748; 170) | 0.03 | 702 (94 %) | 896 |
+| end-on, line -1 | crossed 2.09 s | 10.87 | 5.56 | -1.09 | 0.068 | 765 (599; 166) | 0.21 | 558 (93 %) | 742 |
+| end-on, line 0 | crossed 1.97 s | 10.87 | 6.22 | -0.40 | 0.000 | 787 (538; 249) | 0.20 | 506 (94 %) | 761 |
+| end-on, line +1 | crossed 2.00 s | 10.87 | 6.05 | -0.55 | 0.000 | 772 (589; 183) | 0.20 | 544 (92 %) | 749 |
+| end-on, line +2 | crossed 2.00 s | 10.87 | 6.13 | -0.56 | 0.079 | 783 (550; 233) | 0.20 | 520 (95 %) | 762 |
+
+Mechanisms.
+- **Walls**: all eleven cross. The hull parts 22 to 39 blocks a pass, pieces 79 to 100.
+- **House long wall**: crosses at both speeds; a fifth of the cells leave by lost support.
+- **Hall long wall**: crosses at both speeds (9.69 s and 7.75 s; least forward speed 0.76 and
+  0.67 m/s). The hull parts 6 and 11 blocks; pieces part 83 and 116.
+- **Hall junction 20 km/h**: held, as at checkpoint 2 and on the build before this pass. The
+  hull parts 6 blocks in the pass; over the last 2 s the belts carry no load (capacity 0 kN):
+  the hull rides on pieces.
+- **End-on**: all five lines cross, 3 to 21 % in place.
+- **Parked hulls**: touching the wall and stopped in the breach, both come to rest; from
+  then on no hull point on a standing cell, no counted work and no parting over 4,161 and
+  3,680 ticks.
+- Against checkpoint 2 the outcomes are the same but the hall long wall at 10 km/h, whose
+  logged run there was invalid. In place: walls 0.45 to 0.53 (0.45 to 0.53 there), house 0.64
+  and 0.56 (0.66, 0.62), hall 0.74 and 0.71 (0.69 invalid, 0.74), junction 0.61 (0.62), end-on
+  0.03 to 0.21 (0.05 to 0.20).
+
+## Partings (23 passes; 530 by the hull, 3,395 by pieces, 13 more on a way that takes no work)
+
+| reading | hull | pieces |
+|---|---|---|
+| counted work over W: least | 1.000000 | 1.000000 |
+| under W | 0 | 0 |
+| counted over W, p10 / p50 / p90 | 1.000 / 1.003 / 2.4 | 1.007 / 1.25 / 5.7 |
+| over W by more than 0.1 % | 312 | 3,243 |
+| block already at its work when the step began | 104 | 1,252 |
+| own budget reached in a substep | 321 | 932 |
+| that substep's count over the budget, of W: p50 / p90 / most | 0 / 0.0001 / 0.001 | 0.008 / 0.13 / 1.65 |
+| the same over one substep at the way's strength at that substep's fastest closing: most | 0.006 | 0.24 |
+| beyond that bound | 0 | 0 |
+| signed over counted work on the block's cells: p10 / p50 / least | 0.66 / 0.99 / −10.2 | 0.49 / 0.96 / −49 |
+| signed under half the counted | 32 (6 %) | 351 (10 %) |
+| parted way's points returned nothing that step | 109 (21 %) | 1,307 (38 %) |
+| steps from the first cut with budget left to the parting: none | 473 | 3,283 |
+| the same: one or more (median; longest) | 57 (1; 3) | 112 (1; 16) |
+| of them, after a step on a remainder under a millionth of W | 24 | 5 |
+
+- No parting is under W: the test is exact.
+- Over W is the several-bodies residual and work along other ways on the same cells; the
+  substep that reaches a budget never passes it by more than one substep at the way's
+  strength.
+- Signed under counted: the floor per substep. A block's cells are pushed out of bodies that
+  overlap them (the points return impulse while the bodies part), and those substeps give
+  nothing back.
+- The 13 partings on a way of no work: a standing cell whose boundary joints hold nothing
+  along that way leaves when touched.
+- **The delay**: the deleted mark would have parted a block on the first step a solve cut a
+  point with budget left. 57 of 530 hull partings (11 %) and 112 of 3,395 piece partings (3 %)
+  come later than that: by one step at the median, three at most for the hull, 16 for a
+  piece. 24 and 5 of them are the remainder's step (R1a); in the rest the body had not done
+  the budget when the cut was made (the mechanism of the last section), kept working, and
+  the block parted when it had. The longest on the build before R1a was 55 steps: a block
+  with 2.2 J of 69.6 left under light pieces lying on it, parted by another body's work.
+
+## Overlapped cell-steps returning nothing
+
+827 hull cell-steps overlapped over 2 cm; 102 returned under 1 N·s: 73 on a block that parts
+that step, 10 on a way whose points are at its strength between them, 2 cut to nothing because
+the block's other points did the budget in that substep, 17 not closing (16 at neither end of
+the step; one closing at 1 mm/s at its start and parting at 16 mm/s at its end, the hull
+stopping in the breach). None closing with budget left and its way under its strength.
+
+## Belts
+
+Eight belt partings in 23 passes: six by the work, two by the start-speed crossing clause.
+
+## Not verified
+
+- Timing: the machine was never quiet (load average 8 to 15).
+- The driven light piece in the passes (R1b): the probe reads no contact between two dynamic
+  bodies, so how much of the hull's loss goes uncounted through pieces is not known.
+- One run a pass except the wall at 10 km/h; the halls vary run to run.
+- The in-substep closing speed is read at the reaching substep only.
+- Friction work on standing cells (backlog destruction-17) was not read.
+
+## Clips
+
+Left `f3193ea8`, right the build of `be9bc72a`, labels and a watch line burned in, each with
+three stills: `.agents/scratch/rubble-explore/clips-budget/wall-10kmh-v2.mp4`,
+`house-long-wall-10kmh-exit-v2.mp4`, `house-end-on-raised-v2.mp4`,
+`hall-junction-20kmh-raised-v2.mp4`.
+
+## Commits
+
+`55abd699` the count-only law; `da525167` the seam and way witnesses; `f01da04c` invariants;
+`8c0b208b` fixtures' allowances; `8679d1e7` backlog and report markers; `df693670` the exact
+parting test; `8e38ef32` invariants; `be9bc72a` the signed sum's witness and the remainder's
+bound; this report with the design narrative.
+
