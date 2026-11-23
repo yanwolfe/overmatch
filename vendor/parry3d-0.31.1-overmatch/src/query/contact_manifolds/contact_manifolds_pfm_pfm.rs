@@ -112,16 +112,13 @@ pub fn contact_manifold_pfm_pfm<'a, ManifoldData, ContactData, S1, S2>(
                 false,
             );
 
-            if (cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty())
-                // If normal constraints changed the GJK direction, it is no longer valid so we cant use it for this additional contact.
-                // OVERMATCH PATCH: "changed" is judged within rounding, not bit for bit. The
-                // projection rewrites an unchanged direction (rotated into shape 2's frame and
-                // back, or replaced by the face normal it already equals), and a bitwise test
-                // then drops the deepest point of the pair. The bound admits a turn of up to
-                // 0.081 degrees (acos(1 - 1e-6)); the witness then reads its depth along the
-                // projected normal, off by at most 1e-6 of the pair's distance (1 - cos).
-                && local_n1.dot(dir) >= 1.0 - 1.0e-6
-            {
+            // OVERMATCH PATCH: the closest-point pair stays whatever the normal constraints did to
+            // the direction (upstream drops it where they changed it). Its depth is read along
+            // the corrected normal: the pair's distance times the cosine of the turn, never more
+            // than the pair overlaps. Dropped, a body that overlaps a triangle beside its deepest
+            // feature reports no overlapping point: clipping along the corrected normal finds
+            // none, and the body goes through the surface.
+            if cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty() {
                 let contact = TrackedContact::new(
                     p1,
                     pos12.inverse_transform_point(p2_1),

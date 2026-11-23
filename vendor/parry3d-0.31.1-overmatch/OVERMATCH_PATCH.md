@@ -17,28 +17,37 @@ Avian is the only dependent (`cargo tree -i parry3d`). The lock's `parry2d`, `pa
 `parry3d-f64` are optional dependencies of crates the game does not enable; none is built.
 
 The patched site is tagged `OVERMATCH PATCH`. Fork lines by `diff --minimal -ruN` of `src/` against
-the published crate: 8 (MEASURED, 7 added and 1 removed).
+the published crate: 11 (MEASURED, 7 added and 4 removed).
 
-## The closest-point witness under normal constraints (`src/query/contact_manifolds/contact_manifolds_pfm_pfm.rs`): kept
+## The closest-point pair under normal constraints (`src/query/contact_manifolds/contact_manifolds_pfm_pfm.rs`): kept
 
-`contact_manifold_pfm_pfm` adds the closest-point (GJK or EPA) pair to the clipped manifold unless
-the normal constraints changed the contact direction. Upstream tests "changed" bit for bit; the
-fork tests it within a bound, `local_n1.dot(dir) >= 1.0 - 1.0e-6` (Resolution: an f32 unit vector
-rotated into another frame and back differs by a few units in the last place, about 1e-7). The
-bound admits a turn of up to 0.081 degrees (DERIVED, acos(1 - 1e-6)). A turn under it keeps the
-witness, with its depth read along the projected normal as the function already reads it: the
-pair lies along the unprojected direction, so the depth is off by at most 1e-6 of the pair's
-distance (DERIVED, 1 - cos of the turn). A larger turn drops the witness, as upstream does.
+`contact_manifold_pfm_pfm` adds the closest-point (GJK or EPA) pair to the clipped manifold.
+Upstream drops the pair wherever the normal constraints changed the contact direction, tested bit
+for bit; the fork always keeps it. Its depth is read along the corrected normal, as the function
+already reads it: the pair's distance times the cosine of the turn (DERIVED: the pair lies along
+the uncorrected direction), so it never reports more overlap than the pair has, and a pair found
+overlapping from a triangle's front reports an overlapping point.
 
-Kept as an upstream bug fix. The projection rewrites a direction it leaves unchanged: for a
-constrained second shape it rotates the direction into that shape's frame and back, and among
-coplanar neighbours it replaces it by the face normal. The bitwise test then drops the pair, which
-is the deepest point of the contact, and the clipped points alone need not reach it: a polyhedron's
-face is clipped by its first four corners. A body is then held where its hull crosses the surface
-and turns through it. Where the constraints do change the direction the fork is upstream.
+Kept as an upstream bug fix: without the pair, a pair of shapes the search found overlapping, with
+a normal the constraints accepted, can report no overlapping point. Two ways, both MEASURED on the
+game's heightfield with the body named first:
 
-Guard: `src/tests/parry_manifold_witness.rs`. Mechanism and measurements:
-[local upstream draft](../../upstream/parry-normal-constraints-drop-deepest-contact.md).
+- **The projection rewrites a direction it leaves unchanged.** For a constrained second shape it
+  rotates the direction into that shape's frame and back, and among coplanar neighbours it replaces
+  it by the face normal; the bitwise test then drops the pair. The clipped points alone need not
+  reach the deepest point: a polyhedron's face is clipped by its first four corners.
+- **The body overlaps a triangle beside its own deepest feature.** A thin body tilted over a
+  triangle's edge has its lowest corner under one triangle, which it passes beneath without
+  crossing, and overlaps the neighbour with a tilted direction. The cone turns that direction to
+  the face normal, clipping along it finds no point (the body's lowest feature lies outside the
+  neighbour's outline), and the pair was the only point. A splinter 1.38 m long tilted 10 degrees
+  with its lowest corner 2 mm under level ground, a millimetre or two inside the first triangle:
+  no manifold.
 
-The fix holds for a body within one triangle. A body over an edge among coplanar neighbours can
-still lose its deepest point in either shape order: the draft's "Not covered".
+Upstream's comment says the direction "is no longer valid" for the pair once corrected; the bound
+above is the answer the draft gives. Guard: `src/tests/parry_manifold_witness.rs`. Mechanism and
+measurements: [local upstream draft](../../upstream/parry-normal-constraints-drop-deepest-contact.md).
+
+Not covered: a triangle has no inside. Where a body's shorter way out of a triangle is through its
+back, the projection discards the contact (`project_into_cone` returns `dot_face >= 0.0`), and a
+thin body over an edge meets that at overlaps under its own thickness: the draft's "Not covered".
