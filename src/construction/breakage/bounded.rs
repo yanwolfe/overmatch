@@ -376,7 +376,8 @@ struct BoundContacts<'w, 's> {
 }
 
 /// Resolution: owners are priced as tasks from this many; one owner has nothing to split. Not
-/// measured: a higher floor waits on a profile of a step that presses several owners.
+/// measured: a higher floor waits on a profile of a step that presses several owners (backlog
+/// destruction-07).
 const PARALLEL_OWNERS: usize = 2;
 
 /// `work` on each of `owners`, in their order whichever of `pool`'s workers takes which. An

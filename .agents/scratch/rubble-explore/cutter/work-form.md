@@ -370,3 +370,91 @@ Probe patch, scripts, plans and outputs: `/Users/Yan/github/vikng-dev/overmatch/
 - The second clause's lag of one substep: a point held at its share while its group still has room reads as limited. Half the partings go by that clause and over-freeing did not rise (freed on piece-only ticks 23 to 63 %, checkpoint 2: 25 to 87 %), but the two are not separated.
 - No hosted run, no play by a person, no two-core machine. The six lenses were read and applied by this lane to what it edited; no independent reviewer ran them.
 - Gates for both commits: fmt check, CI clippy, 675 targeted tests (`construction::`, `avian_ext`, `avian_reaction_bound`, `net::ram`, `net::protocol`, `net::construction`, `track::`, `contact_transfer`, `debris::`), the server check. `PROTOCOL_REV` unchanged at 108.
+
+# Work form: fix pass
+
+Subject: the game's building model (game state only). The lens review's sections A to E (`lens-review-work-form.md`), on `5c0181ab`. Commits `9c2f3d10` (behaviour), `b0abda6a` (structure), `7b87d19a` (tests), `8ea98694` (prose), and this report's commit. Passes: release build of `8ea98694` with the per-point probe and stage timers, pool capped at two threads, one tank; the last commit changes comments and docs only.
+
+**Stopped after the re-measure on one of its conditions.** The house met end-on at governed speed keeps 0.09 in place against checkpoint 3's 0.19, a fall of 54 % (MEASURED, two runs, the same 1.187 m³ in both). Nothing was built to counter it, and the clips were not refilmed.
+
+The lag is also back where the hull is slow: at 2 km/h 124 of 263 overlapped cell-steps return under 1 N.s (47 %; checkpoint 3: 7 %; checkpoint 2: 38 %). At 10 km/h it is 10 of 211 over the eight passes (4.7 %), 14 % in two of them and 0 to 4 % in six. The stall has not returned: 11 of 11 wall passes cross, deepest overlap 0.005 to 0.082 m at the wall.
+
+Which of A1 and A2 moved the end-on house is not isolated: both shipped in one build. A2's sign is known (fewer partings by the second clause at low speed: the 2 km/h lag); A1 adds work the old code dropped on steps with no group. The contact law freed as many cells as before end-on (537 against 542); the difference is in what fell with them (914 gone against 855).
+
+## A2, read from the code
+
+A point held at its way's strength has not delivered the work left. The fork clamps a point at the lesser of its impulse bound and `max_work / v`, `v` the closing speed the solve finds (`solve_impulse`). Both bounds are dealt by the same shares, so the impulse bound binds exactly when `v < left / (F dt)`: the body is slower in the solve than the speed that crosses the give left within the step, and the step's work through the way is `F v dt`, under the work left (DERIVED). So the ruling stands as given and was built: `Bounds::limited` reads a hold at the work bound alone.
+
+## Passes (MEASURED)
+
+In place is against checkpoint 3 in brackets. Tick times carry the probe's logging.
+
+| pass | result | deepest overlap m | in place (checkpoint 3) | overlapped cell-steps returning under 1 N.s | cells through a way with own share under 10 % | left standing (contact law) | freed on piece-only ticks | tick mean / p95 ms / over 15.6 |
+|---|---|---|---|---|---|---|---|---|
+| wall 2 km/h | crossed 15.30 s | 0.042 | 0.51 (0.42) | 124 of 263 | 30 (15 %) of 206 | 207 (206) | 72 (35 %) | 4.19 / 6.30 / 2 |
+| wall, standing start | crossed 3.38 s | 0.024 | 0.45 (0.49) | 0 of 65 | 50 (22 %) of 230 | 230 (230) | 95 (41 %) | 3.44 / 5.83 / 2 |
+| wall 10 km/h a | crossed 2.88 s | 0.015 | 0.50 (0.55) | 0 of 23 | 41 (20 %) of 203 | 203 (203) | 105 (52 %) | 3.81 / 7.08 / 2 |
+| wall 10 km/h b | crossed 3.20 s | 0.036 | 0.46 (0.45) | 1 of 27 | 49 (21 %) of 231 | 231 (231) | 101 (44 %) | 4.22 / 6.96 / 2 |
+| wall 10 km/h c | crossed 3.17 s | 0.082 | 0.51 (0.50) | 5 of 36 | 24 (12 %) of 201 | 201 (201) | 81 (40 %) | 3.98 / 6.98 / 2 |
+| wall 10 km/h d | crossed 3.16 s | 0.006 | 0.47 (0.52) | 0 of 24 | 42 (19 %) of 219 | 220 (220) | 100 (45 %) | 4.03 / 6.85 / 0 |
+| wall 10 km/h e | crossed 3.11 s | 0.005 | 0.48 (0.42) | 0 of 23 | 40 (18 %) of 218 | 220 (219) | 82 (37 %) | 4.01 / 7.05 / 2 |
+| wall 10 km/h f | crossed 3.11 s | 0.009 | 0.52 (0.47) | 0 of 25 | 27 (14 %) of 192 | 202 (192) | 88 (46 %) | 3.98 / 6.52 / 2 |
+| wall 10 km/h g | crossed 3.16 s | 0.043 | 0.52 (0.52) | 4 of 29 | 42 (22 %) of 192 | 193 (192) | 78 (41 %) | 3.88 / 6.68 / 2 |
+| wall 10 km/h h | crossed 3.09 s | 0.006 | 0.55 (0.45) | 0 of 24 | 29 (16 %) of 186 | 187 (186) | 70 (38 %) | 3.78 / 6.78 / 2 |
+| wall 20 km/h | crossed 1.70 s | 0.005 | 0.48 (0.48) | 2 of 29 | 42 (19 %) of 222 | 222 (222) | 89 (40 %) | 3.70 / 6.38 / 1 |
+| house long wall 10 | crossed 4.33 s | 0.030 | 0.66 (0.65) | 4 of 17 | 70 (20 %) of 353 | 432 (355) | 149 (42 %) | 6.16 / 12.22 / 0 |
+| house long wall 20 | crossed 2.47 s | 0.098 | 0.58 (0.55) | 3 of 16 | 108 (26 %) of 418 | 492 (418) | 238 (57 %) | 5.64 / 12.88 / 2 |
+| hall long wall 10 | crossed 9.03 s | 0.000 | 0.53 (0.67) | 0 of 6 | 71 (19 %) of 368 | 532 (368) | 243 (66 %) | 11.12 / 13.98 / 14 |
+| hall long wall 20 | crossed 6.73 s | 0.002 | 0.50 (0.55) | 0 of 8 | 120 (25 %) of 487 | 571 (487) | 295 (61 %) | 10.92 / 13.39 / 21 |
+| hall junction 20 | held | 0.000 | 0.35 (0.46) | 0 of 5 | 163 (29 %) of 559 | 686 (560) | 409 (73 %) | 13.55 / 15.93 / 56 |
+| house end-on governed | crossed 1.81 s | 0.000 | 0.09 (0.19) | 0 of 23 | 166 (31 %) of 537 | 914 (537) | 306 (57 %) | 11.20 / 14.26 / 5 |
+
+In place falls against checkpoint 3 by: end-on 54 %, junction 24 %, hall long wall at 10 km/h 21 %, hall at 20 km/h 9 %; the others move by a tenth or less either way. The halls' run-to-run spread is wide: the unlogged runs of the same binary kept 0.64 (hall wall 20) and 0.62 (junction) where the logged runs kept 0.50 and 0.35; the house at 10 km/h kept 0.53 against 0.66. The end-on house is the same in both.
+
+Tick time without logging (same binary, one run each): wall 10 km/h mean 3.9 ms, p99 9.4, 2 ticks over; house 10 mean 7.1, p99 13.0, 0 over; hall wall 20 mean 8.5, p99 18.9, 17 over; junction mean 10.8, p99 17.1, 9 over; end-on mean 10.9, p99 14.8, 1 over.
+
+Partings by clause (work reached / second clause): wall 2 km/h 56 / 55, wall 10 km/h 57 / 62, wall 20 km/h 79 / 45, house 10 92 / 84, hall 20 120 / 115, junction 208 / 102.
+
+Own share: a piece's median 0.13 to 0.37; rows under a tenth 30 to 45 %; cells through such a way 12 to 31 % (checkpoint 3: 12 to 30 %).
+
+Hull pose travel over end speed x dt, impulse-weighted: 2 km/h 1.03, standing start 1.02, 10 km/h 0.58 to 0.63, 20 km/h 0.30, house 0.63 and 0.41, hall wall 1.01 and 0.91, junction 0.33, end-on 0.33. Unchanged in kind (backlog destruction-11).
+
+Parked hulls: nudged into the wall, 37 cells while driven, none after; 65.0 s at rest with 0 cells and 0 contact rows. Stopped in a breach, 163 cells while driven, 1 in the 7.1 s the hull took to come to rest, then 57.2 s at rest with 0 cells (24 contact rows, no parting). No parked hull parts a cell.
+
+One piece was retired below the play-area floor in 5 of the 24 runs (hall wall 20 and junction, logged and unlogged; house 10 unlogged).
+
+## C4: what stays serial (MEASURED)
+
+Per tick, ms, from first contact to the end of the run (about 700 ticks), pool of two threads on a ten-core machine, after C1 to C3:
+
+| part | hall long wall 20 km/h: mean | p95 | junction 20 km/h: mean | p95 |
+|---|---|---|---|---|
+| `bound_contacts` gather (serial) | 0.112 | 0.151 | 0.155 | 0.187 |
+| `bound_contacts` pricing (tasks) | 2.429 | 5.519 | 1.734 | 2.666 |
+| `bound_contacts` commit (serial) | 0.029 | 0.042 | 0.033 | 0.041 |
+| `locate` (tasks) | 0.010 | 0.015 | 0.011 | 0.017 |
+| `deal`, all six substeps (serial) | 0.218 | 0.348 | 0.221 | 0.277 |
+| `read_bounds` (serial) | 0.004 | 0.006 | 0.005 | 0.006 |
+
+The serial parts together are about 0.4 ms of a 15.6 ms tick; the pricing, already in tasks, is five to twenty times the gather. Pricing has one tick of 64 to 72 ms in each run, not traced.
+
+What was done with it: the gather and commit do not dominate, so the walk is unchanged; destruction-07 carries this split, is P2, and leaves only the hosted price open. `deal` stays serial: its doc claims only the order-free least and states the measured size, and destruction-13 is its row. No parallel `deal` was built, so there is no measurement that dispatch loses on two cores; the row says so.
+
+## Items
+
+- **A1** done: `locate` and `deal` run whenever a point is read. Witnessed at the seam (`a_point_read_in_no_group_reads_what_it_returned`), not with two owners in the building fixture: a block with no open way is exactly a read point in no group.
+- **A2** done as ruled (above). **A3** done: a group is limited when its own deal to a held point is that point's work bound, so equal deals read alike; the dealer record is gone. **A4** done: `bound_belts` bounds a block's whole staged force, so the whole is counted, stated at `Returned::Staged`. **A5** done: one assert at the write.
+- **B1** done (assert in `bound_contacts`; the seam's lookups name the invariant). **B2**, **B3** done. **B5** row destruction-14.
+- **B4 not done; the finding is wrong.** The offline composition (`headless_test::headless_app_on`: `SimPlugin` with the single-player spawn) is an authority without a shot clock, and 49 tests run on it; the net protocol alone inserts one. With `Res<ShotClock>` all 49 panic in `release`. Giving that composition a clock would change its shooting law (`shooting.rs` branches on the clock's absence), outside this lane. The `Option` stays, with the composition named beside it; `breakage.rs` and `ballistics.rs` read it the same way.
+- **C1**, **C2**, **C3** done. **C4** above. **C5** done.
+- **D1** done, with A3's tie arm and a force-held arm. **D2** done: exact per step, friction and turning off. **D4** done: the crossing is read from the row's speed, price and work. **D5**, **D6** done. **D7** done by deletion: with the work-bound reading the `impulse > 0` guard has no case. **D8** row destruction-15.
+- **D3 not done as written; the fixture is right.** The belt presses under every way's strength and the way spent first is the least in work, which is not the one that holds least; taking both from one way fails (10 ticks against 627). The test doc now says why they differ.
+- **E1** to **E11** done. **E12**: the readout's doc is corrected; destruction-16 is the row for its name; destruction-07 is rewritten.
+- Mutants run once against the new tests: the seam gated on groups, force holds read as limited, the dealt work ignored, end speed alone, a speed offset on the entering read. Each fails the test that names it.
+
+## Not verified
+
+- Which change moved the end-on house; whether the unlogged halls or the logged ones are the typical run.
+- The commitment of comments in the last commit ran the gates, not the passes.
+- No hosted run, no two-core machine, no play by a person. No independent reviewer has read the fix pass.
+- The clips in `clips-work/` are checkpoint 3's (`a0839b2d`) and do not show this code.

@@ -65,8 +65,10 @@ Without the clause the solve rations the last work at its own closing speed whil
 reads another, so the count closes on `W` from below and never arrives: a cell in a hull's way
 stood a median 8 steps overlapped by more than 2 cm at 10 km/h, 51 to 72 % of those cell-steps
 returning under 1 N·s, and the hull sank 0.11 to 0.25 m into standing matter (MEASURED,
-`work-form.md` checkpoint 2); with it the deepest overlap at 10 km/h is under 0.06 m (MEASURED,
-`work-form.md`, the fix pass). A spent way's boundary joints part, and its cells and whatever
+`work-form.md` checkpoint 2); with it the deepest overlap at 10 km/h is 0.005 to 0.082 m and
+4.7 % of those cell-steps return under 1 N·s (MEASURED, eight passes, `work-form.md`, the fix
+pass). At 2 km/h the lag is not closed: 47 % of overlapped cell-steps return under 1 N·s, the
+steps a slowed hull's points end at the way's strength. A spent way's boundary joints part, and its cells and whatever
 they alone held up leave at rest as ordinary rubble.
 
 A belt's sampled support on standing matter has no solver point. Its staged force, support and
@@ -77,9 +79,9 @@ ration the crossing left it. The support check hears no contact: it reads weight
 
 **Work is one scalar per cell**, whoever did it and along whichever way: a block is charged with
 all the work on its cells, so a way may part on work done along another way or by another body.
-The cost, MEASURED (checkpoint 3; wall, house and hall, a 57 t hull): 12 to 30 % of the cells
-that part leave through a way whose own body added under a tenth of the work on it, and a third
-to a half of the blocks a loose piece parts are of that kind. Accepted: a wall worked on from
+The cost, MEASURED (`work-form.md`, the fix pass; wall, house and hall, a 57 t hull): 12 to 31 %
+of the cells that part leave through a way whose own body added under a tenth of the work on it,
+and 30 to 45 % of the blocks a loose piece parts are of that kind. Accepted: a wall worked on from
 several sides is a damaged wall. A charge per direction is the alternative, not built.
 
 What stays rigid: an unbreakable element, a buried cell, a face slid along, and a block with no

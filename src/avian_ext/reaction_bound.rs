@@ -322,7 +322,9 @@ fn add_returned(manifold: &Manifold, records: &mut [Record], constraints: &Const
 /// Before each substep's solve: deals every group's bound over one substep to its points (the
 /// module doc) and cuts what a point carries to its bound. Another writer of the substep's
 /// constraints orders itself against this system. A point in several groups takes the least of
-/// their deals, which no order of the groups changes.
+/// their deals, which no order of the groups changes; the groups are walked on one thread for
+/// their size alone: MEASURED locally at 0.22 ms a tick over six substeps where a 57 t hull
+/// drives through a hall (backlog destruction-13 holds the run and what is not measured).
 pub(crate) fn deal(
     mut bounds: ResMut<Bounds>,
     mut constraints: ResMut<ConstraintGraph>,
