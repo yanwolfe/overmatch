@@ -126,3 +126,123 @@ Probe patch, run scripts, analysis scripts and their outputs: `/Users/Yan/github
 - Summation order independent of worker assignment, and `Bounds` agreeing with `ContactTransfers`: derived, untested.
 - No hosted run, no play by a person, no two-core machine: the pool cap is not a two-core allocation.
 - The six lenses were not run by this lane.
+
+# Work form: checkpoint 2
+
+Subject: the game's building model (game state only). Lane merged with main `6a443e8f` (`484541d0`); every number here is on the merged lane, checkpoint-1 law, release build, pool capped at two threads, the per-point probe logging in every run (so tick times carry its cost).
+
+The depth-gained advance was **not built**: the zero-build replay shows it cannot see a fast hull. The stall stays gone under the law as it stands: 11 of 11 plain-wall passes cross (2 km/h, standing start, 8 at 10 km/h, 20 km/h; MEASURED).
+
+## A1: the replay, and why the build stopped
+
+Method (MEASURED from logged rows). The probe logged, per contact point on a standing cell and per step: impulse returned, the narrow phase's overlap at the step's start, the point's travel into the cell from the body's pose before and after the step, and the body's speed before and after. `replay2.py` recomputes the work under each reading and compares it with the built one, per presser and at each parting row.
+
+How depth is read within a step: a contact is (body, cell, belt or solver), which names no manifold point. Its number is how far the body stands back from its deepest in the cell. A contact first seen this step starts at the gap still open at the step's start (zero when already overlapped), so a first-step entry counts everything past the cell's face. The step's advance is the impulse-weighted mean of its points' pose travel into the cell; the gain is the advance less the stand-back.
+
+| reading, J over the run | fixture: 57 t box entering at 4.5 m/s | wall 2 km/h hull | wall 10 km/h hull (a, b) | wall 20 km/h hull | house 10 hull | hall 10 hull | junction 20 hull |
+|---|---|---|---|---|---|---|---|
+| built: impulse x end speed | 9081 | 28517 | 28310, 27058 | 24045 | 27919 | 31638 | 49608 |
+| depth gained, from poses | 10976 | 27092 | 15665, 13532 | 8200 | 12543 | 25677 | 7747 |
+| depth gained, from the overlap | 11243 | 26870 | 15300, 13454 | 8001 | 12463 | 25422 | 7746 |
+
+- **Fast bodies: seen in the fixture, not in the game.** The fixture's first-step entry counts in full (first-step pairs 9640 J against the built 7565 J). In the passes the hull's work falls to 55 %, 50 % (10 km/h), 34 % (20 km/h) and 16 % (junction 20 km/h) of the built reading. At 2 km/h it is 95 %.
+- **Why (MEASURED).** On the steps where the standing cells return most, the hull's pose barely advances while its velocity is kept: at 20 km/h the hull moves 84 mm, then 7 mm, then 84 mm in three consecutive steps with its speed reading 5.39, 5.38, 5.38 m/s throughout, and the 7 mm step is the one that returned 760 N.s. Impulse-weighted, the hull's pose travel is 0.38 of end speed x dt at 20 km/h, 0.61 at 10 km/h, 0.18 at the junction, 1.04 at 2 km/h; 76 % of the hull's impulse at 20 km/h arrives on steps whose pose travel is under half of speed x dt. A depth reading is honest about the pose and so counts a fraction of the kinetic energy the hull lost (that step: 355 J by pose, 4090 J by speed, about 2940 J of kinetic energy lost, DERIVED from 57 t and the speed change). Which part of the solve holds the pose back while the velocity stays was not traced; the vendored fork is not this lane's to change.
+- **Stall.** At the tick the built law parts a hull's block, the depth reading holds under half of the built work in 4 of 19 and 6 of 22 hull partings (10 km/h), 7 of 26 (20 km/h), 9 of 32 (house), 2 of 4 (junction); medians 0.69 to 0.91. A replay cannot run the changed trajectory, so "stall returns" is not shown, only that a quarter to a half of the hull's partings would wait for more than twice the travel.
+- **Pieces gain.** Loose pieces' work rises under the depth reading wherever they are fast (wall 20: 30137 to 43757 J; junction: 231969 to 338576 J), because a slowing body's end speed under-counts its step. The hull is cut and the cascade is fed: the opposite of the purpose.
+- **Rest.** Fixture, 57 t box stopped in a leaf: built 46.19 J/s over 2 to 4 s, 0.001 J/s over 4 to 6 s, zero after; depth 0 from 2 s on. Fixture, 1 t box held by 5 kN: built 0.14 J/s in the first 2 s then zero; depth 0.0001. In the game a parked hull does no work under any reading (below).
+- A fourth reading (impulse x mean of the speeds before and after, beyond the body's own deepest travel) keeps the hull (20 km/h: 22792 J) but is not silent at rest (40 J/s in the same fixture window) and halves the pieces; replayed only, `replay2.py`.
+
+Decision: stop on A2. The unbuilt implementation (a `Marks` resource keyed by owner then contact, rewritten whole each `release`) passed the law's 14 tests before the replay finished; it is kept as a patch beside the instruments, not in the tree.
+
+## B: whose work a parting block cashes (MEASURED, report only)
+
+Own share: of the work on the block's cells when it parts, the part the row's own body added (impulse x end speed, summed since the log began). Per parting row under a loose piece:
+
+| pass | piece rows | own share p10 / p25 / p50 / p75 / p90 | rows under 10 % | rows with none at all | piece speed change over the step p50 / p90 / max, m/s | cells parted | of them through a way with own share under 10 % |
+|---|---|---|---|---|---|---|---|
+| wall 2 km/h | 90 | 0 / 0.001 / 0.24 / 0.69 / 0.95 | 38 (42 %) | 17 | +0.07 / +0.37 / +2.20 | 209 | 48 (23 %) |
+| wall 10 km/h a | 81 | 0 / 0 / 0.04 / 0.38 / 0.71 | 48 (59 %) | 21 | +0.12 / +0.73 / +3.34 | 199 | 59 (30 %) |
+| wall 10 km/h b | 85 | 0 / 0 / 0.004 / 0.27 / 0.84 | 57 (67 %) | 29 | +0.06 / +1.41 / +4.01 | 202 | 70 (35 %) |
+| wall 20 km/h | 86 | 0 / 0 / 0.03 / 0.38 / 0.69 | 50 (58 %) | 29 | +0.14 / +2.14 / +6.82 | 196 | 58 (30 %) |
+| house long wall 10 | 162 | 0 / 0 / 0.02 / 0.42 / 0.93 | 97 (60 %) | 46 | +0.10 / +1.84 / +2.94 | 337 | 108 (32 %) |
+| house long wall 20 | 155 | 0 / 0 / 0.10 / 0.52 / 0.96 | 78 (50 %) | 36 | | 346 | 100 (29 %) |
+| hall long wall 10 | 91 | 0 / 0 / 0.08 / 0.40 / 0.93 | 51 (56 %) | 21 | +0.14 / +1.36 / +3.27 | 149 | 59 (40 %) |
+| hall long wall 20 | | | | | | 225 | 98 (44 %) |
+| hall junction 20 | 218 | 0 / 0 / 0.10 / 0.64 / 0.97 | 108 (50 %) | 51 | +0.20 / +2.11 / +5.82 | 357 | 142 (40 %) |
+
+Half to two thirds of the blocks that part under a loose piece part on work that piece did not add; a quarter to a third never had work from it at all. The other work is other pieces', not the hull's (the hull's share of those rows' work: median 0, over half in 5 to 20 rows per pass). Pieces mostly gain speed over the parting step. A cell counted once per tick, by its row of largest own share.
+
+The 51.65 m/s piece: nothing pressed it. A piece that ends under the terrain falls freely to the play-area floor and is retired there: server log `retiring piece below the play-area floor piece=8408v0 speed_mps=52.02 height_m=-100.66 floor_m=-100` (house 10 km/h; junction 20 km/h retires one at 49.82 m/s), its speed rising 0.153 m/s per tick, which is gravity over one step. DERIVED: a 132 m fall from the house's ground gives 50.9 m/s. It appears in both of checkpoint 1's arms and still on merged main in 2 of 17 runs here; the 60 s house rerun had none (fastest 7.65 m/s). How the piece got under the terrain was not traced: the census logs speed, not position.
+
+## C
+
+Commit `844fb673`: a piece's `Live` carries an empty work vector; the module doc names "one physics step between two `release`s" and what breaks without it; `BlockRow`'s doc says why the readout cannot name a way that took the work (work is per cell, a step's impulse belongs to points several ways share) and that it reports the way the block parts by.
+
+## D: the merged lane, checkpoint-1 law
+
+Columns as checkpoint 1's table.
+
+| pass | result | least fwd m/s | worst tick dv | deepest overlap m | left standing (contact law) | in place | freed on piece-only ticks | bodies | tick p50 / p95 ms / over 15.6 |
+|---|---|---|---|---|---|---|---|---|---|
+| wall 2 km/h | crossed 14.92 s | -0.01 | -0.08 | 0.056 | 209 (209) | 0.49 | 115 (55 %) | 208 | 4.42 / 6.42 / 3 |
+| wall, standing start | crossed 3.41 s | 0.36 | -0.08 | 0.090 | 231 (230) | 0.44 | 116 (50 %) | 231 | 3.30 / 5.84 / 2 |
+| wall 10 km/h a | crossed 3.28 s | 1.43 | -0.15 | 0.119 | 199 (199) | 0.51 | 77 (39 %) | 198 | 3.83 / 8.16 / 2 |
+| wall 10 km/h b | crossed 3.23 s | 1.51 | -0.17 | 0.106 | 202 (202) | 0.52 | 79 (39 %) | 202 | 3.69 / 6.66 / 2 |
+| wall 10 km/h c | crossed 4.16 s | 0.57 | -0.23 | 0.234 | 192 (192) | 0.52 | 48 (25 %) | 192 | 3.81 / 8.53 / 2 |
+| wall 10 km/h d | crossed 3.27 s | 1.50 | -0.16 | 0.119 | 193 (193) | 0.53 | 73 (38 %) | 193 | 3.61 / 7.17 / 1 |
+| wall 10 km/h e | crossed 4.14 s | 0.52 | -0.17 | 0.234 | 199 (199) | 0.52 | 54 (27 %) | 199 | 3.92 / 8.94 / 2 |
+| wall 10 km/h f | crossed 3.11 s | 2.06 | -0.16 | 0.253 | 216 (198) | 0.48 | 66 (33 %) | 216 | 3.88 / 9.46 / 3 |
+| wall 10 km/h g | crossed 3.11 s | 1.96 | -0.15 | 0.253 | 204 (204) | 0.51 | 92 (45 %) | 204 | 3.94 / 8.73 / 2 |
+| wall 10 km/h h | crossed 3.31 s | 1.53 | -0.18 | 0.116 | 206 (206) | 0.50 | 92 (45 %) | 204 | 4.04 / 7.14 / 2 |
+| wall 20 km/h | crossed 1.72 s | 3.81 | -0.18 | 0.188 | 197 (197) | 0.52 | 63 (32 %) | 197 | 3.72 / 6.24 / 2 |
+| house long wall 10 | crossed 4.38 s | 2.15 | -0.11 | 0.152 | 431 (338) | 0.56 | 195 (58 %) | 379 | 7.38 / 12.47 / 1 |
+| house long wall 20 | crossed 2.48 s | 4.43 | -0.13 | 0.127 | 418 (346) | 0.58 | 189 (55 %) | 393 | 6.45 / 10.09 / 0 |
+| hall long wall 10 | crossed 8.67 s | 1.15 | -0.23 | 0.017 | 343 (149) | 0.73 | 114 (77 %) | 267 | 8.41 / 10.17 / 12 |
+| hall long wall 20 | crossed 6.47 s | 1.32 | -0.94 | 0.011 | 342 (225) | 0.75 | 195 (87 %) | 298 | 9.12 / 11.92 / 15 |
+| hall junction 20 | held | 0.09 | -0.65 | 0.000 | 484 (357) | 0.55 | 310 (87 %) | 468 | 11.37 / 13.02 / 9 |
+| house end-on governed | crossed 1.83 s | 6.90 | -0.41 | 0.144 | 786 (497) | 0.18 | 348 (70 %) | 756 | 7.52 / 13.16 / 5 |
+
+Two of the eight 10 km/h passes (c, e) slow to 0.5 m/s and take 4.15 s; both are the deep-overlap kind below.
+
+### Parked hulls (MEASURED)
+
+| run | while the hull moved | after its last motion |
+|---|---|---|
+| hull nudged 0.1 m into the wall, demand off | 31 cells left (4 parting rows: 3 hull, 1 piece), deepest overlap 0.033 m | 65.6 s: 0 cells, 0 contact rows, 0 J/s |
+| hull driven half through, demand off at 0.56 m/s, stops in the breach | 147 cells while driven, 11 more in the 0.25 s after demand ended (2 hull rows, 8 piece rows); pieces settle for 9.4 s more (1.74 J/s built reading over that window) | 54.8 s: 0 cells, 0 contact rows, 0 J/s |
+
+Nothing parts with nobody moving: once the hull and the pieces sleep, no contact row exists, so no reading adds work. Before sleep the 11 cells are the over-freeing of section B, not a rest effect.
+
+### Deepest overlap and the residue lag (MEASURED)
+
+Deepest hull-to-standing overlap 0.056 to 0.253 m at the wall (checkpoint 1: 0.045 to 0.340 m). A cell the hull overlaps by more than 2 cm stands a median 8 steps at 10 km/h and 2 at 20 km/h; of those cell-steps the cell returns under 1 N.s (the hull's weight over a step is about 8700 N.s) in 51 % (10 km/h a), 67 % and 72 % (c and f, the 0.23 to 0.25 m passes), 38 % (2 km/h), 11 % (20 km/h), 24 % (house), 17 % (hall). The deepest cells of pass a returned 2, 0, 0, 0, 0, 0 N.s over six steps while the overlap grew 0.108 to 0.122 m. The advisor's guess holds at 10 km/h: most of the deep overlap is a block that has returned what it has and stands, returning nothing, until its work reaches the way's.
+
+### What carries the hull at the junction hold (MEASURED, last 2 s)
+
+- Belt law: 510 N on soil, nothing else (0.1 % of the weight); over the whole log it loads only soil and standing cells, never a loose piece. Traction capacity 200 N, belts' forward force 172 N, demand 1.0.
+- Solver, vertical impulse on the hull per step: 6247 N.s from pieces on the belt-face colliders, 2458 N.s from pieces on the hull body, together 8705 N.s of a weight of about 8737 N.s.
+- The hull stands 0.30 m above where it met the junction and still creeps forward at 0.43 m/s (0.09 to 0.93).
+
+So the hull is lifted clear of the soil onto loose pieces: 72 % of its weight on pieces under the belts, 28 % on its belly. The belts are not spinning on pieces in the belt law's terms: the law finds no ground under them and so has no load, no slip and no drive. Belt slip and piece speed under the belts have no reading for that reason.
+
+## Clips
+
+None. The second panel (`DEPTH-GAINED ADVANCE`) needs a build that A1 stopped.
+
+## Commits
+
+- `484541d0` merge of main `6a443e8f`.
+- `844fb673` section C.
+- this report.
+
+Scripts, plans, outputs and the unbuilt patch: `/Users/Yan/github/vikng-dev/overmatch/.agents/scratch/rubble-explore/clips-work/instrument/c2/`.
+
+## Not verified
+
+- A replay holds the trajectory fixed: what a depth-gained build would do in play is inferred, not run.
+- Why the hull's pose stalls on a step where its velocity does not: not traced into the solver.
+- How a piece ends under the terrain: not traced.
+- One run per pass apart from the wall at 10 km/h; tick times include the probe's per-point logging.
+- The junction's hull mass is taken as 57 t; the piece speed under the hull was not logged.
+- B's own share uses the built reading, summed from the log's start, per body; work added before a body was renumbered by a split is another body's.
+- Gates for `844fb673`: fmt check, CI clippy, 671 targeted tests (`construction::`, `avian_ext`, `avian_reaction_bound`, `net::ram`, `net::protocol`, `net::construction`, `track::`, `contact_transfer`, `debris::`), the server check. `PROTOCOL_REV` unchanged at 108. The six lenses were not run by this lane.
