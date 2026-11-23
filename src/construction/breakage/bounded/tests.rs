@@ -61,6 +61,20 @@ fn wall_and_box(mass: f32, at: Vec3, speed: f32) -> (App, Entity, Entity) {
     (app, root, body)
 }
 
+/// Fixture: the points the box lays on the leaf.
+const POINTS: f64 = 16.0;
+
+fn substeps(app: &App) -> f64 {
+    f64::from(app.world().resource::<SubstepCount>().0)
+}
+
+/// The f32 rounding of the box's speed over a step, as a fraction of the speed: the solve
+/// moves it once for each point in each of a substep's two passes, and each move rounds to
+/// half an ulp. An energy read from the speed carries twice it.
+fn rounding(app: &App) -> f64 {
+    f64::from(f32::EPSILON) * POINTS * substeps(app)
+}
+
 /// The fixed step, s.
 fn step(app: &App) -> f64 {
     let step = app.world().resource::<Time<Fixed>>().timestep();
@@ -143,7 +157,7 @@ fn bonds_take_the_work_done_on_them_once_and_part_only_when_a_way_is_spent() {
                 "tick {tick}: a cell's work fell"
             );
             let account = app.world().resource::<BoundAccount>();
-            let reached = (account.blocks.iter()).any(|block| price(block).spent(block.taken));
+            let reached = (account.blocks.iter()).any(|block| block.taken >= block.price[1]);
             assert!(
                 !reached || !account.freed.is_empty(),
                 "tick {tick}: a block stands past its work: {:?}",
@@ -244,10 +258,7 @@ fn cells_take_the_kinetic_energy_of_a_body_they_stop() {
         let took = 0.5 * f64::from(mass) * (before.length_squared() - after.length_squared());
         let due = if advancing { took } else { 0.0 };
         assert!(
-            // Each of the sixteen points moves the speed in each of a substep's two passes,
-            // half an ulp a move, six substeps a step; an energy carries twice its speed's
-            // error.
-            (now - taken - due).abs() <= 192.0 * f64::from(f32::EPSILON) * entry,
+            (now - taken - due).abs() <= 2.0 * rounding(&app) * entry,
             "tick {tick}: the cells took {} J on a step that took {due} J from the box",
             now - taken
         );
@@ -300,13 +311,12 @@ fn a_body_pushed_out_held_or_resting_does_no_work() {
         let added = f64::from(held) * step(&app);
         let mutant = f64::from(steps) * f64::from(mass) * added * added / 2.0;
         assert!(
-            // A substep's force adds `a dt / 6` to the speed and the points take it back, each
-            // of the sixteen rounding it half an ulp in each of the two passes: a substep ends
-            // within sixteen ulps of that speed of rest, and its points, which return the
-            // force's impulse `m a dt / 6`, do at most that impulse times the residual speed.
-            // Six substeps a step: `16 ε m (a dt)² / 6` a step, a third of sixteen ulps of the
-            // mutant's charge.
-            grown <= 16.0 / 3.0 * f64::from(f32::EPSILON) * mutant,
+            // A substep's force adds `a dt / n` to the speed and the points take it back: a
+            // substep ends within a substep's rounding of that speed of rest, and its points,
+            // which return the force's impulse `m a dt / n`, do at most that impulse times
+            // the residual speed. Over a step's `n` substeps that is the step's rounding over
+            // `n²` of `m (a dt)²`, twice the mutant's charge.
+            grown <= 2.0 * rounding(&app) / substeps(&app).powi(2) * mutant,
             "held at {held} m/s² over 6 s the cells took {grown} J; the mutant charges {mutant} J"
         );
     }
@@ -316,9 +326,10 @@ fn a_body_pushed_out_held_or_resting_does_no_work() {
 /// two bodies that part it in one step do at most twice that between them, and one body no
 /// more than it. The work left is read once, before the step, and a budget is one body's
 /// (`avian_ext::reaction_bound`): the second body's share is a residual the design narrative
-/// owns, and it is bounded by the bodies on the block, never by their points. Mutants: a budget for each
-/// point or each way (the block takes more than the bodies on it times its work); the block's
-/// work left shared by nothing at all (it takes whatever stops the bodies). Fixture: boxes
+/// owns, and it is bounded by the bodies on the block, never by their points. Mutants: a
+/// budget for each point or each way (the block takes more than the bodies on it times its
+/// work); the block's work left shared by nothing at all (it takes whatever stops the
+/// bodies). Fixture: boxes
 /// 0.4 m wide abreast inside one column of the leaf's 1 m cells, 57 t at 4.5 m/s apiece, far
 /// more than the column's bonds take, read on the step the first cells leave; two blocks are
 /// equal when their prices are.
@@ -348,15 +359,13 @@ fn bodies_parting_a_block_together_do_its_work_once_each_at_most() {
             })
             .expect("the boxes free cells");
         let parted: Vec<&BlockRow> = (rows.iter())
-            .filter(|row| price(row).spent(row.taken))
+            .filter(|row| row.taken >= row.price[1])
             .collect();
         assert!(
             !parted.is_empty(),
             "fixture: the boxes part blocks: {rows:?}"
         );
-        // Each of a box's sixteen points moves its speed in each of a substep's two passes,
-        // half an ulp a move, six substeps a step; an energy carries twice its speed's error.
-        let rounding = 192.0 * f64::from(f32::EPSILON) * 0.5 * 57_000.0 * 4.5 * 4.5;
+        let rounding = 2.0 * rounding(&app) * 0.5 * 57_000.0 * 4.5 * 4.5;
         for row in parted {
             let on = (rows.iter().filter(|other| other.price == row.price)).count();
             assert_eq!(on, bodies, "fixture: every box is on every block: {rows:?}");
@@ -384,9 +393,9 @@ fn a_block_leaves_by_the_way_that_takes_least_work() {
     let (mut app, force, ways, _) = wall_and_belt(1.0);
     let [(through, plug), (shed, sheds)] = ways;
     assert!(
-        through.work != shed.work && plug != sheds,
-        "fixture: the ways differ in work and in what leaves: {through:?} {plug:?}, {shed:?} \
-         {sheds:?}"
+        (through.work < shed.work) != (through.force < shed.force) && plug != sheds,
+        "fixture: the way that holds least takes more work, and the two free different cells: \
+         {through:?} {plug:?}, {shed:?} {sheds:?}"
     );
     let push = Push {
         along: DVec3::Z,
@@ -469,14 +478,6 @@ fn press(
 /// Fixture: the cell (3, 2, 0) of the wall's 1 m by 0.6 m cells, which a belt presses at the
 /// centre of its near face.
 const PRESSED: usize = 3 + 6 * 2;
-
-/// A row's price ([`BlockRow::price`]).
-fn price(row: &BlockRow) -> Price {
-    Price {
-        force: row.price[0],
-        work: row.price[1],
-    }
-}
 
 /// What a way of giving holds, and the cells that leave by it.
 type Parting = (Price, Vec<usize>);
@@ -561,9 +562,9 @@ fn a_belt_keeps_what_standing_matter_returns() {
 /// spends the way's work, not before and not after. A hull whose belts ride onto standing
 /// matter relies on it; the staged force has no solver point to be read from. Mutants: the
 /// belt's points not counted (the cells never leave); cells freed by the press alone (they
-/// leave on the first tick); a way spent on the counted work alone (the last step is rationed to the work left and
-/// the belt keeps less than it pressed with, so the count closes on the way's work over several
-/// more ticks). Fixture: a body too heavy for the force to slow, advancing at 2 mm/s under half
+/// leave on the first tick); a way spent on the counted work alone (the last step is rationed
+/// to the work left and the belt keeps less than it pressed with, so the count closes on the
+/// way's work over several more ticks). Fixture: a body too heavy for the force to slow, advancing at 2 mm/s under half
 /// the least force any way of the cell holds, so the belt keeps its whole force whichever way
 /// is priced and each tick does `F v dt`; the work is one count on the cell, so the way spent
 /// first is the least in work, whatever it holds, due on tick `W / (F v dt)`, rounded up.

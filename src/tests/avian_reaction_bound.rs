@@ -38,12 +38,12 @@ struct Entry {
     /// own reading (`Bounds::returned`), N·s.
     group: Option<usize>,
     group_returned: f32,
-    /// The work its points have done, J: their budgets' counts, as the building model keeps
-    /// them (`breakage::bounded::settle`).
-    done: f32,
+    /// The work its points have done, J: their budgets' counts, summed as the building model
+    /// keeps them (`breakage::bounded::settle`).
+    done: f64,
     /// The step, from 1, on which the count reached the hands' work: the step the building
     /// model parts a block on.
-    spent: Option<usize>,
+    reached: Option<usize>,
 }
 
 #[derive(Resource, Default)]
@@ -90,8 +90,12 @@ fn hand_over(
         let lean = hands.lean.unwrap_or(1.0);
         let members = (entry.points.iter().map(|&at| Member { at, lean })).collect();
         entry.group = hands.group.map(|most| bounds.group(members, most));
-        if let Some(work) = hands.work.filter(|_| entry.spent.is_none()) {
-            bounds.budget(body, entry.points.clone(), work - entry.done);
+        if let Some(work) = hands.work.filter(|_| entry.reached.is_none()) {
+            bounds.budget(
+                body,
+                entry.points.clone(),
+                (f64::from(work) - entry.done) as f32,
+            );
         }
     }
 }
@@ -104,10 +108,10 @@ fn settle(bounds: Res<Bounds>, hands: Res<Hands>, mut ledger: ResMut<Ledger>) {
         entry.returned = entry.points.iter().map(|&at| bounds.impulse(at)).sum();
         entry.group_returned = entry.group.map_or(0.0, |group| bounds.returned(group));
         entry.done += (entry.points.iter())
-            .map(|&at| bounds.work(at))
-            .sum::<f32>();
-        if hands.work.is_some_and(|work| entry.done >= work) {
-            entry.spent.get_or_insert(step);
+            .map(|&at| f64::from(bounds.work(at)))
+            .sum::<f64>();
+        if hands.work.is_some_and(|work| entry.done >= f64::from(work)) {
+            entry.reached.get_or_insert(step);
         }
     }
 }
@@ -417,12 +421,12 @@ fn a_body_that_can_pay_loses_the_budget_whatever_its_points() {
         assert_eq!(entry.points.len(), shape.points(), "fixture: {shape:?}");
         let allowed = 2.0 * f64::from(rounding(&app, shape.points(), 1)) * had;
         assert!(
-            (lost - f64::from(work)).abs() < allowed && entry.spent == Some(1),
-            "{shape:?} lost {lost} J to a budget of {work} J, counted on step {:?}",
-            entry.spent
+            (lost - f64::from(work)).abs() < allowed && entry.reached == Some(1),
+            "{shape:?} lost {lost} J to a budget of {work} J, reached on step {:?}",
+            entry.reached
         );
         assert!(
-            (f64::from(entry.done) - lost).abs() < allowed,
+            (entry.done - lost).abs() < allowed,
             "{shape:?}: its points counted {} J of the {lost} J it lost",
             entry.done
         );
@@ -450,10 +454,10 @@ fn a_body_that_cannot_pay_is_stopped_and_counted_for_what_it_had() {
         }
         let (has, entry) = (energy(&app, it, mass), entry(&app, it));
         assert!(
-            down(&app, it) <= 0.0 && entry.spent.is_none(),
-            "{shape:?} is stopped and the budget stands: {} m/s, spent {:?}",
+            down(&app, it) <= 0.0 && entry.reached.is_none(),
+            "{shape:?} is stopped and the budget stands: {} m/s, reached {:?}",
             down(&app, it),
-            entry.spent
+            entry.reached
         );
         // The count is the energy lost through the points. The body keeps what backing out of
         // the fixture's overlap gave it: less than the overlap a step.
@@ -461,7 +465,7 @@ fn a_body_that_cannot_pay_is_stopped_and_counted_for_what_it_had() {
         let step = app.world().resource::<Time<Fixed>>().timestep();
         let backing = 0.5 * f64::from(mass * (INTO / step.as_secs_f32()).powi(2));
         assert!(
-            (f64::from(entry.done) - (had - has)).abs() < allowed && has < backing,
+            (entry.done - (had - has)).abs() < allowed && has < backing,
             "{shape:?} had {had} J, has {has} J, and its points counted {} J",
             entry.done
         );
@@ -495,12 +499,12 @@ fn points_held_at_their_bound_do_the_budget_whatever_their_number() {
         let (lost, entry) = (had - energy(&app, it, mass), entry(&app, it));
         let allowed = 2.0 * f64::from(rounding(&app, shape.points(), 3)) * had;
         assert!(
-            (lost - f64::from(work)).abs() < allowed && entry.spent == Some(3),
-            "{shape:?} lost {lost} J to a budget of {work} J, counted on step {:?}",
-            entry.spent
+            (lost - f64::from(work)).abs() < allowed && entry.reached == Some(3),
+            "{shape:?} lost {lost} J to a budget of {work} J, reached on step {:?}",
+            entry.reached
         );
         assert!(
-            (f64::from(entry.done) - lost).abs() < allowed,
+            (entry.done - lost).abs() < allowed,
             "{shape:?}: its points counted {} J of the {lost} J it lost",
             entry.done
         );
@@ -526,9 +530,8 @@ fn points_held_at_their_bound_do_the_budget_whatever_their_number() {
 /// work judged against the pressed body's own energy (the budget is never met and the heavy
 /// box stops, losing 16,000 J); the limiter's cut removed (MEASURED: the points do 1,122 J).
 ///
-/// The driver's mass over the piece's is 1,000 here. From about 10,000 Avian's contact between
-/// the two lets the driver into the piece, the piece's points close at no speed and count
-/// nothing, and the count comes late or not at all (MEASURED, `work-form.md`, the fix pass).
+/// The driver's mass over the piece's is 1,000 here; what a far heavier driver does is the
+/// design narrative's ("Residuals of the form", the driven light piece).
 #[test]
 fn a_light_body_pressed_by_a_heavy_one_costs_the_pair_the_budget() {
     let (light, heavy, approach, bound, work) = (2.0_f32, 2_000.0, 4.0, 100.0, 1_000.0);
@@ -546,15 +549,17 @@ fn a_light_body_pressed_by_a_heavy_one_costs_the_pair_the_budget() {
             step(&mut app);
         }
         let entry = entry(&app, piece);
-        let (lost, done) = (had - energy(&app), f64::from(entry.done));
+        let (lost, done) = (had - energy(&app), entry.done);
         let a_substep = f64::from(bound * substep(&app) * approach);
         let rise = (bound * substep(&app) / (light * approach)).ceil();
         let rejoined = f64::from(rise * 0.5 * light * approach * approach);
         assert!(
-            entry.spent == Some(3) && done >= f64::from(work) && done < f64::from(work) + a_substep,
+            entry.reached == Some(3)
+                && done >= f64::from(work)
+                && done < f64::from(work) + a_substep,
             "{shape:?}: the light box's points did {done} J of a budget of {work} J, counted \
              on step {:?}",
-            entry.spent
+            entry.reached
         );
         assert!(
             lost > done - a_substep && lost < done + rejoined,
@@ -608,10 +613,91 @@ fn a_body_at_rest_or_held_still_does_no_work() {
         let added = GRAVITY * step.as_secs_f32() * substep(&app);
         let allowed = rounding(&app, 4, 64) * weight * added * added;
         assert!(
-            entry.done - settled < allowed && entry.spent.is_none(),
-            "held {held}: the points did {} J in 64 steps at rest, spent {:?}",
+            entry.done - settled < f64::from(allowed) && entry.reached.is_none(),
+            "held {held}: the points did {} J in 64 steps at rest, reached {:?}",
             entry.done - settled,
-            entry.spent
+            entry.reached
+        );
+    }
+}
+
+/// A budget's count for a substep is the signed sum of its points' work: a point the solve
+/// pushes while the bodies part there takes from what the others did. The building model
+/// relies on it for a piece a heavier body drives into a block: the block's bonds are charged
+/// no more than the pair lost. Points of both signs inside one substep need a driver solved
+/// before the piece's points (MEASURED: on 400 arms of one body falling and turning on the
+/// slab, flooring each point first moved no count by a thousandth). Fixture: a 2 kg box on
+/// sixteen points 5 cm into the slab under a 2,000 kg box 5 cm into it, both at 0.25 m/s, the
+/// points in a group of 100 N·s a step on a budget far over the pair's energy, read over the
+/// first step. Premise: the contact between the two boxes gives the pair no energy (MEASURED:
+/// the count is 20.92 J of the 21.28 J the pair lost). Mutant: each point's work floored
+/// before the sum (MEASURED: 23.02 J).
+#[test]
+fn a_driven_pieces_count_is_no_more_than_the_pair_lost() {
+    let (light, heavy, into, approach) = (2.0_f32, 2_000.0, 0.05, 0.25);
+    let mut app = world(Hands {
+        group: Some(100.0),
+        work: Some(1.0e6),
+        ..default()
+    });
+    let piece = body(&mut app, Shape::Sixteen, light, -into, approach);
+    let driver = body(&mut app, Shape::Four, heavy, 1.0 - 2.0 * into, approach);
+    let energy = |app: &App| energy(app, piece, light) + energy(app, driver, heavy);
+    let had = energy(&app);
+    step(&mut app);
+    let (lost, done) = (had - energy(&app), entry(&app, piece).done);
+    let allowed = 2.0 * f64::from(rounding(&app, 16 + 4, 1)) * had;
+    assert!(
+        done > 0.0 && done < lost + allowed,
+        "the pair lost {lost} J and the piece's points counted {done} J"
+    );
+}
+
+/// A body that keeps paying reaches a budget's work exactly, within a few steps of coming
+/// within rounding of it: the building model parts a block on `taken >= work` with no
+/// allowance (`fracture::bound::Price::spent`). Each step hands the points what is left; the
+/// count meets it but for the rounding of the points' moves, a fraction `ε · points` of what
+/// was handed at most, so what is left shrinks by that factor a step, and it is gone when it
+/// passes under the grain of the f64 the work is kept in: `ln ε64 / ln(ε32 · points)` steps,
+/// rounded up (3 on one point, 4 on sixteen; MEASURED over 540 budgets: none in 479, one step
+/// in 61, never more). Fixture: a 2,000 kg body at 4 m/s, free and held at 100 N·s a step, on
+/// budgets that measured one step late and on ones that measured none. Mutant: a count that
+/// drops what rounding left (the remainder never closes).
+#[test]
+fn a_paying_body_reaches_the_work_exactly_within_the_remainders_bound() {
+    let (mass, approach) = (2_000.0_f32, 4.0);
+    for (shape, group, work) in [
+        (Shape::One, None, 935.29_f32),
+        (Shape::One, Some(100.0), 1_122.14),
+        (Shape::Four, None, 374.74),
+        (Shape::Four, Some(100.0), 1_000.0),
+        (Shape::Sixteen, Some(100.0), 1_533.21),
+    ] {
+        let mut app = world(Hands {
+            group,
+            work: Some(work),
+            ..default()
+        });
+        let it = body(&mut app, shape, mass, INTO, approach);
+        let grain = f32::EPSILON * shape.points() as f32;
+        let bound = (f64::EPSILON.ln() / f64::from(grain).ln()).ceil() as usize;
+        let mut near = None;
+        for n in 1..=32 {
+            step(&mut app);
+            let left = f64::from(work) - entry(&app, it).done;
+            if near.is_none() && left <= f64::from(grain * work) {
+                near = Some(n);
+            }
+            if entry(&app, it).reached.is_some() {
+                break;
+            }
+        }
+        let (near, reached) = (near, entry(&app, it).reached);
+        assert!(
+            near.zip(reached)
+                .is_some_and(|(near, reached)| reached - near <= bound),
+            "{shape:?}, {work} J: within rounding on step {near:?}, reached on {reached:?}; \
+             the bound is {bound} steps"
         );
     }
 }
