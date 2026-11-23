@@ -365,6 +365,7 @@ struct BoundContacts<'w, 's> {
     contacts: Res<'w, ContactGraph>,
     owned: Owned<'w, 's>,
     owners: Owners<'w, 's>,
+    bodies: Query<'w, 's, &'static RigidBody>,
     movers: Movers<'w, 's>,
     gravity: Res<'w, Gravity>,
     time: Res<'w, Time>,
@@ -425,9 +426,13 @@ fn bound_contacts(mut p: BoundContacts) {
             let Ok((root, position, rotation, owner)) = p.owners.get(of.body) else {
                 continue; // A piece or any other body: ordinary contact.
             };
-            if !p.movers.get(body).is_ok_and(|mover| mover.0.is_dynamic()) {
+            if !p.bodies.get(body).is_ok_and(RigidBody::is_dynamic) {
                 continue; // Only a dynamic body pushes.
             }
+            assert!(
+                p.movers.contains(body),
+                "a dynamic body in an active contact holds the solver's row: {body:?}"
+            );
             let pose = owner.physics_frame((position, rotation));
             for (m, manifold) in pair.manifolds.iter().enumerate() {
                 let into = (pose.rotation.inverse() * (sign * manifold.normal)).as_dvec3();

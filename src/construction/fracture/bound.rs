@@ -42,9 +42,8 @@ pub(crate) struct Price {
 
 impl Price {
     /// Whether bonds that have taken `taken` J are spent: the work has reached theirs, read at
-    /// the contact solve's resolution. The solve does and counts work in f32, and a body does a
-    /// share of what is left each substep, so the count closes on the work without meeting it;
-    /// what is left under one f32 step of the work is no work the solve can do.
+    /// the contact solve's resolution. The solve does and counts work in f32, so what is left
+    /// under one f32 step of the work is no work the solve can do.
     pub(crate) fn spent(&self, taken: f64) -> bool {
         taken as f32 >= self.work as f32
     }
@@ -294,6 +293,12 @@ impl Standing<'_> {
                     * (-self.preload[j]).max(0.0)
                     * sliding
                     * depth;
+                assert!(
+                    price.work.is_finite() && price.work >= 0.0,
+                    "a joint's bonds take a finite work: joint {j} of cell {c} brings the \
+                     boundary's to {} J",
+                    price.work
+                );
             }
         }
         (price, closed, rough)
