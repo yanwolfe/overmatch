@@ -433,7 +433,7 @@ fn a_body_that_can_pay_loses_the_budget_whatever_its_points() {
 /// budget's points have done what the body had. The building model relies on it for a loose
 /// piece meeting a standing block: its own energy is all it can cost the block's bonds, and it
 /// never parts them by arriving. Fixture: a 2 kg body at 1 m/s, 1 J, on a budget of 400 J, on
-/// one point and on four. Mutants: a budget spent by any impulse it bounds; the count taken
+/// one point and on four. Mutants: a budget counted full by any impulse it bounds; the count taken
 /// from the impulse and the speed after it alone (it reads nothing for a stopped body).
 #[test]
 fn a_body_that_cannot_pay_is_stopped_and_counted_for_what_it_had() {
@@ -575,11 +575,11 @@ const GRAVITY: f32 = 9.81;
 /// The allowance: a substep's gravity adds `g dt / substeps` to the speed and the points take
 /// it back, each move rounding it ([`rounding`]), so a substep ends within that rounding of
 /// rest and its points, which return the weight's impulse `m g dt / substeps`, do at most
-/// that impulse times the residual speed. Mutants: the cut taken at the least impulse that would do the work
-/// left, where the solve found a greater one that does none (the light box's points hold the
-/// heavy one's weight, and at a lesser impulse the light box alone would fly into the slab:
-/// MEASURED, the budget reads spent on step 19 of the rest); the limiter reading no speed from
-/// before the substep's forces (MEASURED: spent on step 4).
+/// that impulse times the residual speed. Mutants: the cut taken at the least impulse that
+/// would do the work left, where the solve found a greater one that does none (the light
+/// box's points hold the heavy one's weight, and at a lesser impulse the light box alone
+/// would fly into the slab and do work on it); the limiter reading no speed from before the
+/// substep's forces (the weight's impulse is judged at the speed gravity added alone).
 #[test]
 fn a_body_at_rest_or_held_still_does_no_work() {
     let work = 100.0;

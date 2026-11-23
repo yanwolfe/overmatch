@@ -178,9 +178,9 @@ const AHEAD: [usize; 2] = [2 + 6, 3 + 6];
 /// Invariant: a cell does not stand while a body it cannot stop is deeper in it than its give
 /// and the travel of the steps that find and cross it. A hull driving through a wall relies on
 /// it not to sink into standing matter. Mutant: a block returning nothing while it stands (its
-/// work never counted, or counted and never reached). Fixture: 57 t at 1.5 m/s, 64 kJ, several times the
-/// work of any block in its path; two steps of travel, one for the narrow phase to hand the
-/// contact over and one to cross.
+/// work never counted, or counted and never reached). Fixture: 57 t at 1.5 m/s, 64 kJ, several
+/// times the work of any block in its path; two steps of travel, one for the narrow phase to
+/// hand the contact over and one to cross.
 #[test]
 fn a_cell_does_not_stand_in_a_body_past_its_give() {
     let speed = 1.5_f32;
@@ -315,8 +315,8 @@ fn a_body_pushed_out_held_or_resting_does_no_work() {
 /// Invariant: each body on a block may do the work the block had left at the step's start, so
 /// two bodies that part it in one step do at most twice that between them, and one body no
 /// more than it. The work left is read once, before the step, and a budget is one body's
-/// (`avian_ext::reaction_bound`): the second body's share is the law's stated residual, and it
-/// is bounded by the bodies on the block, never by their points. Mutants: a budget for each
+/// (`avian_ext::reaction_bound`): the second body's share is a residual the design narrative
+/// owns, and it is bounded by the bodies on the block, never by their points. Mutants: a budget for each
 /// point or each way (the block takes more than the bodies on it times its work); the block's
 /// work left shared by nothing at all (it takes whatever stops the bodies). Fixture: boxes
 /// 0.4 m wide abreast inside one column of the leaf's 1 m cells, 57 t at 4.5 m/s apiece, far
@@ -545,8 +545,10 @@ fn a_belt_keeps_what_standing_matter_returns() {
     app.update();
     let kept = -f64::from(app.world().get::<LinearVelocity>(force.body).unwrap().0.z * mass);
     assert!(
-        // f32 integration over the step's substeps.
-        (kept - holds * dt).abs() < 1e-3 * holds * dt,
+        // The body's speed is six substeps' additions of the kept force's share, each rounded
+        // half an ulp of a speed no greater than the result (3 ε); the force, the step and
+        // the product with the mass round once each (under 2 ε more); twice that.
+        (kept - holds * dt).abs() < 10.0 * f64::from(f32::EPSILON) * holds * dt,
         "the body keeps {kept} N·s of the {} N·s the cell returns",
         holds * dt
     );
@@ -556,10 +558,10 @@ fn a_belt_keeps_what_standing_matter_returns() {
 /// Invariant: a belt's force on standing cells is counted and spent by the rule a contact
 /// point's is (the force itself differs: the whole staged force, `Point::Staged`): the cells
 /// take what they returned times the belt's advance into them, and leave on the step that
-/// spends the way's work, not before and not after. A hull whose belts ride onto standing matter relies on
-/// it; the staged force has no solver point to be read from. Mutants: the belt's points not
-/// counted (the cells never leave); cells freed by the press alone (they leave on the first
-/// tick); a way spent on the counted work alone (the last step is rationed to the work left and
+/// spends the way's work, not before and not after. A hull whose belts ride onto standing
+/// matter relies on it; the staged force has no solver point to be read from. Mutants: the
+/// belt's points not counted (the cells never leave); cells freed by the press alone (they
+/// leave on the first tick); a way spent on the counted work alone (the last step is rationed to the work left and
 /// the belt keeps less than it pressed with, so the count closes on the way's work over several
 /// more ticks). Fixture: a body too heavy for the force to slow, advancing at 2 mm/s under half
 /// the least force any way of the cell holds, so the belt keeps its whole force whichever way
