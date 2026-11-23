@@ -41,20 +41,16 @@ pub(crate) struct Price {
 }
 
 impl Price {
-    /// Whether bonds that have taken `taken` J are spent: the work has reached theirs, read at
-    /// the contact solve's resolution. The solve does and counts work in f32, so what is left
-    /// under one f32 step of the work is no work the solve can do.
+    /// Whether bonds that have taken `taken` J are spent: the work has reached theirs. A body
+    /// that keeps paying closes what rounding leaves within a few steps
+    /// (`tests::avian_reaction_bound`, the remainder's bound).
     pub(crate) fn spent(&self, taken: f64) -> bool {
-        taken as f32 >= self.work as f32
+        taken >= self.work
     }
 
-    /// The work the bonds still take, J, having taken `taken`: nothing once [`Self::spent`].
+    /// The work the bonds still take, J, having taken `taken`.
     pub(crate) fn left(&self, taken: f64) -> f64 {
-        if self.spent(taken) {
-            0.0
-        } else {
-            self.work - taken
-        }
+        (self.work - taken).max(0.0)
     }
 }
 
