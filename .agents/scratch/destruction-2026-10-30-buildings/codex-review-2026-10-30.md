@@ -2,7 +2,7 @@
 
 Subject: the game's environment destruction, game state only. Prompt: the four lenses (stand-ins, tuning as a missing factor, realism, coherence). Reviewed main at fc9eb94; #188 by its issue only.
 
-**Verdict:** Overmatch’s game-state destruction has a coherent architecture, but its mechanical laws do not yet form a coherent whole: intercepted blast energy becomes crushing work, transported fragment potency exceeds its energy source, and connectivity substitutes for structural capacity. Keep the shared chunk-and-joint architecture, but change those laws before treating the prototype’s outcomes as physical validation; the weight and ejecta additions promised in [the game slice](https://github.com/vikng-dev/overmatch/issues/188) are necessary but insufficient. I reviewed that slice’s contract, not its unseen implementation, and performed only source inspection and arithmetic.
+**Verdict:** Overmatch’s game-state destruction has a coherent architecture, but its mechanical laws do not yet form a coherent whole: intercepted blast energy becomes crushing work, transported fragment potency exceeds its energy source, and connectivity substitutes for structural capacity. Keep the shared chunk-and-joint architecture, but change those laws before treating the prototype’s outcomes as physical validation; the weight and ejecta additions promised in [the game slice](https://github.com/yanwolfe/overmatch/issues/188) are necessary but insufficient. I reviewed that slice’s contract, not its unseen implementation, and performed only source inspection and arithmetic.
 
 **Findings, ranked by consequence**
 

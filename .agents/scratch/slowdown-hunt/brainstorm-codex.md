@@ -2,7 +2,7 @@ Subject: the video game’s environment destruction and damage model; game state
 
 **I would test the owner’s aggregate-settlement idea first, and dynamic bulk rubble second.** Both could remove the server’s obligation to simulate the internal arrangement of a pile while retaining meaningful tank interaction. Their savings remain unknown. The supplied evidence establishes neither feasibility nor impossibility on two cores.
 
-This was read-only: no files changed, no builds, no web search. The GitHub connector retrieved [issue #186](https://github.com/vikng-dev/overmatch/issues/186) after `gh` failed; it has no comments. All experiments below are proposals.
+This was read-only: no files changed, no builds, no web search. The GitHub connector retrieved [issue #186](https://github.com/yanwolfe/overmatch/issues/186) after `gh` failed; it has no comments. All experiments below are proposals.
 
 **What the evidence allows**
 

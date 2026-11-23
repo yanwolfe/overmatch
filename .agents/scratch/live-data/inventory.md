@@ -4,7 +4,7 @@ Reloading the source alone will leave copied UI, material, registry and blueprin
 Simulation changes belong at spawn or scenario reset, with matching content identity where required.  
 Start with lighting, settings-page appearance and sight appearance; **DERIVED target: about one second**, unmeasured.
 
-This is the inventory for [issue 276](https://github.com/vikng-dev/overmatch/issues/276), informed by [the dev-loop research](/Users/Yan/github/vikng-dev/overmatch/.agents/scratch/dev-loop-speed/research.md:116). The issue has no comments. Research was read-only: no edits, builds, tests or git state changes. The excluded documents were not opened, and no damage-topic web research was performed. References to the game’s damage model below concern authored game-state data and its presentation.
+This is the inventory for [issue 276](https://github.com/yanwolfe/overmatch/issues/276), informed by [the dev-loop research](/Users/Yan/github/vikng-dev/overmatch/.agents/scratch/dev-loop-speed/research.md:116). The issue has no comments. Research was read-only: no edits, builds, tests or git state changes. The excluded documents were not opened, and no damage-topic web research was performed. References to the game’s damage model below concern authored game-state data and its presentation.
 
 All findings and classifications below are **DERIVED from source inspection**. No save-to-visible duration was **MEASURED**. Paths, source-line locators, versions and identifiers are labels rather than quantitative estimates.
 

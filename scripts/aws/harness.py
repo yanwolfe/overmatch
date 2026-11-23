@@ -97,7 +97,7 @@ from online_cost import ANSI, MalformedRecord, fmt, jitter_object, stats_object 
 
 PROFILE = "overmatch"
 REGION = "ap-southeast-1"
-RELEASES = "https://github.com/vikng-dev/overmatch/releases/download"
+RELEASES = "https://github.com/yanwolfe/overmatch/releases/download"
 SOURCES = "https://raw.githubusercontent.com/vikng-dev/overmatch"
 # The timing tastes' one owner (src/net/timing.rs `Timing::shipped`), compiled into the release.
 NET_TIMING = "assets/net_timing.ron"

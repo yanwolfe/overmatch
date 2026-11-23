@@ -109,7 +109,7 @@ The attribution report labels its system timings **DERIVED from MEASURED samplin
 
 Consequently, removing shoe entities does **not** justify claiming the entire driver saving. Its larger potential benefit lies in engine work outside that driver.
 
-The **DERIVED 5.59 ms transform** and **5.42 ms mesh-preparation** totals belong to the whole smaller scene. [Issue #168](https://github.com/vikng-dev/overmatch/issues/168) also identifies an unresolved re-extraction/channel suspicion. Neither total can be assigned proportionally to the shoes.
+The **DERIVED 5.59 ms transform** and **5.42 ms mesh-preparation** totals belong to the whole smaller scene. [Issue #168](https://github.com/yanwolfe/overmatch/issues/168) also identifies an unresolved re-extraction/channel suspicion. Neither total can be assigned proportionally to the shoes.
 
 Bevy already has change-filtered mesh extraction and changed queues: [mesh.rs:1907](/Users/Yan/github/vikng-dev/overmatch/vendor/bevy_pbr-0.19.1-scalar-math/src/render/mesh.rs:1907), [mesh.rs:2493](/Users/Yan/github/vikng-dev/overmatch/vendor/bevy_pbr-0.19.1-scalar-math/src/render/mesh.rs:2493). The problem is not evidence that every unchanged shoe is blindly rebuilt.
 

@@ -30,7 +30,7 @@
 # hand:  scripts/disk/sweep.sh   (FORCE=1 skips the session check)
 set -u
 
-MAIN=/Users/Yan/github/vikng-dev/overmatch
+MAIN=/Users/Yan/github/yanwolfe/overmatch
 
 if [ "${FORCE:-0}" != 1 ] && ! pgrep -f '/\.local/bin/claude' >/dev/null 2>&1; then
   echo "target-sweep $(date '+%Y-%m-%d %H:%M:%S') — no Claude session running, skipped"

@@ -10,7 +10,7 @@ export interface ServerRelease { url: string; checksum: string }
 export async function serverRelease(version: string, timeoutMs: number): Promise<ServerRelease> {
 	if (version.includes("+")) throw new ProviderError("releaseBuildMetadataUnsupported", 400, "refused");
 	const name = `overmatch-server-v${version}-x86_64-unknown-linux-gnu.tar.gz`;
-	const url = `https://github.com/vikng-dev/overmatch/releases/download/v${encodeURIComponent(version)}/${encodeURIComponent(name)}`;
+	const url = `https://github.com/yanwolfe/overmatch/releases/download/v${encodeURIComponent(version)}/${encodeURIComponent(name)}`;
 	try {
 		return await bounded(timeoutMs, async (signal) => {
 			const checksum = await providerFetch("release", `${url}.sha256`, { signal });

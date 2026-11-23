@@ -3,7 +3,7 @@
 Subject: Overmatch’s environment destruction and tank damage model, game state only.
 Crew and modules are HP pools; dose can leave them reduced or their HP pool emptied and knocked out.
 
-Design for [#189](https://github.com/vikng-dev/overmatch/issues/189), building on [#188](https://github.com/vikng-dev/overmatch/issues/188); the collision model is [#232](https://github.com/vikng-dev/overmatch/issues/232)'s.
+Design for [#189](https://github.com/yanwolfe/overmatch/issues/189), building on [#188](https://github.com/yanwolfe/overmatch/issues/188); the collision model is [#232](https://github.com/yanwolfe/overmatch/issues/232)'s.
 This document owns the environment model.
 [The tank damage design](armor-penetration-and-damage.md) owns the shared penetration, spall and burst narratives; amendments below state only what changes.
 
@@ -245,8 +245,8 @@ Such cases remain unsupported until a transport model supplies their pressure hi
 - Not built: the pulse shape, clearing, the negative phase, wall motion's feedback, and `Z` below 0.06 m/kg^⅓ (held at that edge).
 - It replaced the detonation products' momentum `√(2 C E)` shared over the rays: for the 88 mm HE fixture burst (1.47 MJ) on a 0.25 m brick cube square on, **DERIVED** launch speed 0.28 → 0.55 m/s at 1 m and 0.031 → 0.15 m/s at 3 m.
 
-**Owner decision (2026-11-01, [#237](https://github.com/vikng-dev/overmatch/issues/237)): a blast on a structure is one field and three material laws.**
-The law is stated on the field, whatever finds the surfaces it reaches ([#204](https://github.com/vikng-dev/overmatch/issues/204)).
+**Owner decision (2026-11-01, [#237](https://github.com/yanwolfe/overmatch/issues/237)): a blast on a structure is one field and three material laws.**
+The law is stated on the field, whatever finds the surfaces it reaches ([#204](https://github.com/yanwolfe/overmatch/issues/204)).
 - **The field.** On each face point it reaches, a peak pressure `P` and a specific impulse `i`, from the fits above at `Z = R / W^⅓`, blended by incidence.
 - **Law 1, crush.** Material crushes where `P` beats its dynamic compressive strength `σ_c,d`; the impulse decides how much, by momentum through a compaction front: `Δm = J f(σ_c,d / P) / u_c`, `u_c = √(σ_c,d ε_v / ρ)`, `ε_v` the volumetric strain to lock-up. `f` (`fracture::crush_factor`) is the snowplow front's factor against a triangular pulse: `√(1 − 4r/3)` below ½, `√((16/3) r (1 − r)³)` to 1, zero past it. It replaces the borrowed cavity-strength crush pool.
   - **Built** (lane 4): each blast ray crushes the chunk it stops on by Law 1 at its patch's peak overpressure and the push's impulse, scaled by the share of its cone the chunk intercepts (`fracture::Blast::crushed`, `Material::crushed_by`); a chunk's load sums its rays' volumes. `σ_c,d` is the row's quasi-static compressive strength times its stated DIF, read as the row's reference-rate datum (**ASSUMED**: no strain-rate law; brick's datum is at 100 /s, wood's at 2400 /s). `ε_v = 1 − ρ / ρ_s` (**DERIVED**: the locking idealization compacts the pores shut): brick 0.18, wood 0.70; `u_c` brick 91.6 m/s, wood 229 m/s (**DERIVED** from the shipped rows; wood's `σ_c,d` is 33.4 MPa against the study's recalled 3.8 MPa, so timber crushes far less than the study's table shows). The reference rate records the source measurement; it does not supply a per-pulse rate law or separate intrinsic rate effects from the compaction front's inertia. That applicability remains a validation gap.

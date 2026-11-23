@@ -11,7 +11,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/sh</string>
-        <string>/Users/Yan/github/vikng-dev/overmatch/scripts/disk/sweep.sh</string>
+        <string>/Users/Yan/github/yanwolfe/overmatch/scripts/disk/sweep.sh</string>
     </array>
 
     <key>EnvironmentVariables</key>
