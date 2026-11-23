@@ -15,6 +15,10 @@
 //!   times how far its body advanced into the cell there as the solve left it; nothing removes
 //!   it. A block whose cells' work has reached a way's leaves that way.
 //!
+//! One physics step runs between two [`release`]s: [`Pressed`] holds the step's solver point
+//! keys, and `Bounds` holds a step's impulses only until the next step clears them, so a second
+//! step before the release would leave [`Bounds::impulse`] no point to read, and it panics.
+//!
 //! The support check hears none of this: a freed owner is queued for it as changed, and it reads
 //! weights alone.
 
@@ -80,7 +84,10 @@ struct Press {
 #[derive(Resource, Default, Debug)]
 pub(crate) struct Pressed(BTreeMap<Entity, Press>);
 
-/// One block's step, for the operator's instruments: the way its work reaches first.
+/// One block's step, for the operator's instruments: the way its work reaches first, which is
+/// the way it parts by. Work is kept per cell, never per way, and a step's impulse belongs to
+/// points that several ways' groups share, so no way is the one that took the step's work:
+/// `closing`, `bound` and `returned` are this way's, and it may have carried nothing this step.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BlockRow {
     pub(crate) body: Entity,

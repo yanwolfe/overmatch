@@ -571,8 +571,9 @@ pub(crate) struct Live {
     pub(crate) gravity: fracture::parts::Gravity,
     /// Per law chunk: its holes, in record order (module doc).
     pub(crate) holes: Vec<Vec<Hole>>,
-    /// Per law chunk: the work its bonds have taken from the bodies that pressed it, J
-    /// ([`bounded`]). Never reduced: bonds do not heal.
+    /// Per law chunk of standing matter: the work its bonds have taken from the bodies that
+    /// pressed it, J ([`bounded`]); empty on a group that left, which is standing matter no
+    /// longer. Never reduced: bonds do not heal.
     pub(crate) work: Vec<f64>,
 }
 
@@ -639,7 +640,7 @@ impl Live {
             assessment: Arc::new(fracture::parts::Assessment::default()),
             gravity: fracture::parts::Gravity::default(),
             holes: self.holes.clone(),
-            work: self.work.clone(),
+            work: Vec::new(),
         };
         child.state.retain_group(group);
         child
