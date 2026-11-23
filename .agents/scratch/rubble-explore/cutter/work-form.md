@@ -1255,3 +1255,186 @@ three stills: `.agents/scratch/rubble-explore/clips-budget/wall-10kmh-v2.mp4`,
 parting test; `8e38ef32` invariants; `be9bc72a` the signed sum's witness and the remainder's
 bound; this report with the design narrative.
 
+
+# Hull on light pieces: measurement
+
+Subject: a video game's physics (game state only): what the solver rows between a hull and loose
+pieces carry. Measurement only, code at `52c3c995`, built with `--features dev_ui,bitprobe` and
+a temporary probe, never committed (kept with its scripts at
+`.agents/scratch/rubble-explore/clips-work/instrument/pieces/`). Built to section 3 of
+`.agents/scratch/research/mass-ratio-designs-attack-2026-11-23.md`. Every number is MEASURED
+unless marked; one run a pass; untimed (load average 4 to 24).
+
+Passes: wall 10 and 20 km/h, house long wall 10 km/h and 15 km/h twice, hall long wall 20,
+hall junction 20, house end-on governed (the eight "driving passes"); parked: a hull stopped
+in the rubble of `house_0001` (the `pile_park.py` pose, `Drive::Park`), in a wall's breach,
+and touching a wall.
+
+How it reads, and what I decided where section 3 left it open:
+- A row is one manifold's solver constraint. Its impulse is the sum over the six substeps of
+  what its points carried; its work is the same sum times the mean closing speed at the two
+  ends of each substep (the budget's formula, on every row).
+- The ceiling is the facts file's `F* = Σem · (12,920 c + 90,960 min(d, 0.276))`, with `c` the
+  greatest closing speed of the row's points at the step's start and `d` the manifold's
+  deepest overlap; `s` is the step's impulse over `F* · dt`. A row neither closing nor
+  overlapping has no ceiling and is left out of `s`.
+- Hull collider kinds: soft run, bump stop, and the collision proxies split by the push's
+  direction: under (the hull presses down), side, and top (the piece is carried on the hull).
+  There is no belly collider apart from the proxies; side plates met no piece.
+- A holder is any other row of the piece whose push on it opposes the hull's by more than
+  cos 45°. Kinds: standing cells, soil (terrain), another piece, the hull again.
+- `p` is the block's priced force over `F*`; `q` is that force over `σ_c · A`, with `σ_c`
+  brick's 36.5 MPa for every piece and `A` the face of the touched cell's bounding box across
+  the push. Wood pieces are misstated by this.
+- "Not moving" is a piece whose speed along the push at the step's end, and whose change of
+  it, are both under 0.1 m/s.
+- The energy split is each row class's work, not the hull's share of it. "Rest" is the hull's
+  kinetic-energy change inside the steps less all row work: belts on the ground, the engine,
+  gravity.
+
+## Rows between the hull and loose pieces (eight driving passes)
+
+395,497 row-steps: 119,599 rigid (bump stop 34,618; proxy side 78,544; proxy under 6,437),
+65,426 soft run, 210,472 carried on top.
+
+| piece mass | rigid row-steps | with a holder | at or over 0.9 of the ceiling, of those with one |
+|---|---|---|---|
+| under 1 kg | 0 | 0 | none |
+| 1 to 10 kg | 13,388 | 7,709 | 876 of 9,736 (9.0 %) |
+| 10 to 100 kg | 90,244 | 37,907 | 6,176 of 64,845 (9.5 %) |
+| over 100 kg | 15,967 | 10,035 | 1,160 of 12,420 (9.3 %) |
+
+| holder | rigid row-steps | at or over 0.9 of the ceiling | soft-run row-steps | at or over 0.9 |
+|---|---|---|---|---|
+| standing cells | 4,501 | 324 of 3,941 (8.2 %) | 6,249 | 8 of 5,913 |
+| soil | 9,519 | 641 of 7,986 (8.0 %) | 25,855 | 82 of 24,725 |
+| another piece | 40,948 | 3,000 of 30,699 (9.8 %) | 16,841 | 36 of 15,290 |
+| the hull again | 683 | 0 of 276 | 38 | 0 of 23 |
+| none | 63,948 | 4,247 of 44,099 (9.6 %) | 16,443 | 19 of 12,310 |
+
+- A rigid row has a holder behind it in 47 % of row-steps, mostly another piece (34 %);
+  standing cells are 3.8 %.
+- The share at the ceiling is 8 to 10 % whatever the mass band or the holder. Soft-run rows
+  are at it in 0.25 %.
+- Piece mass on these rows: 15 to 38 kg at the 10th to 90th percentile on the walls and the
+  houses (4.5 kg at the 10th on the house long wall), 18 to 245 kg on the hall. No piece
+  under 1 kg met the hull in a driving pass (47 row-steps in the parked heap, 3 at the
+  ceiling).
+- Overlap, median / 90th / 99th percentile / most: bump stop 0.0 / 2.5 / 6.4 / 13.1 cm; proxy
+  side 0.0 / 0.0 / 2.3 / 17.1 cm; proxy under 0.0 / 0.6 / 2.0 / 10.3 cm; soft run 3.6 / 17.2 /
+  22.0 / 27.9 cm.
+
+## Pieces pinched against standing cells
+
+4,737 rigid row-steps had standing cells behind the piece. The building model had priced a way
+for the piece's block in 2,440; in 2,297 it had not (no way open, or no block priced for that
+piece).
+
+- Of the 2,084 with a priced way and a ceiling: `p` over 1 in 1,381 (66 %); `q` under 1 in all
+  but 5 (median `q` 0.02 to 0.04: the bonds' force is a few per cent of what the piece itself
+  would bear).
+- Against the ceiling at the piece's full thickness of overlap, `p` is over 1 in 209 (10 %).
+- Median `p` by pass: 1.0 to 2.5 on the walls and the house long wall, under 0.5 on the hall
+  wall, the junction and end-on.
+- How long it lasts: 217 runs of consecutive steps with `p` over 1 on one piece; median 2 to
+  5 steps by pass; 49 over 8 steps; one over 64 (67 steps, house at 10 km/h). Whether the
+  block parted at a run's end or the piece moved away is not read.
+- The holder row itself was clamped by the block's bound in 1,016 of the 4,737.
+
+## Where the row work went
+
+J over each pass from the hull's first contact; "not moving" split by holder.
+
+| pass | hull's energy at contact | hull to standing | rigid, piece moving | soft run | rigid, piece not moving (soil / standing / piece) | share not moving | rest |
+|---|---|---|---|---|---|---|---|
+| wall 10 | 200,797 | 36,227 | 51,301 | 64,998 | 20,739 (10,786 / 8,745 / 1,138) | 12 % | −172,035 |
+| wall 20 | 829,167 | 27,355 | 100,035 | 94,352 | 16,114 (12,982 / 2,827 / 277) | 7 % | −234,980 |
+| house 10 | 203,760 | 26,745 | 116,721 | 99,645 | 56,565 (21,108 / 21,311 / 10,621) | 19 % | −302,186 |
+| house 15, run 1 | 466,505 | 20,393 | 112,222 | 91,061 | 32,179 (15,545 / 12,142 / 4,484) | 13 % | −250,083 |
+| house 15, run 2 | 466,507 | 27,667 | 163,980 | 148,237 | 62,582 (44,813 / 15,615 / 2,158) | 16 % | −397,558 |
+| hall wall 20 | 840,382 | 208,553 | 298,284 | 139,879 | 184,787 (147,492 / 39,737 / −2,550) | 22 % | −727,405 |
+| hall junction 20 | 838,385 | 47,741 | 343,559 | 69,938 | 36,675 (30,025 / 1,031 / 6,537) | 7 % | +314,821 |
+| end-on governed | 3,384,542 | 29,528 | 619,408 | 322,997 | 60,240 (47,719 / 13,655 / −1,388) | 6 % | −1,122,221 |
+
+- A negative rest is the engine putting back what the rows took (the passes hold a speed).
+  The junction's is positive: its hull lost 821,174 J and stopped.
+- Rows on pieces that do not move take 6 to 22 % of the row work. Soil behind the piece is the
+  largest part of it in six of the eight passes.
+
+## Parked on pieces
+
+Hull stopped in the rubble of `house_0001`, 62.9 s parked and awake:
+- Support, as a share of the hull's weight: soft runs on pieces 58.6 %; bump stops on pieces
+  5.9 %; proxies under the hull 0.0 %; pieces carried on top −2.5 %; the rest, 38.1 %, is
+  what no row carries (the belts' sampled support on the ground).
+- Deepest overlap in the second starting at 0, 5, 10, 20, 30, 45, 60 s: bump stop 3.7, 0.9,
+  0.8, 1.0, 1.4, 1.2, 1.5 cm; proxy under 0.0 to 0.2 cm; soft run 19.9, 19.5, 19.5, 19.9,
+  20.2, 20.1, 20.4 cm.
+- The bump stops' overlap is within a piece's thickness and rises 0.7 cm between 10 s and
+  60 s; the soft runs' rises 0.9 cm over the same span.
+
+Hull stopped in a wall's breach: its body left the solver (asleep) 8.6 s after stopping, so
+there are no rows after that. While awake: bump stops 9.1 %, soft runs 7.7 %, proxies under
+7.3 % of the weight; deepest overlaps 4.2 cm (stop), 1.0 cm (proxy under), 23.0 cm (soft
+run). The hull parked touching a wall slept after 1.5 s.
+
+## Against the attack's decision table
+
+| reading | result here | the table's meaning |
+|---|---|---|
+| hull-to-piece rows with a holder behind | 47 % of rigid row-steps | not rare: the first row does not settle it |
+| `p` over pinched rows | over 1 in 66 % of the priced ones; 10 % at full overlap | not "under 1 nearly always" |
+| `p` over 1 with `q` under 1, block not parting while the hull stays | `q` under 1 always; runs last 2 to 5 steps at the median, 49 of 217 over an eighth of a second, one over a second | present but short: timeliness, not a stall |
+| `p` over 1 with `q` over 1, or holder soil or a block with no way | `q` over 1 in 5 rows; soil or no way behind 11,816 rigid row-steps (10 %), 8 % of them at the ceiling | not common |
+| pinched rows by piece mass | none under 1 kg; 1 to 10 kg is 14 % of held rigid row-steps | not "mostly under 1 kg" |
+| hull loss in rows on unmoving pieces | 6 to 22 % of row work; hall wall 22 %, house at 10 km/h 19 % | two passes at the attack's own line of a fifth, most of it against soil |
+| parked: rigid-row overlap | 0.8 to 1.5 cm, a 0.7 cm rise over 50 s | settles within a piece's thickness |
+| pinched rows by collider kind | held: 55,651 rigid, 48,983 soft run | not mostly soft run |
+
+What it makes necessary: nothing in the solver on this pass set. No reading shows a hull held
+by a row at its ceiling for long. The two readings that do not sit with "do nothing" are the
+work on unmoving pieces pressed onto soil (the attack's design D, the piece or the soil
+giving, is the one that addresses it; a transmitter does not) and the short runs of `p` over
+1, which a transmitter would shorten.
+
+What the pass set does not cover: the case the earlier fixture stalled on, a hull on a 2 to
+6 kg piece against a standing block. Only 68 rigid row-steps had a piece of 1 to 10 kg with
+standing cells behind it, one of them at the ceiling. The pieces these walls make are 15 to
+38 kg.
+
+## Pieces retired below the play-area floor (backlog destruction-12)
+
+House long wall at 15 km/h with every piece's last 256 steps kept. Run 1 lost none; run 2
+lost two, both born 1.48 s after the hull's first contact.
+
+**A 19.5 kg piece of one cell** (cell 1070), born 2.8 m above the ground at (154.4, −295.9):
+- It met the terrain 2.8 s after birth (overlap 3.5 cm, 50.9 N·s that step), then moved along
+  it at 1.7 falling to 0.2 m/s while its centre rose from 0.04 to 0.29 m above the ground.
+- Over those 0.6 s it held one terrain manifold of two points, normal straight down from the
+  piece, overlap between −0.4 and +0.06 cm, returning 2.8 N·s a step (its weight is 3.0).
+- At 3.45 s after birth the manifold was gone and no other row touched the piece. It fell
+  from 0.29 m at free-fall speed, its centre passing the terrain 0.28 s later at 2.6 m/s,
+  with no row at all in any step on the way down.
+
+**A 3.7 kg piece of one cell** (cell 964), born 2.6 m above the ground at (153.5, −293.7):
+- 2.4 s after birth it lay under the hull's soft run with another piece on it: the run
+  pressed it with 38 to 99 N·s a step (its weight is 0.57), the terrain returned 16 to 55,
+  terrain overlap 0.2 to 0.5 cm.
+- Over the next 3.4 s its centre stayed within 0.2 m of the surface while its terrain
+  manifold reported overlaps up to 45 cm.
+- In its last half second the manifold was one to three points at −1.7 to +2.4 cm returning
+  0.2 N·s a step, under half its weight; it sank at a rising speed, was 0.25 m under at
+  1.9 m/s, then had no row and fell.
+
+Both lost the terrain's support with the terrain's manifold still present or just dropped,
+at overlaps near zero. Nothing fixed.
+
+## Not verified
+
+- Timing: the load average was over 3 throughout.
+- One run a pass (two of the house at 15 km/h).
+- `q` uses brick's strength and a bounding-box face for every piece.
+- Whether a pinched block parted at the end of a run of `p` over 1.
+- A hull parked for 60 s in a wall's breach or against a wall: the body sleeps first.
+- The row work's first substep uses the speed at the step's start for its opening speed, so
+  it omits that substep's gravity; no row's work was checked against a body's energy.
