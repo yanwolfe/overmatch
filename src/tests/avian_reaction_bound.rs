@@ -333,6 +333,66 @@ fn a_group_returns_its_bound_over_the_step_whatever_the_split() {
     }
 }
 
+/// A group's bound is on its points' impulses times their leans: members at lean one half
+/// return twice the bound between them, and the group reads its bound. The building model
+/// relies on it for points that meet a way of giving at an angle
+/// (`breakage::bounded::Pricing::price`): the way holds its strength along the push, not
+/// along each point's normal. Fixture: a 2,000 kg body at 4 m/s on four points, one group of
+/// 100 N·s at lean 0.5; a step takes 200 N·s. Mutant: the lean's division dropped from the
+/// deal (a step takes 100 N·s and the group reads 50).
+#[test]
+fn a_groups_bound_is_on_its_points_impulses_times_their_leans() {
+    let (mass, approach, bound, lean) = (2_000.0_f32, 4.0, 100.0, 0.5);
+    let mut app = world(Hands {
+        group: Some(bound),
+        lean: Some(lean),
+        ..default()
+    });
+    let it = body(&mut app, Shape::Four, mass, INTO, approach);
+    step(&mut app);
+    let before = down(&app, it);
+    step(&mut app);
+    let (loss, read) = (
+        (before - down(&app, it)) * mass,
+        entry(&app, it).group_returned,
+    );
+    let allowed = rounding(&app, 4, 1) * mass * approach;
+    assert!(
+        (loss - bound / lean).abs() < allowed && (read - bound).abs() < allowed,
+        "a step takes {loss} N·s of {} and the group reads {read} N·s of {bound}",
+        bound / lean
+    );
+}
+
+/// A point in two groups returns the lesser of what they deal it, whichever was named first.
+/// The building model relies on it for a point that leans on several ways of giving: it
+/// returns no more than the weakest holds. Fixture: a 2,000 kg body at 4 m/s on four points,
+/// each a group of its own and all four one group, named in that order; with 10 N·s each and
+/// 100 N·s between them a step takes 40 N·s, and with 100 N·s each and 40 N·s between them it
+/// takes 40 N·s. Mutant: the later group's deal overwrites the earlier's (the first arm takes
+/// 100 N·s).
+#[test]
+fn a_point_in_two_groups_returns_the_lesser_deal() {
+    let (mass, approach) = (2_000.0_f32, 4.0);
+    for (each, group) in [(10.0, 100.0), (100.0, 40.0)] {
+        let mut app = world(Hands {
+            each: Some(each),
+            group: Some(group),
+            ..default()
+        });
+        let it = body(&mut app, Shape::Four, mass, INTO, approach);
+        step(&mut app);
+        let before = down(&app, it);
+        step(&mut app);
+        let loss = (before - down(&app, it)) * mass;
+        let allowed = rounding(&app, 4, 1) * mass * approach;
+        assert!(
+            (loss - 40.0).abs() < allowed,
+            "{each} N·s a point and {group} N·s between them: a step takes {loss} N·s"
+        );
+    }
+}
+
 /// A body with more energy than a budget has left loses that work, whatever the number of its
 /// points, and its points count it in the step; they then do no more. The building model's
 /// block parts on that count, having cost the body its bonds' work and no more

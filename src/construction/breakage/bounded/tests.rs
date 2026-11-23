@@ -372,6 +372,85 @@ fn bodies_parting_a_block_together_do_its_work_once_each_at_most() {
     }
 }
 
+/// Invariant: a block whose work is reached leaves by the way that takes least work, whichever
+/// of its ways holds least and in whatever order its pushes found them, and the cells that
+/// leave are that way's. The cut that follows frees exactly those cells, so a block that left
+/// by another way would free a plug where a face sheds, or the reverse. The ways are the
+/// intact leaf's own (`Standing`), not the law's report of them. Mutants: the way that holds
+/// least force, or the first give, parts the block. Fixture: one cell of the leaf, the work
+/// its two ways take counted on it up to the lesser.
+#[test]
+fn a_block_leaves_by_the_way_that_takes_least_work() {
+    let (mut app, force, ways, _) = wall_and_belt(1.0);
+    let [(through, plug), (shed, sheds)] = ways;
+    assert!(
+        through.work != shed.work && plug != sheds,
+        "fixture: the ways differ in work and in what leaves: {through:?} {plug:?}, {shed:?} \
+         {sheds:?}"
+    );
+    let push = Push {
+        along: DVec3::Z,
+        closing: 1.0,
+        lean: 1.0,
+    };
+    let gives = [
+        Yield {
+            way: Way::ShearOut,
+            push,
+            price: through,
+            leaves: plug,
+        },
+        Yield {
+            way: Way::Shed,
+            push,
+            price: shed,
+            leaves: sheds,
+        },
+    ];
+    let least = (gives.iter())
+        .min_by(|a, b| a.price.work.total_cmp(&b.price.work))
+        .unwrap()
+        .clone();
+    let chunks = work(&app, force.structure).len();
+    for order in [[0, 1], [1, 0]] {
+        let gives = gives.clone();
+        let least = least.clone();
+        let body = force.body;
+        let left = (app.world_mut()).run_system_once(
+            move |movers: Query<(&LinearVelocity, &AngularVelocity)>| {
+                let mut bounds = Bounds::default();
+                let press = Press {
+                    blocks: vec![Block {
+                        body,
+                        cells: vec![PRESSED],
+                        gives: (order.iter())
+                            .map(|&n| (gives[n].clone(), bounds.group(Vec::new(), 0.0)))
+                            .collect(),
+                    }],
+                    ..default()
+                };
+                let mut work = vec![0.0; chunks];
+                work[PRESSED] = 0.5 * least.price.work;
+                let (_, standing) = settle(&mut work, &press, &bounds, &movers);
+                work[PRESSED] = least.price.work;
+                let (rows, leaving) = settle(&mut work, &press, &bounds, &movers);
+                (standing, rows[0].way, leaving)
+            },
+        );
+        let (standing, way, leaving) = left.unwrap();
+        assert!(
+            standing.is_empty(),
+            "order {order:?}: {standing:?} leave at half the work"
+        );
+        assert!(
+            way == least.way && leaving.iter().copied().eq(least.leaves.iter().copied()),
+            "order {order:?}: {leaving:?} leave by {way:?}; the least work is {:?}'s, {:?}",
+            least.way,
+            least.leaves
+        );
+    }
+}
+
 /// Fixture: one force on a belt's body, staged every tick while set.
 #[derive(Resource)]
 struct Staging(Option<crate::contact_transfer::StagedForce>);
