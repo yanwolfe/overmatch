@@ -112,8 +112,8 @@ fn a_backed_block_leaves_through_the_free_face_behind_it() {
     );
 }
 
-/// Invariant: a cell returns its strength for no longer than a body takes to do the work its
-/// bonds have left, so what a fast body loses to it is `W / v` whatever the step, what a slow
+/// Invariant: a cell returns a belt its strength for no longer than the belt takes to do the work
+/// its bonds have left, so what a fast belt loses to it is `W / v` whatever the step, what a slow
 /// one loses is `F dt`, and work already taken is not returned again. Relied on by the
 /// tick-rate independence of a ram. Mutants: `F dt` alone (the fast body's loss halves with the
 /// step); the work taken ignored (worked bonds return a fast body the whole `W / v`). Fixture
@@ -201,7 +201,6 @@ fn a_push_into_the_ground_sheds_sideways_against_its_own_friction() {
         closing: 0.0,
         lean: 1.0,
     };
-    let dt = 1.0 / 64.0;
     let material = wall.kind.structure.chunks[0].material;
     let friction = f64::from(crate::substances::pair_friction(
         material.friction,
@@ -218,8 +217,8 @@ fn a_push_into_the_ground_sheds_sideways_against_its_own_friction() {
             closing: 5.0,
             lean: 0.0,
         };
-        assert_eq!(standing.give_along(&top, along_the_face, dt), None);
-        standing.give_along(&top, down, dt).unwrap()
+        assert_eq!(standing.give_along(&top, along_the_face), None);
+        standing.give_along(&top, down).unwrap()
     };
     assert_eq!((given.way, &given.leaves), (Way::Shed, &top));
     // What slides when the cells leave through either face, from the fixture's geometry: the

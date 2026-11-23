@@ -41,6 +41,17 @@ pub type SurfaceFrictionFn = fn(
 /// OVERMATCH PATCH: process-wide adapter dispatch, installed before binding any coordinates.
 pub static SURFACE_FRICTION: std::sync::OnceLock<SurfaceFrictionFn> = std::sync::OnceLock::new();
 
+/// OVERMATCH PATCH: a limiter of a point's normal impulse, called under the constraint's
+/// exclusive body ownership for a point that names one ([`ContactNormalPart::limit`]), after
+/// each normal solve of the point and before its increment moves the bodies: with the bodies'
+/// closing speed there before the solve and the increment the solve found. It returns the
+/// increment to apply, having taken what it cut from the part's `impulse` and `total_impulse`.
+pub type NormalLimitFn =
+    fn(&mut ContactNormalPart, &mut SolverBody, &mut SolverBody, f32, f32) -> f32;
+
+/// OVERMATCH PATCH: process-wide limiter dispatch, installed before any point names a limiter.
+pub static NORMAL_LIMIT: std::sync::OnceLock<NormalLimitFn> = std::sync::OnceLock::new();
+
 // TODO: One-body constraint version
 /// Data and logic for solving a single contact point for a [`ContactConstraint`].
 #[derive(Clone, Debug, PartialEq, Reflect)]
@@ -338,13 +349,22 @@ impl ContactConstraint {
             let relative_velocity = body2.velocity_at_point(r2) - body1.velocity_at_point(r1);
 
             // Compute the incremental impulse. The clamping and impulse accumulation is handled by the method.
-            let impulse_magnitude = point.normal_part.solve_impulse::<USE_BIAS>(
+            let mut impulse_magnitude = point.normal_part.solve_impulse::<USE_BIAS>(
                 separation,
                 relative_velocity,
                 self.normal,
                 max_overlap_solve_speed,
                 delta_secs,
             );
+            // OVERMATCH PATCH: a point that names a limiter applies what the limiter leaves.
+            if point.normal_part.limit != u32::MAX {
+                let limit = NORMAL_LIMIT
+                    .get()
+                    .expect("a limiter registers before a point names it");
+                let closing = -relative_velocity.dot(self.normal);
+                let part = &mut point.normal_part;
+                impulse_magnitude = limit(part, body1, body2, closing, impulse_magnitude);
+            }
 
             let impulse = impulse_magnitude * self.normal;
 

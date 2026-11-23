@@ -20,7 +20,7 @@ A standing cell returns a body no more than its bonds can. Each physics step, af
 phase, the cells one body presses on one construction are grouped into blocks of connected cells
 (`breakage::bounded`). A block is pushed along the body's travel at the block, along the force
 that persists on the body (drive, weight), and along each face the body presses. For each push
-the block has one way to give, the one that returns the body least this step
+the block has one way to give, the one that holds least, which a rising force moves first
 (`fracture::bound`):
 
 - **Shear-out.** The pressed cells and the matter behind them along the push, up to a free face,
@@ -36,46 +36,60 @@ the block has one way to give, the one that returns the body least this step
   (`κ = 1`). The missing law is the sideways share of a push on a block, by the push's direction
   and what backs the block.
 
-A price is a force `F` (N) and a work `W` (J); the give `W / F` is never authored. Over a step the
-block returns at most `F · dt`, and at most the work it has left at the speed the solver finds the
-body closing. That second bound holds no `dt`, which is what makes a fast body's loss independent
-of the tick. The bound belongs to the block, not to its points: a seam in `avian_ext`
-(`reaction_bound`) deals it to the block's contact points before every substep, each keeping what
-it carries and the rest going to the points the last solve left wanting, so the points' bounds
-always sum to the block's. The fork carries only the per-point clamp (`OVERMATCH_PATCH.md`,
-"Bounded contact").
+A price is a force `F` (N) and a work `W` (J); the give `W / F` is never authored. A block is
+bounded twice, and a seam in `avian_ext` (`reaction_bound`) carries both into the solve:
 
-After the step, every contact point on a standing cell adds to that cell the normal impulse it
-returned times the body's speed into the cell there, the mean of the step's start (before the
-step's forces) and its end, negatives adding nothing. For a force constant over the step that is
-the work it did (DERIVED: the speed is then linear in time), so a body stopped inside one step
-is charged half its entry speed times the impulse, and a body held or resting is charged nothing.
-Nothing removes the work while the cell stands: it is kept per cell on the construction
-(`Live::work`), and a cell that leaves carries none as a piece.
+- **Strength.** Over a step the points that lean a way's push return at most that way's `F · dt`
+  between them. The bound belongs to the way, not to its points: the seam deals it to them before
+  every substep, each keeping what it carries and the rest going to the points the last solve
+  left wanting, so the points' bounds always sum to the way's.
+- **Work.** Over a step all the points of one body on the block do at most the least work its
+  ways have left (one budget per body and block). The work of an impulse `p` over a substep, on
+  bodies closing at the point at `c0` before the substep's forces and `c1` after its last solve,
+  is `p · ½(c0 + c1)` (DERIVED: a body's kinetic-energy change is each impulse on it times the
+  mean of the speeds across it, so the two speeds carry every other point, body and force). The
+  seam counts that per point between substeps and takes it from the budget. Inside a solve a
+  limiter hook in the fork judges the impulse the solve found: if it does more than the budget
+  has left, it is cut to the impulse that does exactly that; if it does less, it stands. So a
+  body that cannot do the work is stopped at the block's strength and the block stands, and a
+  body held still does none however hard it presses. A budget a solve cut, or whose work is
+  done, is spent: its points do no more work that step.
 
-A way of a block is spent, cheapest in work first, when the work on the block's cells has
-reached the way's, or when the body took the last work the way dealt one of its points and kept
-closing. That second clause is two readings, neither a tolerance: at the step's start the body
-was closing on the block's mean pressed point fast enough to cross the give the way had left
-within the step; and the step's last solve left a point of the way holding an impulse at the
-work bound the way dealt it. A point held at the way's strength says nothing: such a step did
-`F v dt`, under the work left. The clause is one point at the last substep, not a sum of the
-step's work, so a way can part with work left that the body never did (not measured apart).
-Without the clause the solve rations the last work at its own closing speed while the count
-reads another, so the count closes on `W` from below and never arrives: a cell in a hull's way
-stood a median 8 steps overlapped by more than 2 cm at 10 km/h, 51 to 72 % of those cell-steps
-returning under 1 N·s, and the hull sank 0.11 to 0.25 m into standing matter (MEASURED,
-`work-form.md` checkpoint 2); with it the deepest overlap at 10 km/h is 0.005 to 0.082 m and
-4.7 % of those cell-steps return under 1 N·s (MEASURED, eight passes, `work-form.md`, the fix
-pass). At 2 km/h the lag is not closed: 47 % of overlapped cell-steps return under 1 N·s, the
-steps a slowed hull's points end at the way's strength. A spent way's boundary joints part, and its cells and whatever
-they alone held up leave at rest as ordinary rubble.
+The fork carries the per-point impulse clamp and the limiter's call (`OVERMATCH_PATCH.md`,
+"Bounded contact"); the arithmetic is the seam's.
 
-A belt's sampled support on standing matter has no solver point. Its staged force, support and
-both tangent terms together, is bounded whole by the same price before the step and counted
-along itself by the same mean speed, where a solver point counts its normal impulse alone; its
-way is spent by the same two clauses, the second reading that the belt pressed harder than the
-ration the crossing left it. The support check hears no contact: it reads weights.
+After the step, every contact point on a standing cell adds to that cell the work it did, as
+counted inside the solve, negatives adding nothing. Nothing removes the work while the cell
+stands: it is kept per cell on the construction (`Live::work`), and a cell that leaves carries
+none as a piece. A block parts by the way that takes least work when the work on its cells has
+reached that way's, or its budget was spent. Its boundary joints part, and its cells and
+whatever they alone held up leave at rest as ordinary rubble.
+
+Residuals of the form, each stated where it is tested (`src/tests/avian_reaction_bound.rs`,
+`breakage/bounded/tests.rs`):
+
+- **Solve lag.** A point's work inside a solve is estimated at its own last solve; a later
+  point's impulse changes the speed there. The substep that spends a budget is off by less than
+  that substep's work at the block's strength, `F · dt / substeps · v` (DERIVED); the fixtures
+  land within 0.03 % of the budget (MEASURED: 1,000.2 J of 1,000 on sixteen points).
+- **Several bodies.** The work left is read once, before the step, and a budget is one body's:
+  `n` bodies parting one block in one step do up to `n` times the work it had left (MEASURED:
+  two boxes on one block of 3,111 J did 6,222 J).
+- **Rounding of the count.** The budget is signed and f32, the cell's count floored per point:
+  a block can part on its budget with the count a fraction of a joule under `W` (MEASURED:
+  6,213.12 J of 6,213.36).
+- **Restitution** adds impulse after the last substep, which no pair of speeds spans: it is in
+  the impulse a point returned and not in its work. Standing matter's pairs have none today.
+
+A belt's sampled support on standing matter has no solver point, so nothing is solved for it
+and the budget cannot reach it. Its staged force, support and both tangent terms together, is
+bounded whole before the step by the same price at the belt's speed at the step's start: the
+way that returns it least, `F · dt` or, when it would cross the give left within the step, the
+work left over that speed. Its work is counted along the whole force by the mean of the step's
+start and end speeds, and its block parts when that work is reached or the belt crossed the
+give while pressing harder than the ration. Its residual is the speed it could not read: the
+change of the belt's speed inside the step. The support check hears no contact: it reads
+weights.
 
 **Work is one scalar per cell**, whoever did it and along whichever way: a block is charged with
 all the work on its cells, so a way may part on work done along another way or by another body.
@@ -110,6 +124,20 @@ construction with a loose group is refused.
   slowed hull inside cells that never left: at 2 km/h, from a standing start and in 2 of 3
   passes at 10 km/h (MEASURED, `work-form.md` checkpoint 1, the `TODAY` arm). The spent clause
   above differs in firing only when the body crosses all the give left within the step.
+- **The work bound dealt per way and the second spent clause** (the law until the budget above):
+  each way's work left was dealt to its points as `W / v` at the solve's closing speed, the count
+  was taken after the step from the impulse and the mean of the step's start and end speeds, and
+  a way was also spent when the body crossed its give at the step's start speed and the last
+  solve left a point at the dealt work bound. The dealt bound and the count read different
+  speeds, so the clause parted blocks by one point at one substep: 68 to 82 % of its partings
+  were by loose pieces of about 30 kg whose own energy was under 1 % of the work left, and a
+  hull's blocks parted at a median 0.78 of their work (MEASURED, `work-form.md`, the second
+  clause).
+- **The cut at the least impulse that does the work left** (the budget's first derivation): cut
+  whenever some impulse under the solve's does the work left. The point's own response stands
+  in for the bodies behind it, so a light body a heavy one holds still against a block reads as
+  able to fly into it: the budget was spent at rest on step 19 of the fixture (MEASURED). The
+  work is judged at the impulse the solve found.
 - **The work counted at the step's end speed alone** (the work form's first build). Off by the
   impulse times half the body's speed change: nothing for a piece stopped inside the step, double
   for one thrown (DERIVED); the fixture's stopped box was charged 14 J of the 186 J it lost

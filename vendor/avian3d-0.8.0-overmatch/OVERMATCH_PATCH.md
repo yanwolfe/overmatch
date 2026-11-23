@@ -23,7 +23,7 @@ Each patch takes one form, named in its section:
 - **dropped**: upstream 0.8.0 does it; the old witness runs against unpatched code.
 
 Patched sites in upstream files are tagged `OVERMATCH PATCH`. Fork lines are counted by `diff --minimal -ruN`
-of `src/` against the published crate: 1008 in all (MEASURED), 930 in upstream files and 78 in the
+of `src/` against the published crate: 1032 in all (MEASURED), 954 in upstream files and 78 in the
 fork-only `src/collision/narrow_phase/stationary_miss.rs`.
 
 Guards run as the game's own tests, each named in its patch's section.
@@ -621,26 +621,41 @@ speculative arm removed, or the law tested on overlap in place of the spring (th
 the spring arm also the resting test); the zero law given the formula's coefficients (the zero-law
 test). Record: `upstream/avian-compliant-contact.md`.
 
-## Bounded contact (`src/dynamics/solver/contact/normal_part.rs`, `src/dynamics/solver/contact/mod.rs`): hook
+## Bounded contact (`src/dynamics/solver/contact/normal_part.rs`, `src/dynamics/solver/contact/mod.rs`, `src/dynamics/solver/solver_body/mod.rs`): hook
 
 Subject: the game's building model (a body against a standing cell), game state only.
 
 Form: **hook**, for a game divergence: upstream's contact is rigid by design, so no draft goes to
-`upstream/`. The seam is `avian_ext::reaction_bound`. `ContactNormalPart` gains three fields, inert
-on a new part: `max_impulse` (infinite), the largest accumulated impulse the point holds;
-`max_work` (infinite), the most work one substep's impulse does on bodies closing at speed `v`, so
-the point holds at most `max_work / v`; and `clamped`, whether the last solve left the point at
-that upper clamp. `solve_impulse` gains the upper side of its accumulated-impulse clamp, the lesser
-of the two, and sets `clamped`; `apply_restitution` gains `max_impulse`. A point's accumulated
-impulse is what one substep applies, so a finite bound is the most the point returns per substep;
-with both infinite the contact is Avian's bit for bit.
+`upstream/`. The seam is `avian_ext::reaction_bound`. Two parts, both inert on a new part, where
+the contact is Avian's bit for bit:
 
-The bound, its writers and its deal to the points before each substep are the game's (the seam's
-module doc). Friction needs no patch: the tangent solve clamps to the normal impulse.
+- **An impulse clamp.** `ContactNormalPart` gains `max_impulse` (infinite), the largest
+  accumulated impulse the point holds, and `clamped`, whether the last solve left the point
+  there. `solve_impulse` gains the upper side of its accumulated-impulse clamp and sets
+  `clamped`; `apply_restitution` gains `max_impulse`. A point's accumulated impulse is what one
+  substep applies, so a finite bound is the most the point returns per substep.
+- **A limiter call.** `ContactNormalPart` gains `limit` (`u32::MAX`: none), a token of the
+  limiter's own, and `limit_state`, three floats of the limiter's own. `SolverBody` gains
+  `limit_scratch`, a `Vec<f32>` of the limiter's own. `NORMAL_LIMIT` is a process-wide function
+  beside `SURFACE_FRICTION`: for a point that names a limiter, `ContactConstraint::solve` calls
+  it after each normal solve of the point and before the increment moves the bodies, with the
+  part, both solver bodies, the closing speed before the solve and the increment the solve
+  found, and applies the increment it returns. The fork states nothing about what a limiter
+  limits.
 
-Not game-side: the clamp sits inside the solve's inner loop, and no public field or schedule slot
-caps an impulse between two solves. 29 fork lines (MEASURED: 24 in the normal part, 5 in the
-restitution pass).
+The limiter writes a solver body's scratch from inside the parallel solve. That is sound under
+the graph colouring, which the limiter relies on and `constraint_graph.rs` states: a colour's
+`body_set` holds every non-static body of its constraints, a constraint takes a colour only when
+neither of its non-static bodies is in it, and the overflow colour is solved on one thread; so
+two constraints of one dynamic body are never solved at once. A static body's side is a dummy
+solver body with no scratch.
+
+The bound, the budget, their writers and their arithmetic are the game's (the seam's module
+doc). Friction needs no patch: the tangent solve clamps to the normal impulse.
+
+Not game-side: the clamp and the call sit inside the solve's inner loop, and no public field or
+schedule slot reaches an impulse between two solves. 53 fork lines (MEASURED: 22 in the normal
+part, 27 in the contact constraint, 5 of them the restitution pass, and 4 in the solver body).
 
 Guard: `src/tests/avian_reaction_bound.rs`.
 

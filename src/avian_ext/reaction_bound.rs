@@ -1,79 +1,95 @@
 //! Bounded contact: a group of contact points returns, over a physics step, at most an impulse
-//! its writer names, summed over the points along their leans, and does at most a work its
-//! writer names on the bodies closing through them, in place of Avian's rigid contact, which
-//! returns whatever impulse stops the approach. A writer names a group in [`Bounds`] after the
-//! narrow phase and before Avian prepares the step's contact constraints
+//! its writer names, summed over the points along their leans; and the points of a budget do, on
+//! the bodies closing through them, at most a work its writer names, in place of Avian's rigid
+//! contact, which returns whatever impulse stops the approach. A writer names groups and budgets
+//! in [`Bounds`] after the narrow phase and before Avian prepares the step's contact constraints
 //! (`SolverSystems::PrepareContactConstraints`). The store is cleared at the start of every
-//! physics step, so a bound never outlives its step; what each point returned over the step
-//! ([`Bounds::impulse`]) reads until the next step starts.
+//! physics step, so nothing named outlives its step; what each point returned and did over the
+//! step ([`Bounds::impulse`], [`Bounds::work`]) reads until the next step starts.
 //!
-//! The solve bounds one point at a time: the fork's `ContactNormalPart::max_impulse` and
-//! `max_work` (its `OVERMATCH_PATCH.md`, "Bounded contact") hold a point's accumulated impulse,
-//! which is what one substep applies (the warm start reapplies the whole of it,
-//! `SolverConfig::warm_start_coefficient` 1), and its work at the closing speed the solve finds
-//! there. So the group's bound is dealt to its points before every substep ([`deal`]): each
-//! keeps what it carries, and what the group has left goes to the points the last solve left
-//! wanting more ([`shares`]). The points' bounds always sum to the group's, whatever the split,
-//! so the group returns at most its bound over the step and Coulomb friction, which the solve
-//! clamps to the normal impulse, at most its coefficient times that. A point in several groups
-//! takes the least of them. A manifold point in no group is Avian's rigid contact bit for bit,
-//! and may still be read ([`Bounds::read`]).
+//! **Impulse.** The solve bounds one point at a time: the fork's `ContactNormalPart::max_impulse`
+//! (its `OVERMATCH_PATCH.md`, "Bounded contact") holds a point's accumulated impulse, which is
+//! what one substep applies (the warm start reapplies the whole of it,
+//! `SolverConfig::warm_start_coefficient` 1). So a group's bound is dealt to its points before
+//! every substep ([`deal`]): each keeps what it carries, and what the group has left goes to the
+//! points the last solve left wanting more ([`shares`]). The points' bounds always sum to the
+//! group's, whatever the split, so the group returns at most its bound over the step and Coulomb
+//! friction, which the solve clamps to the normal impulse, at most its coefficient times that. A
+//! point in several groups takes the least of them.
+//!
+//! **Work.** The work an impulse `p` does over a substep on bodies closing at a point at `c0`
+//! before the substep's forces and `c1` after its last solve is `p · ½(c0 + c1)`: the bodies'
+//! kinetic-energy change is each impulse on them times the mean of the speeds across it, so the
+//! speeds carry every other point, body and force. [`account`] counts it per point, signed, and
+//! takes it from the point's budget. Inside a solve the fork's limiter hook ([`limit`]) cuts a
+//! point whose impulse does more than its budget has left after the budget's other points'
+//! work this substep, each at its last solve: with `u` the closing speed there less the point's
+//! own impulse and `K` its inverse effective mass, `p` ends the solve closing at `u − pK`, so
+//! it does `½ p (c0 + u − pK)`, and the cut is to that solved for `p` ([`cap`]). An impulse
+//! that does less is left alone: a body the contact stops did what it had. A budget is one
+//! dynamic body's; Avian solves two constraints of one dynamic body in turn (its graph colours
+//! hold a body once, and the overflow colour is serial), so the budget's cell, which lives on
+//! that solver body, has one writer at a time. A budget is spent when a substep's last solve
+//! cut one of its points, or its points have done its work; its points then do no more work
+//! for the rest of the step ([`Bounds::spent`]).
+//!
+//! A manifold point in no group and no budget is Avian's rigid contact bit for bit, and may
+//! still be read ([`Bounds::read`]).
 //!
 //! Who relies on it: the game's building model (`construction::breakage::bounded`), where a block of
-//! standing cells returns no more than its bonds can, wherever a body presses it.
+//! standing cells returns no more than its bonds can, wherever a body presses it, until the
+//! body has done the work its bonds take.
 
 use avian3d::collision::contact_types::ContactId;
 use avian3d::dynamics::integrator::IntegrationSystems;
 use avian3d::dynamics::solver::constraint_graph::ConstraintGraph;
-use avian3d::dynamics::solver::contact::ContactConstraint;
+use avian3d::dynamics::solver::contact::{ContactConstraint, ContactNormalPart, NORMAL_LIMIT};
 use avian3d::dynamics::solver::schedule::{SolverSystems, SubstepSolverSystems};
+use avian3d::dynamics::solver::solver_body::{SolverBodies, SolverBody};
 use avian3d::prelude::*;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::tasks::{ComputeTaskPool, ParallelSlice};
 
-/// The most a group returns over a step: an impulse, N·s, and the work it does on the bodies
-/// closing through it, J. An infinite part does not bind: both are infinite on a point no group
-/// bounds ([`Bound::RIGID`]).
+/// One contact point: its contact pair, manifold and point.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Bound {
-    pub impulse: f32,
-    pub work: f32,
-}
-
-impl Bound {
-    pub const RIGID: Self = Self {
-        impulse: f32::INFINITY,
-        work: f32::INFINITY,
-    };
-}
-
-/// One point of a group: its contact pair, manifold and point, and its lean, the share of its
-/// normal impulse that counts against the group's (positive).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Member {
+pub struct At {
     pub contact: ContactId,
     pub manifold: usize,
     pub point: usize,
+}
+
+/// One point of a group, and its lean: the share of its normal impulse that counts against the
+/// group's (positive).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Member {
+    pub at: At,
     pub lean: f32,
 }
 
 #[derive(Debug)]
 struct Group {
     members: Vec<Member>,
-    most: Bound,
-    /// Where its members' deals start in [`Bounds::deals`].
-    deals: usize,
+    /// The most its points return between them over the step, each times its lean, N·s.
+    most: f32,
 }
 
-/// One read point: this substep's bound, the least its groups dealt it; the normal impulse it
-/// has returned over the step, N·s; and whether the step's last solve left it holding an impulse
-/// at its work bound.
+/// The work one dynamic body's points may do between them over the step, J.
+#[derive(Debug)]
+struct Budget {
+    body: Entity,
+    points: Vec<At>,
+    work: f32,
+    spent: bool,
+}
+
+/// One read point: this substep's impulse bound, the least its groups dealt it; the normal
+/// impulse it has returned over the step, N·s; and the work that impulse did, J, signed.
 #[derive(Debug, Clone, Copy)]
 struct Record {
-    bound: Bound,
+    bound: f32,
     returned: f32,
-    held: bool,
+    work: f32,
 }
 
 /// A read manifold: its prepared constraint and its points' records.
@@ -87,128 +103,130 @@ struct Manifold {
 }
 
 impl Manifold {
-    /// Its prepared constraint; none when the step prepared it none.
-    fn constraint<'a>(&self, constraints: &'a ConstraintGraph) -> Option<&'a ContactConstraint> {
-        let (color, index) = self.slot?;
-        Some(&constraints.colors[color].contact_constraints[index])
-    }
-
     fn records(&self) -> std::ops::Range<usize> {
         self.first..self.first + self.len
     }
 }
 
-/// This step's groups, in the order their writers named them, and every point it reads. The
-/// storage is kept from step to step.
+/// This step's groups and budgets, in the order their writers named them, and every point it
+/// reads. The storage is kept from step to step.
 #[derive(Resource, Default, Debug)]
 pub struct Bounds {
     groups: Vec<Group>,
+    budgets: Vec<Budget>,
     manifolds: HashMap<(u32, usize), Manifold>,
     points: Vec<Record>,
-    /// The work each group's last deal gave each of its members, J.
-    deals: Vec<f32>,
     /// Whether this step's first substep was dealt.
     dealt: bool,
+    /// Whether this step's first substep was opened ([`account`]).
+    opened: bool,
 }
 
 /// A point is read by the step that names it and until the next step starts.
 const READ: &str = "the point was read in the last physics step";
 
 impl Bounds {
-    /// Reads what `point` of `manifold` of `contact` returns over the step ([`Self::impulse`]);
-    /// it stays rigid unless a group bounds it.
-    pub fn read(&mut self, contact: ContactId, manifold: usize, point: usize) {
+    /// Reads what `at` returns and does over the step ([`Self::impulse`], [`Self::work`]); it
+    /// stays rigid unless a group or a budget bounds it.
+    pub fn read(&mut self, at: At) {
         let records = &mut self.points;
         let manifold = (self.manifolds)
-            .entry((contact.0, manifold))
+            .entry((at.contact.0, at.manifold))
             .or_insert(Manifold {
                 slot: None,
                 first: records.len(),
                 len: 0,
             });
-        if manifold.len <= point {
+        if manifold.len <= at.point {
             if manifold.records().end != records.len() {
                 // Another manifold's records follow: this one's move to the end to grow.
                 records.extend_from_within(manifold.records());
                 manifold.first = records.len() - manifold.len;
             }
-            manifold.len = point + 1;
+            manifold.len = at.point + 1;
             records.resize(
                 manifold.records().end,
                 Record {
-                    bound: Bound::RIGID,
+                    bound: f32::INFINITY,
                     returned: 0.0,
-                    held: false,
+                    work: 0.0,
                 },
             );
         }
     }
 
-    /// Bounds the sum of `members`' normal impulses, each times its lean, at `most.impulse` over
-    /// the step, and their work at `most.work`, and reads each ([`Self::read`]); returns the
-    /// group's index for [`Self::returned`] and [`Self::limited`].
-    pub fn group(&mut self, members: Vec<Member>, most: Bound) -> usize {
+    /// Bounds the sum of `members`' normal impulses, each times its lean, at `most` N·s over the
+    /// step, and reads each ([`Self::read`]); returns the group's index for [`Self::returned`].
+    pub fn group(&mut self, members: Vec<Member>, most: f32) -> usize {
         assert!(
-            most.impulse >= 0.0 && most.work >= 0.0,
-            "a group's reaction bound {most:?} holds a negative or NaN: it pushes or bears nothing"
+            most >= 0.0 && most.is_finite(),
+            "a group's bound of {most} N·s is negative, NaN or no bound: it pushes, bears \
+             nothing, or has no share to deal"
         );
         assert!(
             members.iter().all(|member| member.lean > 0.0),
             "a group's members lean its way: {members:?}"
         );
-        assert!(
-            most.impulse.is_finite(),
-            "nothing a point carries measures the work it took, so a group's work follows its \
-             impulse's deal, and {most:?} has none"
-        );
         for member in &members {
-            self.read(member.contact, member.manifold, member.point);
+            self.read(member.at);
         }
-        let deals = self.deals.len();
-        self.deals.resize(deals + members.len(), f32::INFINITY);
-        (self.groups).push(Group {
-            members,
-            most,
-            deals,
-        });
+        self.groups.push(Group { members, most });
         self.groups.len() - 1
     }
 
-    fn record(&self, contact: ContactId, manifold: usize, point: usize) -> &Record {
-        let manifold = self.manifolds.get(&(contact.0, manifold)).expect(READ);
-        assert!(point < manifold.len, "{READ}");
-        &self.points[manifold.first + point]
+    /// Bounds the work `points`, all of dynamic body `body`, do between them over the step at
+    /// `work` J, and reads each ([`Self::read`]); returns the budget's index for
+    /// [`Self::spent`]. A point is in one budget.
+    pub fn budget(&mut self, body: Entity, points: Vec<At>, work: f32) -> usize {
+        assert!(work >= 0.0, "a budget of {work} J is negative or NaN");
+        for &at in &points {
+            self.read(at);
+        }
+        (self.budgets).push(Budget {
+            body,
+            points,
+            work,
+            spent: false,
+        });
+        self.budgets.len() - 1
+    }
+
+    fn record(&self, at: At) -> &Record {
+        let manifold = (self.manifolds.get(&(at.contact.0, at.manifold))).expect(READ);
+        assert!(at.point < manifold.len, "{READ}");
+        &self.points[manifold.first + at.point]
     }
 
     /// The normal impulse a read point returned over the last step, N·s: the sum of what each
     /// substep applied through it, and restitution's increment.
-    pub fn impulse(&self, contact: ContactId, manifold: usize, point: usize) -> f32 {
-        self.record(contact, manifold, point).returned
+    pub fn impulse(&self, at: At) -> f32 {
+        self.record(at).returned
+    }
+
+    /// The work a read point's impulse did over the last step on the bodies closing through it,
+    /// J (the module doc), signed: a point the bodies left on the mean did negative work.
+    /// Restitution's increment, which no pair of speeds spans, is not in it.
+    pub fn work(&self, at: At) -> f32 {
+        self.record(at).work
     }
 
     /// What group `group`'s points returned between them over the last step, each times its
     /// lean, N·s: the operator's reading.
     pub fn returned(&self, group: usize) -> f32 {
         (self.groups[group].members.iter())
-            .map(|member| self.impulse(member.contact, member.manifold, member.point) * member.lean)
+            .map(|member| self.impulse(member.at) * member.lean)
             .sum()
     }
 
-    /// Whether the body closing on group `group` took all the work the group dealt one of its
-    /// points and kept closing: the step's last solve left that point holding an impulse at its
-    /// work bound, and that bound is this group's deal. A point held at its impulse bound, or at
-    /// another group's lesser work, says nothing of this one; groups that dealt a point the same
-    /// least work are limited alike.
-    pub fn limited(&self, group: usize) -> bool {
-        let group = &self.groups[group];
-        (group.members.iter().zip(&self.deals[group.deals..])).any(|(member, &dealt)| {
-            let record = self.record(member.contact, member.manifold, member.point);
-            record.held && dealt <= record.bound.work
-        })
+    /// Whether budget `budget` was spent in the last step: a substep's last solve cut one of its
+    /// points to the last work the budget had, or its points did its work.
+    pub fn spent(&self, budget: usize) -> bool {
+        self.budgets[budget].spent
     }
 }
 
 pub(super) fn plugin(app: &mut App) {
+    NORMAL_LIMIT.get_or_init(|| limit);
     app.init_resource::<Bounds>();
     app.get_schedule_mut(PhysicsSchedule)
         .expect("avian_ext::plugin is added after Avian's PhysicsPlugins")
@@ -219,29 +237,68 @@ pub(super) fn plugin(app: &mut App) {
                 .after(super::compliance::apply_laws)
                 .after(SolverSystems::PrepareContactConstraints)
                 .before(SolverSystems::PreSubstep),
+            // The last substep's work, before restitution moves the bodies.
+            account
+                .after(SolverSystems::Substep)
+                .before(SolverSystems::PostSubstep),
             read_bounds
                 .after(SolverSystems::Restitution)
                 .before(SolverSystems::Finalize),
         ));
     app.get_schedule_mut(SubstepSchedule)
         .expect("avian_ext::plugin is added after Avian's PhysicsPlugins")
-        .add_systems(
+        .add_systems((
+            // After the last substep's last solve and before this one's forces.
+            account.before(IntegrationSystems::Velocity),
             // Before the warm start reapplies what each point carries.
             deal.after(IntegrationSystems::Velocity)
                 .before(SubstepSolverSystems::WarmStart),
-        );
+        ));
 }
 
 fn clear_bounds(mut bounds: ResMut<Bounds>) {
     bounds.groups.clear();
+    bounds.budgets.clear();
     bounds.manifolds.clear();
     bounds.points.clear();
-    bounds.deals.clear();
     bounds.dealt = false;
+    bounds.opened = false;
 }
 
-/// Finds each read manifold's prepared constraint, bounded or not.
-fn locate(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
+/// A manifold's prepared constraint; none when the step prepared it none.
+fn constraint<'a>(
+    manifolds: &HashMap<(u32, usize), Manifold>,
+    constraints: &'a ConstraintGraph,
+    at: At,
+) -> Option<&'a ContactConstraint> {
+    let (color, index) = manifolds[&(at.contact.0, at.manifold)].slot?;
+    Some(&constraints.colors[color].contact_constraints[index])
+}
+
+fn constraint_mut<'a>(
+    manifolds: &HashMap<(u32, usize), Manifold>,
+    constraints: &'a mut ConstraintGraph,
+    at: At,
+) -> Option<&'a mut ContactConstraint> {
+    let (color, index) = manifolds[&(at.contact.0, at.manifold)].slot?;
+    Some(&mut constraints.colors[color].contact_constraints[index])
+}
+
+/// The floats a budget keeps on its solver body (`SolverBody::limit_scratch`): the work it has
+/// left at the substep's start, J, and what its points do this substep, each at its last solve.
+const CELL: usize = 2;
+
+/// Finds each read manifold's prepared constraint, bounded or not, and gives each budget its
+/// cell on its body and each of its points the cell's token: the cell's index on the body, and
+/// in the low bit which of the constraint's bodies holds it.
+fn locate(
+    mut bounds: ResMut<Bounds>,
+    mut constraints: ResMut<ConstraintGraph>,
+    mut bodies: ResMut<SolverBodies>,
+) {
+    for body in bodies.bodies_mut() {
+        body.limit_scratch.clear();
+    }
     if bounds.manifolds.is_empty() {
         return;
     }
@@ -270,6 +327,157 @@ fn locate(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
             .expect("the key was read from this store")
             .slot = Some(slot);
     }
+    let Bounds {
+        budgets, manifolds, ..
+    } = &*bounds;
+    for budget in budgets {
+        // The cell's index on its body, once a point's constraint has named the body.
+        let mut cell = None;
+        for &at in &budget.points {
+            let Some(constraint) = constraint_mut(manifolds, &mut constraints, at) else {
+                continue; // No constraint: the point returns nothing.
+            };
+            let indices = [constraint.body_index1, constraint.body_index2];
+            let side = (indices.iter())
+                .position(|&index| bodies.get_entity(index) == Some(budget.body))
+                .expect("a budget's body is a body of each of its points' constraints");
+            let cell = *cell.get_or_insert_with(|| {
+                let scratch = &mut (bodies.get_mut(indices[side]))
+                    .expect("the body was found at this index")
+                    .limit_scratch;
+                scratch.extend([budget.work, 0.0]);
+                scratch.len() / CELL - 1
+            });
+            let part = &mut constraint.points[at.point].normal_part;
+            // A point of no effective mass moves nothing and does no work.
+            if part.effective_mass > 0.0 {
+                part.limit = (cell << 1 | side) as u32;
+            }
+        }
+    }
+}
+
+/// The least accumulated impulse of a point that does `left` J over the substep: the lesser
+/// root of `½ p (sum − p k) = left`, `sum` the closing speed before the substep's forces plus
+/// the closing speed now less the point's own impulse, m/s, and `k` the point's inverse
+/// effective mass. Asked only where some impulse does more, so the root is real.
+fn cap(left: f32, sum: f32, k: f32) -> f32 {
+    if left <= 0.0 {
+        return 0.0;
+    }
+    // `(sum − √root) / 2k`, in the form that keeps its digits as `k` goes to nothing.
+    4.0 * left / (sum + (sum * sum - 8.0 * k * left).max(0.0).sqrt())
+}
+
+/// The fork's normal limiter (`NORMAL_LIMIT`), for a point [`locate`] gave a budget's token.
+/// `ContactNormalPart::limit_state` is the point's closing speed before the substep's forces,
+/// the work it does this substep as of its last solve, and whether that solve was cut. A solve
+/// found the point's impulse, `increment` more than it held, the bodies closing at `closing`
+/// m/s there before it; where that impulse does more work than the point's budget has left
+/// after the budget's other points, it is cut to the impulse that does what is left ([`cap`]).
+/// The work is judged at the impulse the solve found, never at a lesser one: a body the contact
+/// stops did what it had, and a body held still does none, however hard it is pressed.
+fn limit(
+    part: &mut ContactNormalPart,
+    body1: &mut SolverBody,
+    body2: &mut SolverBody,
+    closing: f32,
+    increment: f32,
+) -> f32 {
+    let body = if part.limit & 1 == 0 { body1 } else { body2 };
+    let cell = (part.limit >> 1) as usize * CELL;
+    let [before, work, _] = part.limit_state;
+    let left = body.limit_scratch[cell] - (body.limit_scratch[cell + 1] - work);
+    let k = part.effective_mass.recip();
+    let (found, held) = (part.impulse, part.impulse - increment);
+    let sum = before + closing + held * k;
+    let does = |impulse: f32| 0.5 * impulse * (sum - impulse * k);
+    let cut = does(found) > left;
+    if cut {
+        // A root lies under `found`; the `min` holds it there against rounding.
+        part.impulse = cap(left, sum, k).min(found);
+        part.total_impulse -= found - part.impulse;
+        // Held by the budget, not at the impulse bound: `deal` does not read it as wanting more.
+        part.clamped = false;
+    }
+    let did = does(part.impulse);
+    body.limit_scratch[cell + 1] += did - work;
+    // A cut to nothing says the budget's other points hold all of it, and marks nothing.
+    part.limit_state = [before, did, f32::from(cut && left > 0.0)];
+    part.impulse - held
+}
+
+/// The bodies' closing speed at point `at` of `constraint`, m/s.
+fn closing(constraint: &ContactConstraint, at: usize, bodies: &SolverBodies) -> f32 {
+    let point = &constraint.points[at];
+    // A static body has no solver body and does not move.
+    let velocity = |index, anchor| {
+        (bodies.get(index)).map_or(Vec3::ZERO, |body| body.velocity_at_point(anchor))
+    };
+    let relative = velocity(constraint.body_index2, point.anchor2)
+        - velocity(constraint.body_index1, point.anchor1);
+    -relative.dot(constraint.normal)
+}
+
+/// Between substeps, and after the last: counts the work each budget's points did over the
+/// substep that ended (the module doc), takes it from the budget, and marks the budget spent
+/// when its last solve cut a point ([`limit`]) or its work is done; then opens the next
+/// substep, each point at its closing speed before the substep's forces and at the work its
+/// carried impulse does if the bodies keep that speed, which its first solve corrects. The
+/// budgets are walked on one thread, as [`deal`] walks the groups.
+fn account(
+    mut bounds: ResMut<Bounds>,
+    mut constraints: ResMut<ConstraintGraph>,
+    mut bodies: ResMut<SolverBodies>,
+) {
+    let Bounds {
+        budgets,
+        manifolds,
+        points,
+        opened,
+        ..
+    } = &mut *bounds;
+    for budget in budgets.iter_mut() {
+        let (mut did, mut drawn, mut capped) = (0.0, 0.0, false);
+        let mut cell = None;
+        for &at in &budget.points {
+            let Some(constraint) = constraint_mut(manifolds, &mut constraints, at) else {
+                continue; // No constraint: the point returned nothing.
+            };
+            let speed = closing(constraint, at.point, &bodies);
+            let indices = [constraint.body_index1, constraint.body_index2];
+            let part = &mut constraint.points[at.point].normal_part;
+            if part.limit == u32::MAX {
+                continue; // No effective mass: no work.
+            }
+            if *opened {
+                let work = part.impulse * 0.5 * (part.limit_state[0] + speed);
+                points[manifolds[&(at.contact.0, at.manifold)].first + at.point].work += work;
+                did += work;
+                capped |= part.limit_state[2] != 0.0;
+            }
+            let carried = part.impulse * speed.max(0.0);
+            part.limit_state = [speed, carried, 0.0];
+            drawn += carried;
+            cell = Some((
+                indices[(part.limit & 1) as usize],
+                (part.limit >> 1) as usize,
+            ));
+        }
+        let Some((body, cell)) = cell else {
+            continue; // No point of it has a constraint this step.
+        };
+        let scratch = &mut (bodies.get_mut(body))
+            .expect("`locate` found the body at this index")
+            .limit_scratch[cell * CELL..][..CELL];
+        scratch[0] -= did;
+        budget.spent |= capped || scratch[0] <= 0.0;
+        if budget.spent {
+            scratch[0] = 0.0;
+        }
+        scratch[1] = drawn;
+    }
+    *opened = true;
 }
 
 /// Each point's share of a group's bound, given what each carries against it (a point's
@@ -308,9 +516,10 @@ fn shares(points: &[(f32, bool)], first: bool, bound: f32) -> impl Iterator<Item
 /// Adds what each of `manifold`'s points carries to what it has returned; nothing for a
 /// manifold the step prepared no constraint for.
 fn add_returned(manifold: &Manifold, records: &mut [Record], constraints: &ConstraintGraph) {
-    let Some(constraint) = manifold.constraint(constraints) else {
+    let Some((color, index)) = manifold.slot else {
         return;
     };
+    let constraint = &constraints.colors[color].contact_constraints[index];
     for (record, point) in records[manifold.records()]
         .iter_mut()
         .zip(&constraint.points)
@@ -323,8 +532,7 @@ fn add_returned(manifold: &Manifold, records: &mut [Record], constraints: &Const
 /// module doc) and cuts what a point carries to its bound. Another writer of the substep's
 /// constraints orders itself against this system. A point in several groups takes the least of
 /// their deals, which no order of the groups changes; the groups are walked on one thread for
-/// their size alone: MEASURED locally at 0.22 ms a tick over six substeps where a 57 t hull
-/// drives through a hall (backlog destruction-13 holds the run and what is not measured).
+/// their size alone (backlog destruction-13).
 pub(crate) fn deal(
     mut bounds: ResMut<Bounds>,
     mut constraints: ResMut<ConstraintGraph>,
@@ -338,8 +546,8 @@ pub(crate) fn deal(
         groups,
         manifolds,
         points,
-        deals,
         dealt,
+        ..
     } = &mut *bounds;
     let substep = (substeps.0 as f32).recip();
     if *dealt {
@@ -348,29 +556,23 @@ pub(crate) fn deal(
         }
     }
     for record in points.iter_mut() {
-        record.bound = Bound::RIGID;
+        record.bound = f32::INFINITY;
     }
     for group in groups.iter() {
         carried.clear();
         // A member whose manifold has no constraint this step carries and wants nothing.
         carried.extend(group.members.iter().map(|member| {
-            (manifolds[&(member.contact.0, member.manifold)].constraint(&constraints))
-                .map(|constraint| &constraint.points[member.point].normal_part)
+            (constraint(manifolds, &constraints, member.at))
+                .map(|constraint| &constraint.points[member.at.point].normal_part)
                 .map_or((0.0, false), |part| {
                     (part.impulse * member.lean, part.clamped)
                 })
         }));
-        let impulse = group.most.impulse * substep;
-        let work = group.most.work * substep;
-        let shares = shares(&carried, !*dealt, impulse);
-        for ((member, share), dealt) in
-            (group.members.iter().zip(shares)).zip(&mut deals[group.deals..])
-        {
-            let manifold = &manifolds[&(member.contact.0, member.manifold)];
-            let bound = &mut points[manifold.first + member.point].bound;
-            *dealt = work * share;
-            bound.impulse = bound.impulse.min(impulse * share / member.lean);
-            bound.work = bound.work.min(*dealt);
+        let impulse = group.most * substep;
+        for (member, share) in group.members.iter().zip(shares(&carried, !*dealt, impulse)) {
+            let manifold = &manifolds[&(member.at.contact.0, member.at.manifold)];
+            let bound = &mut points[manifold.first + member.at.point].bound;
+            *bound = bound.min(impulse * share / member.lean);
         }
     }
     *dealt = true;
@@ -380,35 +582,20 @@ pub(crate) fn deal(
         };
         let constraint = &mut constraints.colors[color].contact_constraints[index];
         for (point, record) in (constraint.points.iter_mut()).zip(&points[manifold.records()]) {
-            point.normal_part.max_impulse = record.bound.impulse;
-            point.normal_part.max_work = record.bound.work;
-            point.normal_part.impulse = point.normal_part.impulse.min(record.bound.impulse);
+            point.normal_part.max_impulse = record.bound;
+            point.normal_part.impulse = point.normal_part.impulse.min(record.bound);
         }
     }
 }
 
 /// After the step's last solve: what the last substep and restitution applied
-/// ([`Bounds::impulse`]), and which points that solve left at their work bound
-/// ([`Bounds::limited`]).
+/// ([`Bounds::impulse`]).
 fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
     let Bounds {
         manifolds, points, ..
     } = &mut *bounds;
     for manifold in manifolds.values() {
         add_returned(manifold, points, &constraints);
-        let Some(constraint) = manifold.constraint(&constraints) else {
-            continue; // No constraint: its points returned nothing and met no bound.
-        };
-        for (record, point) in points[manifold.records()]
-            .iter_mut()
-            .zip(&constraint.points)
-        {
-            let part = &point.normal_part;
-            // The solve clamps at the lesser of the impulse bound and the work bound at its
-            // closing speed (the fork's `solve_impulse`): clamped short of the first, the point
-            // is held by the second.
-            record.held = part.clamped && part.impulse < part.max_impulse;
-        }
     }
 }
 

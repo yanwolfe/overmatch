@@ -43,10 +43,12 @@ pub struct ContactNormalPart {
     /// applies along the normal. Infinite on a new part: Avian's rigid contact.
     pub max_impulse: f32,
 
-    /// OVERMATCH PATCH: the most work one substep's impulse does on the bodies closing along the
-    /// normal, J: at a closing speed `v` the point holds at most `max_work / v`. Infinite on a
-    /// new part.
-    pub max_work: f32,
+    /// OVERMATCH PATCH: the limiter this point names ([`super::NORMAL_LIMIT`]), by the
+    /// limiter's own token; `u32::MAX` on a new part names none.
+    pub limit: u32,
+
+    /// OVERMATCH PATCH: the limiter's own state for this point.
+    pub limit_state: [f32; 3],
 
     /// OVERMATCH PATCH: whether the last solve left the point at its upper clamp.
     pub clamped: bool,
@@ -127,10 +129,11 @@ impl ContactNormalPart {
             total_impulse: 0.0,
             effective_mass: k.recip_or_zero(),
             softness,
-            compliant: false, // OVERMATCH PATCH
-            spring: softness, // OVERMATCH PATCH
+            compliant: false,           // OVERMATCH PATCH
+            spring: softness,           // OVERMATCH PATCH
             max_impulse: f32::INFINITY, // OVERMATCH PATCH
-            max_work: f32::INFINITY,    // OVERMATCH PATCH
+            limit: u32::MAX,            // OVERMATCH PATCH
+            limit_state: [0.0; 3],      // OVERMATCH PATCH
             clamped: false,             // OVERMATCH PATCH
         }
     }
@@ -191,14 +194,9 @@ impl ContactNormalPart {
         };
 
         // Clamp the accumulated impulse.
-        // OVERMATCH PATCH: the upper clamp, `max_impulse` and `max_work` at this closing speed.
-        let most = if normal_speed < 0.0 {
-            self.max_impulse.min(self.max_work / -normal_speed)
-        } else {
-            self.max_impulse
-        };
-        let new_impulse = (self.impulse + impulse).max(0.0).min(most);
-        self.clamped = new_impulse >= most;
+        // OVERMATCH PATCH: the upper clamp.
+        let new_impulse = (self.impulse + impulse).max(0.0).min(self.max_impulse);
+        self.clamped = new_impulse >= self.max_impulse;
         impulse = new_impulse - self.impulse;
         self.impulse = new_impulse;
         self.total_impulse += new_impulse;
