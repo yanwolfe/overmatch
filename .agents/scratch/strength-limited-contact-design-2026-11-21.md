@@ -52,7 +52,13 @@ bounded twice, and a seam in `avian_ext` (`reaction_bound`) carries both into th
   limiter hook in the fork judges the impulse the solve found: if it does more than the budget
   has left, it is cut to the impulse that does exactly that; if it does less, it stands. So a
   body that cannot do the work is stopped at the block's strength and the block stands, and a
-  body held still does none however hard it presses. A budget a solve cut, or whose work is
+  body held still does none however hard it presses. The work is judged at the impulse the
+  solve found, never at a lesser one that would do the work left: a point's own response is not
+  the response of the bodies behind it, so at a lesser impulse a light body a heavy one holds
+  against a block reads as flying into it alone. Counterexample, cutting whenever some lesser
+  impulse does the work left (MEASURED, the seam's fixtures): a 2 kg box held still under a
+  2,000 kg box had its 100 J budget spent at rest on step 19, and the same pair at 4 m/s lost
+  1,055 J to a budget of 1,000 J, outside its allowance. A budget a solve cut, or whose work is
   done, is spent: its points do no more work that step.
 
 The fork carries the per-point impulse clamp and the limiter's call (`OVERMATCH_PATCH.md`,
@@ -133,11 +139,6 @@ construction with a loose group is refused.
   were by loose pieces of about 30 kg whose own energy was under 1 % of the work left, and a
   hull's blocks parted at a median 0.78 of their work (MEASURED, `work-form.md`, the second
   clause).
-- **The cut at the least impulse that does the work left** (the budget's first derivation): cut
-  whenever some impulse under the solve's does the work left. The point's own response stands
-  in for the bodies behind it, so a light body a heavy one holds still against a block reads as
-  able to fly into it: the budget was spent at rest on step 19 of the fixture (MEASURED). The
-  work is judged at the impulse the solve found.
 - **The work counted at the step's end speed alone** (the work form's first build). Off by the
   impulse times half the body's speed change: nothing for a piece stopped inside the step, double
   for one thrown (DERIVED); the fixture's stopped box was charged 14 J of the 186 J it lost
