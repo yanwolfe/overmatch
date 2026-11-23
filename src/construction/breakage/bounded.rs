@@ -48,9 +48,6 @@ struct Block {
     cells: Vec<usize>,
     /// Each push's way to give, and its group of bounded points (`Bounds::group`).
     gives: Vec<(Yield, usize)>,
-    /// The work its points may do between them this step (`Bounds::budget`): the least its ways
-    /// have left.
-    budget: usize,
 }
 
 /// The speed of a body moving at `linear` and turning at `angular` (world) into a cell along
@@ -62,8 +59,8 @@ fn speed_into(linear: Vec3, angular: Vec3, arm: Vec3, into: Vec3) -> f32 {
 /// One body's press on one standing cell over a step.
 #[derive(Debug, Clone, Copy)]
 enum Point {
-    /// A solver contact point on `cell`; the work its normal impulse did is read after the solve
-    /// (`Bounds::work`).
+    /// A solver contact point on `cell`; its share of the work its block's points did is read
+    /// after the solve (`Bounds::work`).
     Solved { cell: usize, at: At },
     /// A staged belt force. The belt law has no solver point and stages its friction itself, so
     /// the force is its support and both tangent terms (`track::rubble::source_force`);
@@ -117,9 +114,6 @@ pub(crate) struct BlockRow {
     pub(crate) taken: f64,
     /// What its points returned along the push over the step, N·s.
     pub(crate) returned: f32,
-    /// Whether a body did the last of its work inside the step (`Bounds::spent`); it parts on
-    /// this or on `taken` reaching the price's work.
-    pub(crate) spent: bool,
 }
 
 /// The last step's account, for headless witnesses and operator instruments.
@@ -495,11 +489,11 @@ fn bound_contacts(mut p: BoundContacts) {
                 let gives = (block.gives.into_iter())
                     .map(|(given, members, most)| (given, p.bounds.group(members, most)))
                     .collect();
+                p.bounds.budget(body, block.points, block.left);
                 Block {
                     body,
                     cells: block.cells,
                     gives,
-                    budget: p.bounds.budget(body, block.points, block.left),
                 }
             }));
         }
@@ -601,18 +595,15 @@ struct Release<'w, 's> {
 }
 
 /// One owner's step settled. Each of `press`'s points adds to its cell in `work` (per chunk, J),
-/// in their order, the work it did over the step, floored at nothing: a solver point's is
-/// counted inside the solve (`Bounds::work`); a belt's is what the belt kept times the body's
-/// speed into the cell there, the mean of the step's start and end, which is the work a force
-/// constant over the step does whatever else pushed the body.
+/// in their order, the work it did over the step: a solver point's is its share of its block's
+/// count, kept inside the solve (`Bounds::work`); a belt's is what the belt kept times the
+/// body's speed into the cell there, the mean of the step's start and end, which is the work a
+/// force constant over the step does whatever else pushed the body, floored at nothing.
 ///
 /// A block then leaves by the way that takes least work when its cells' work has reached that
-/// way's, or its budget is spent (`Bounds::spent`): a body took the last work the budget had
-/// and kept closing. The count is floored per point and the budget signed, so the budget is
-/// never spent before the count would say so by more than the work its points gave back. A
-/// belt's block leaves when its work is done, or the belt crossed the give it had left while
-/// pressing harder than the cells returned. Returns the contact blocks' rows and the cells that
-/// leave.
+/// way's ([`fracture::bound::Price::spent`]), and on nothing else. A belt's block leaves when
+/// its work is done, or the belt crossed the give it had left while pressing harder than the
+/// cells returned. Returns the contact blocks' rows and the cells that leave.
 fn settle(
     work: &mut [f64],
     press: &Press,
@@ -644,6 +635,7 @@ fn settle(
             joules.is_finite(),
             "work is kept for good, and {point:?} did {joules} J"
         );
+        // A belt the cells pushed back did them no work; a solver point's share is never negative.
         work[cell] += joules.max(0.0);
     }
     let mut leaving = BTreeSet::new();
@@ -661,9 +653,8 @@ fn settle(
             closing: given.push.closing,
             taken,
             returned: bounds.returned(*group),
-            spent: bounds.spent(block.budget),
         });
-        if given.price.spent(taken) || bounds.spent(block.budget) {
+        if given.price.spent(taken) {
             leaving.extend(&given.leaves);
         }
     }

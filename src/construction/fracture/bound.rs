@@ -41,14 +41,21 @@ pub(crate) struct Price {
 }
 
 impl Price {
-    /// Whether bonds that have taken `taken` J are spent: the work has reached theirs.
+    /// Whether bonds that have taken `taken` J are spent: the work has reached theirs, read at
+    /// the contact solve's resolution. The solve does and counts work in f32, and a body does a
+    /// share of what is left each substep, so the count closes on the work without meeting it;
+    /// what is left under one f32 step of the work is no work the solve can do.
     pub(crate) fn spent(&self, taken: f64) -> bool {
-        taken >= self.work
+        taken as f32 >= self.work as f32
     }
 
-    /// The work the bonds still take, J, having taken `taken`.
+    /// The work the bonds still take, J, having taken `taken`: nothing once [`Self::spent`].
     pub(crate) fn left(&self, taken: f64) -> f64 {
-        (self.work - taken).max(0.0)
+        if self.spent(taken) {
+            0.0
+        } else {
+            self.work - taken
+        }
     }
 }
 

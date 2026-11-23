@@ -54,8 +54,8 @@ not sum to m·Δv. `blocks` is every block of standing cells the step bounded
 (`construction::breakage::bounded`): the pressing `body` (`hull` when it is the ram's tank), the
 block's `cells`, the `way` its work reaches first, which it parts by, its price
 (`force_n`, `work_j`), the body's speed along the push at the step's start, what the way's
-points returned (`returned_ns`), whether a body did the last of its work inside the step
-(`spent`; a block parts on that or on its work reaching the price's), and the work its cells' bonds have taken after the step (`taken_j`). `freed`
+points returned (`returned_ns`), and the work its cells' bonds have taken after the step
+(`taken_j`; a block parts when it reaches the price's). `freed`
 counts the cells the step freed.
 `impact.speed_m_s` is the horizontal speed of the row before first contact. `result.json` adds
 `min_forward_m_s`, `largest_forward_change_m_s`, `crossing_s` and `stall_s`, from the contact tick

@@ -635,7 +635,7 @@ the contact is Avian's bit for bit:
   `clamped`; `apply_restitution` gains `max_impulse`. A point's accumulated impulse is what one
   substep applies, so a finite bound is the most the point returns per substep.
 - **A limiter call.** `ContactNormalPart` gains `limit` (`u32::MAX`: none), a token of the
-  limiter's own, and `limit_state`, three floats of the limiter's own. `SolverBody` gains
+  limiter's own, and `limit_state`, two floats of the limiter's own. `SolverBody` gains
   `limit_scratch`, a `Vec<f32>` of the limiter's own. `NORMAL_LIMIT` is a process-wide function
   beside `SURFACE_FRICTION`: for a point that names a limiter, `ContactConstraint::solve` calls
   it after each normal solve of the point and before the increment moves the bodies, with the

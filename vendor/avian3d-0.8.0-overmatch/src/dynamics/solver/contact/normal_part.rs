@@ -48,7 +48,7 @@ pub struct ContactNormalPart {
     pub limit: u32,
 
     /// OVERMATCH PATCH: the limiter's own state for this point.
-    pub limit_state: [f32; 3],
+    pub limit_state: [f32; 2],
 
     /// OVERMATCH PATCH: whether the last solve left the point at its upper clamp.
     pub clamped: bool,
@@ -133,7 +133,7 @@ impl ContactNormalPart {
             spring: softness,           // OVERMATCH PATCH
             max_impulse: f32::INFINITY, // OVERMATCH PATCH
             limit: u32::MAX,            // OVERMATCH PATCH
-            limit_state: [0.0; 3],      // OVERMATCH PATCH
+            limit_state: [0.0; 2],      // OVERMATCH PATCH
             clamped: false,             // OVERMATCH PATCH
         }
     }

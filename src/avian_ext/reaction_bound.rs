@@ -20,8 +20,10 @@
 //! **Work.** The work an impulse `p` does over a substep on bodies closing at a point at `c0`
 //! before the substep's forces and `c1` after its last solve is `p · ½(c0 + c1)`: the bodies'
 //! kinetic-energy change is each impulse on them times the mean of the speeds across it, so the
-//! speeds carry every other point, body and force. [`account`] counts it per point, signed, and
-//! takes it from the point's budget. Inside a solve the fork's limiter hook ([`limit`]) cuts a
+//! speeds carry every other point, body and force. [`account`] sums it over a budget's points,
+//! signed, after every substep; the sum floored at nothing is the budget's count for the
+//! substep, taken from what the budget has left and given to the points that did positive work
+//! by their share of it ([`Bounds::work`]). Inside a solve the fork's limiter hook ([`limit`]) cuts a
 //! point whose impulse does more than its budget has left after the budget's other points'
 //! work this substep, each at its last solve: with `u` the closing speed there less the point's
 //! own impulse and `K` its inverse effective mass, `p` ends the solve closing at `u − pK`, so
@@ -29,9 +31,8 @@
 //! that does less is left alone: a body the contact stops did what it had. A budget is one
 //! dynamic body's; Avian solves two constraints of one dynamic body in turn (its graph colours
 //! hold a body once, and the overflow colour is serial), so the budget's cell, which lives on
-//! that solver body, has one writer at a time. A budget is spent when a substep's last solve
-//! cut one of its points, or its points have done its work; its points then do no more work
-//! for the rest of the step ([`Bounds::spent`]).
+//! that solver body, has one writer at a time. A budget whose count has reached its work has
+//! nothing left: its points do no more work for the rest of the step.
 //!
 //! A manifold point in no group and no budget is Avian's rigid contact bit for bit, and may
 //! still be read ([`Bounds::read`]).
@@ -80,11 +81,10 @@ struct Budget {
     body: Entity,
     points: Vec<At>,
     work: f32,
-    spent: bool,
 }
 
 /// One read point: this substep's impulse bound, the least its groups dealt it; the normal
-/// impulse it has returned over the step, N·s; and the work that impulse did, J, signed.
+/// impulse it has returned over the step, N·s; and its share of its budget's count, J.
 #[derive(Debug, Clone, Copy)]
 struct Record {
     bound: f32,
@@ -175,20 +175,13 @@ impl Bounds {
     }
 
     /// Bounds the work `points`, all of dynamic body `body`, do between them over the step at
-    /// `work` J, and reads each ([`Self::read`]); returns the budget's index for
-    /// [`Self::spent`]. A point is in one budget.
-    pub fn budget(&mut self, body: Entity, points: Vec<At>, work: f32) -> usize {
+    /// `work` J, and reads each ([`Self::read`]). A point is in one budget.
+    pub fn budget(&mut self, body: Entity, points: Vec<At>, work: f32) {
         assert!(work >= 0.0, "a budget of {work} J is negative or NaN");
         for &at in &points {
             self.read(at);
         }
-        (self.budgets).push(Budget {
-            body,
-            points,
-            work,
-            spent: false,
-        });
-        self.budgets.len() - 1
+        (self.budgets).push(Budget { body, points, work });
     }
 
     fn record(&self, at: At) -> &Record {
@@ -203,9 +196,10 @@ impl Bounds {
         self.record(at).returned
     }
 
-    /// The work a read point's impulse did over the last step on the bodies closing through it,
-    /// J (the module doc), signed: a point the bodies left on the mean did negative work.
-    /// Restitution's increment, which no pair of speeds spans, is not in it.
+    /// A budget's point's share of the work its budget's points did over the last step on the
+    /// bodies closing through them, J, never negative (the module doc): the shares of a budget's
+    /// points sum to its count. Nothing for a point in no budget. Restitution's increment, which
+    /// no pair of speeds spans, is not in it.
     pub fn work(&self, at: At) -> f32 {
         self.record(at).work
     }
@@ -216,12 +210,6 @@ impl Bounds {
         (self.groups[group].members.iter())
             .map(|member| self.impulse(member.at) * member.lean)
             .sum()
-    }
-
-    /// Whether budget `budget` was spent in the last step: a substep's last solve cut one of its
-    /// points to the last work the budget had, or its points did its work.
-    pub fn spent(&self, budget: usize) -> bool {
-        self.budgets[budget].spent
     }
 }
 
@@ -370,8 +358,8 @@ fn cap(left: f32, sum: f32, k: f32) -> f32 {
 }
 
 /// The fork's normal limiter (`NORMAL_LIMIT`), for a point [`locate`] gave a budget's token.
-/// `ContactNormalPart::limit_state` is the point's closing speed before the substep's forces,
-/// the work it does this substep as of its last solve, and whether that solve was cut. A solve
+/// `ContactNormalPart::limit_state` is the point's closing speed before the substep's forces
+/// and the work it does this substep as of its last solve. A solve
 /// found the point's impulse, `increment` more than it held, the bodies closing at `closing`
 /// m/s there before it; where that impulse does more work than the point's budget has left
 /// after the budget's other points, it is cut to the impulse that does what is left ([`cap`]).
@@ -386,7 +374,7 @@ fn limit(
 ) -> f32 {
     let body = if part.limit & 1 == 0 { body1 } else { body2 };
     let cell = (part.limit >> 1) as usize * CELL;
-    let [before, work, _] = part.limit_state;
+    let [before, work] = part.limit_state;
     let left = body.limit_scratch[cell] - (body.limit_scratch[cell + 1] - work);
     let k = part.effective_mass.recip();
     let (found, held) = (part.impulse, part.impulse - increment);
@@ -402,8 +390,7 @@ fn limit(
     }
     let did = does(part.impulse);
     body.limit_scratch[cell + 1] += did - work;
-    // A cut to nothing says the budget's other points hold all of it, and marks nothing.
-    part.limit_state = [before, did, f32::from(cut && left > 0.0)];
+    part.limit_state = [before, did];
     part.impulse - held
 }
 
@@ -420,15 +407,15 @@ fn closing(constraint: &ContactConstraint, at: usize, bodies: &SolverBodies) -> 
 }
 
 /// Between substeps, and after the last: counts the work each budget's points did over the
-/// substep that ended (the module doc), takes it from the budget, and marks the budget spent
-/// when its last solve cut a point ([`limit`]) or its work is done; then opens the next
-/// substep, each point at its closing speed before the substep's forces and at the work its
-/// carried impulse does if the bodies keep that speed, which its first solve corrects. The
-/// budgets are walked on one thread, as [`deal`] walks the groups.
+/// substep that ended (the module doc), takes the count from the budget and gives it to the
+/// points; then opens the next substep, each point at its closing speed before the substep's
+/// forces and at the work its carried impulse does if the bodies keep that speed, which its
+/// first solve corrects. The budgets are walked on one thread, as [`deal`] walks the groups.
 fn account(
     mut bounds: ResMut<Bounds>,
     mut constraints: ResMut<ConstraintGraph>,
     mut bodies: ResMut<SolverBodies>,
+    mut works: Local<Vec<(usize, f32)>>,
 ) {
     let Bounds {
         budgets,
@@ -437,8 +424,10 @@ fn account(
         opened,
         ..
     } = &mut *bounds;
-    for budget in budgets.iter_mut() {
-        let (mut did, mut drawn, mut capped) = (0.0, 0.0, false);
+    for budget in budgets.iter() {
+        // Each point's record and the work it did over the substep that ended, signed.
+        works.clear();
+        let (mut did, mut drawn) = (0.0, 0.0);
         let mut cell = None;
         for &at in &budget.points {
             let Some(constraint) = constraint_mut(manifolds, &mut constraints, at) else {
@@ -452,12 +441,14 @@ fn account(
             }
             if *opened {
                 let work = part.impulse * 0.5 * (part.limit_state[0] + speed);
-                points[manifolds[&(at.contact.0, at.manifold)].first + at.point].work += work;
+                works.push((
+                    manifolds[&(at.contact.0, at.manifold)].first + at.point,
+                    work,
+                ));
                 did += work;
-                capped |= part.limit_state[2] != 0.0;
             }
             let carried = part.impulse * speed.max(0.0);
-            part.limit_state = [speed, carried, 0.0];
+            part.limit_state = [speed, carried];
             drawn += carried;
             cell = Some((
                 indices[(part.limit & 1) as usize],
@@ -470,11 +461,16 @@ fn account(
         let scratch = &mut (bodies.get_mut(body))
             .expect("`locate` found the body at this index")
             .limit_scratch[cell * CELL..][..CELL];
-        scratch[0] -= did;
-        budget.spent |= capped || scratch[0] <= 0.0;
-        if budget.spent {
-            scratch[0] = 0.0;
+        // What one point gave back is taken from what another did; a substep the bodies left
+        // on the whole counts nothing.
+        let count = did.max(0.0);
+        if count > 0.0 {
+            let positive: f32 = works.iter().map(|&(_, work)| work.max(0.0)).sum();
+            for &(record, work) in works.iter() {
+                points[record].work += count * work.max(0.0) / positive;
+            }
         }
+        scratch[0] -= count;
         scratch[1] = drawn;
     }
     *opened = true;

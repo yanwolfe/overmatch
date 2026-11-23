@@ -464,7 +464,7 @@ mod tests {
                     spring: softness,
                     max_impulse: f32::INFINITY,
                     limit: u32::MAX,
-                    limit_state: [0.0; 3],
+                    limit_state: [0.0; 2],
                     clamped: false,
                 },
                 tangent_part: Some(ContactTangentPart::generate(

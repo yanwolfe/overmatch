@@ -267,8 +267,6 @@ struct BlockReadout {
     taken_j: f32,
     /// What its points returned along the push over the step, N s.
     returned_ns: f32,
-    /// Whether a body did the last of its work inside the step.
-    spent: bool,
 }
 
 /// Solver momentum into the hull along its forward over one step, N s, by the other body.
@@ -591,7 +589,6 @@ impl Hull<'_, '_> {
                     closing_m_s: block.closing as f32,
                     taken_j: block.taken as f32,
                     returned_ns: block.returned,
-                    spent: block.spent,
                 })
                 .collect(),
             freed: self.bound.freed.len(),
