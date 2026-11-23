@@ -23,10 +23,19 @@ the published crate: 11 (MEASURED, 7 added and 4 removed).
 
 `contact_manifold_pfm_pfm` adds the closest-point (GJK or EPA) pair to the clipped manifold.
 Upstream drops the pair wherever the normal constraints changed the contact direction, tested bit
-for bit; the fork always keeps it. Its depth is read along the corrected normal, as the function
-already reads it: the pair's distance times the cosine of the turn (DERIVED: the pair lies along
-the uncorrected direction), so it never reports more overlap than the pair has, and a pair found
-overlapping from a triangle's front reports an overlapping point.
+for bit; the fork keeps it where the direction is unchanged within rounding
+(`local_n1.dot(dir) >= 1.0 - 1.0e-6`) and where the pair overlaps. Its depth is read along the
+corrected normal, as the function already reads it: the pair's distance times the cosine of the
+turn (DERIVED: the pair lies along the uncorrected direction), so it never reports more overlap
+than the pair has, and a pair found overlapping from a triangle's front reports an overlapping
+point.
+
+A turned pair with a gap stays dropped, as upstream has it. The same cosine understates a gap, so
+a triangle the body is beside reports its plane as a surface beyond its outline. MEASURED with the
+gate removed: a box sliding without friction across creases of 5.7 degrees at 5 m/s is stopped
+along such a normal mid facet, hops, and ends at 4.58 m/s for 4.94 m/s; with the pair kept only
+where it overlaps, 36 rotation-locked slides (level, 8 % slope, creases; 1, 5 and 15 m/s) match
+the rounding-only gate to the printed digit, points included.
 
 Kept as an upstream bug fix: without the pair, a pair of shapes the search found overlapping, with
 a normal the constraints accepted, can report no overlapping point. Two ways, both MEASURED on the

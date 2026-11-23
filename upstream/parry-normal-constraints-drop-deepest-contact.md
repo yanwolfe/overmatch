@@ -87,24 +87,70 @@ that end more than 1 m under the surface:
 | removed (the fix below) | 13 of 1200 | 4 of 1200 |
 | removed, and a triangle overlapped towards its back answers along its cone ("Not covered") | 0 of 1200 | 3 of 1200 |
 
+MEASURED, the same bed rebuilt (other draws), the three forms of the gate:
+
+| gate | the splinter | the beam |
+|---|---|---|
+| judged within rounding | 148 of 1200 | 34 of 1200 |
+| removed | 14 of 1200 | 3 of 1200 |
+| within rounding, or the pair overlaps (the fix below) | 22 of 1200 | 5 of 1200 |
+
+## Why the gate cannot simply go
+
+MEASURED, a box (0.6 m by 0.4 m by 0.5 m) and the splinter sliding without friction at 1, 5 and
+15 m/s across 1.465 m cells, 0.3 rad off the grid's x, lying flat (free to turn) and held tilted
+on an edge and on a corner (rotation locked), 640 steps at 64 Hz at most; on level ground, on an
+8 % slope and across creases (facets of plus and minus 5 % meeting every four cells, 5.7 degrees
+between them). 54 cases, 36 of them rotation locked.
+
+| | level, slope (24 locked) | creases (12 locked) |
+|---|---|---|
+| gate removed against within rounding | same speed, height and spin to the printed digit; 8 to 16 % more points | 7 cases end slower, the worst 4.58 m/s for 4.94 m/s from 5 m/s; hops |
+| the fix below against within rounding | identical, points included | identical, points included |
+
+The hop, one step of the box held on an edge at 5 m/s: on a facet falling at 5 %, mid facet, a
+fourth point appears with normal (-0.021, 0.997, -0.071), 4.4 degrees off both facets, and a gap of
+5.9 mm; the box's vertical speed goes from -0.255 to +0.208 m/s in that step and it leaves the
+ground, landing at -0.64 m/s seven steps later. The point is a turned pair with a gap. The pair
+lies along the uncorrected direction, towards the triangle's edge; read along the corrected normal
+its gap is the pair's distance times the cosine of the turn (DERIVED), so a triangle a body is
+beside, not over, reports its own plane a few millimetres away, and a solver stops the body
+against a plane that has no surface there. Among coplanar neighbours the plane is the neighbour's
+own, which is why level ground and the slope show nothing. This is the catching an internal-edge
+correction exists to remove, and upstream's gate holds it off.
+
+A turned pair that overlaps is another matter: the shapes intersect at that pair, on the triangle
+itself, and the depth read along the corrected normal is at most the pair's.
+
+Lying flat and free to turn, the splinter under the gate judged within rounding left through the
+surface in three of its nine cases (the 8 % slope at 1 m/s, the creases at 5 and 15 m/s); under
+the fix it stays on the surface in all nine.
+
 ## Shape of a fix
 
-Remove the gate: in 3D the witness is always appended.
+Keep the pair where the direction is unchanged within rounding, or where the pair overlaps:
 
 ```rust
-if cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty() {
+let pair_dist = (p2_1 - p1).dot(local_n1);
+if (cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty())
+    && (local_n1.dot(dir) >= 1.0 - 1.0e-6 || pair_dist < 0.0)
 ```
 
-The comment being removed says the direction is no longer valid for this contact once the
+The comment at the gate says the direction is no longer valid for this contact once the
 constraints changed it. The contact does not use the direction: its depth is
 `(p2_1 - p1).dot(local_n1)`, read along the corrected normal, and the pair lies along the
-uncorrected one, so the depth is the pair's distance times the cosine of the turn (DERIVED). It
-never reports more overlap than the pair has, it passes the function's own "five times deeper"
-discard for the same reason, and a pair found overlapping from a triangle's front keeps an
-overlapping point.
+uncorrected one, so the depth is the pair's distance times the cosine of the turn (DERIVED). For an
+overlapping pair that never reports more overlap than the pair has, it passes the function's own
+"five times deeper" discard for the same reason, and a pair found overlapping from a triangle's
+front keeps an overlapping point. For a pair with a gap the same cosine understates the gap, the
+section above; those stay dropped.
 
-The lesser form, judging "changed" within rounding (`local_n1.dot(dir) >= 1.0 - 1.0e-6`), repairs
-the two rewrites that change nothing and leaves the turned direction: the first row of the table.
+Two lesser forms. Judging "changed" within rounding alone repairs the two rewrites that change
+nothing and leaves the turned direction: the first row of each bed. Removing the gate holds a few
+more bodies in the bed (a fast body is met one step sooner) and catches at creases.
+
+The static sweep's 40 poses hold for the fix as for the removed gate (DERIVED: the sweep counts
+overlapping points, and the two forms differ only in pairs with a gap).
 
 ## Not covered
 
@@ -117,4 +163,4 @@ line, and crosses the surface nowhere else.
 
 The prism of the first witness over a grid line on the 8 % slope reported 1.8 mm for 30 mm with
 the shape first, the gate bitwise or judged within rounding (MEASURED once); not measured with the
-gate removed.
+fix.
