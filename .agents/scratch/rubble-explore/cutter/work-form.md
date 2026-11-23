@@ -671,3 +671,134 @@ Not verified: whether a touching body pushed (no impulse between dynamic bodies 
 whether any reading of the replay would cross or stall, since a replay keeps the trajectory; the
 0.5 and 0.9 lines of the key are this pass's choices; the probe's closing speeds are the solver
 bodies' at two points of the substep and miss what happens between.
+
+# One budget: checkpoint 1
+
+Subject: the game's building model (game state only). Build `b6b776d5` on `lane/work-form`: one
+work budget per body and block, spent inside the solve by true work. The law is stated once in
+`.agents/scratch/strength-limited-contact-design-2026-11-21.md`, "As built"; this section holds
+the fixtures' readings, the fork's size and the seam's cost. No building pass was run.
+
+## One departure from the premise's clamp
+
+The premise (section 2(c)) cuts a point whenever some impulse under the solve's answer does the
+work left (the lesser root of `½ p (a − pK) = e`). Built that way first as a mutant, it failed
+two fixtures (MEASURED): a 2 kg box a 2,000 kg box holds still on the slab had its 100 J budget
+spent at rest on step 19; and the pair moving at 4 m/s lost 1,055 J against a budget of 1,000 J
+with an allowance of 48 J over what its points did. Cause: `K` is the point's own response. A
+pressed light body holds a large impulse, and at a lesser impulse the formula has it fly into
+the slab alone, though the body behind it would follow at once. The build judges the work at
+the impulse the solve found: `½ p (c0 + u − pK)` at that `p`. If it is more than the budget has
+left, the impulse is cut to the lesser root; if not, it stands. The law's statement holds as
+briefed (true work bounded by the budget; a body that cannot pay stops and the way stands), and
+the "cannot pay" branch needs no test of its own: the stopping impulse of a free body does
+exactly its kinetic energy.
+
+## Decisions
+
+- **Way per push** for solver points: the way that holds least (`price.force`), where the old
+  form took the least `reaction` at the start speed. The budget is the least work left among
+  the block's ways, and the block parts by its least-work way.
+- **Belts keep their whole-block form**, unchanged in arithmetic: a staged force has no solver
+  point, so nothing is solved for it and the limiter cannot reach it. `Standing::give_to_belt`
+  holds `reaction` and `crosses` at the belt's start speed; its selection (least `reaction`,
+  first of equals) is the old one.
+- **`BlockRow::bound` / `bound_ns` deleted** (it was the start-speed prediction); `spent` added:
+  whether a body did the last of the block's work inside the step. `scripts/perf/collapse.md`
+  follows.
+- **Hook shape.** One call after each normal solve of a point that names a limiter, before the
+  increment moves the bodies: `fn(&mut ContactNormalPart, &mut SolverBody, &mut SolverBody,
+  closing, increment) -> increment`. The fork knows a token, three floats on the part and a
+  `Vec<f32>` on the solver body; work, budgets and the cut are in
+  `src/avian_ext/reaction_bound.rs`.
+- **Parallel safety** checked in `constraint_graph.rs`: a colour's `body_set` holds every
+  non-static body of its constraints, a constraint takes a colour only when neither of its
+  non-static bodies is in it, and the overflow colour is solved on one thread. A budget's cell
+  is on its one dynamic body, so it has one writer at a time.
+
+## Fixtures
+
+Seam level, `src/tests/avian_reaction_bound.rs` (a static slab, no friction, isotropic
+inertia, energy as `½ m v² + ½ I ω²`); building level, `src/construction/breakage/bounded/tests.rs`
+(the brick leaf). All MEASURED on the committed build unless marked.
+
+| Fixture | Reading | Allowance (DERIVED) |
+|---|---|---|
+| 2,000 kg at 4 m/s (16,000 J), budget 400 J, 1 point | lost 400.003 J, counted 400, spent step 1 | f32: 0.023 J |
+| same, 4 points | lost 399.9998 J, counted 400, spent step 1 | 0.09 J |
+| same, 16 points | lost 399.9998 J, counted 400, spent step 1 | 0.37 J |
+| 2 kg at 1 m/s (1 J), budget 400 J, 1 point | stopped, budget stands, counted 1 J | f32 |
+| same, 4 points | stopped, stands, counted 0.999986 J; keeps 0.000014 J backing out of the fixture's 1 mm overlap | f32 |
+| held at 100 N·s a step, budget 1,000 J, 1 / 4 / 16 points | lost 1,000.01 / 999.99 / 1,000.21 J, spent step 3 | one substep at the bound: 66.7 J |
+| 2 kg under 2,000 kg, both at 4 m/s, same bound and budget | light box's points did 1,015 J; the pair lost 1,036 J; spent step 3 | points: 66.7 J; pair: up to 48 J more, rejoining |
+| 2,000 kg at rest under gravity, budget 100 J, 64 steps after settling | 0.00006 J, budget stands | 0.046 J |
+| 2 kg held still under 2,000 kg, same | 0 J, budget stands | 0.046 J |
+| leaf: one 57 t box at 4.5 m/s on a block of 3,110.94 J | block took 3,111.24 J | one substep at strength: 1,692 J |
+| leaf: two such boxes on that block in one step | block took 6,222.48 J (2.0002 times) | up to twice, plus the same |
+
+The loss does not move with point count beyond the residual: 400.003 / 399.9998 / 399.9998 J,
+and 1,000.01 / 999.99 / 1,000.21 J. A resting body adds no work past f32. The settle before the
+rest reading did 1.9 J (one box) and 40 J (the stack), bodies sinking from the fixture's
+overlap onto the contact: real travel under weight, and under the budget.
+
+Mutants run (MEASURED): no cut, the budget read between substeps alone (16,000 J lost on the
+free fixture; 1,178 J on the held one; 1,122 J done by the pressed box's points); the count at
+the end speed alone (397.5 of 400 J; 0 J for a stopped body); the limiter without the speed
+before the substep's forces (held-still budget spent on step 4); the premise's lesser-root cut
+(above). The release ignoring `Bounds::spent` survived every building fixture until the
+`spent` row was read by `bonds_take_the_work_done_on_them_once_and_part_only_when_a_way_is_spent`:
+a block parted on its budget with the count at 6,213.12 of 6,213.36 J.
+
+Two older building fixtures moved. `a_cell_does_not_stand_in_a_body_past_its_give` sent 57 t at
+0.5 m/s (7,125 J) and asserted the cells in its path leave; under the budget the box frees two
+cells, does 4,350 J of 8,218 on the next block and stops, out of energy with no drive
+(MEASURED trace). The fixture is now 1.5 m/s (64 kJ) and keeps its depth assertion. The
+"crossed" reading of the old second clause is gone from the work fixture.
+
+Named residuals, each in the design doc: solve lag (within one substep's work at the block's
+strength), several bodies (up to bodies × work left), the count's rounding against the signed
+budget, restitution (in the impulse, not in the work; standing matter's pairs have none).
+
+## Fork
+
+`OVERMATCH_PATCH.md`, "Bounded contact": **hook**, a divergence with its seam at
+`avian_ext::reaction_bound`; no upstream draft. Fork lines by `diff --minimal -ruN` of `src/`
+against the published crate (MEASURED): 1,008 before, 1,032 now. The bounded-contact patch is
+53 lines: 22 in the normal part (was 24: `max_work` and its clamp gone, `limit` and
+`limit_state` in), 27 in the contact constraint (5 restitution as before, 22 the limiter's type,
+static and call), 4 in the solver body (`limit_scratch`). The hook is generic: the fork states
+nothing about work.
+
+## Cost
+
+One run: a 57 t hull through the hall long wall at 20 km/h, two-thread pool, 699 ticks from
+first contact, release build with timers around the seam's systems and a counter in the
+limiter. Per tick, ms:
+
+| Part | mean | p95 | max |
+|---|---|---|---|
+| `deal` (six substeps) | 0.202 | 0.231 | 0.882 |
+| `account` (seven calls) | 0.055 | 0.069 | 0.255 |
+| `locate` (with the budgets' cells) | 0.018 | 0.030 | 0.315 |
+| `read_bounds` | 0.002 | 0.003 | 0.017 |
+| the four systems | 0.277 | 0.316 | |
+| limiter, in the solve (DERIVED) | 0.055 to 0.112 | 0.062 to 0.127 | 0.137 to 0.278 |
+
+The limiter ran 7,513 times a tick at the mean (p95 8,472, max 18,600; MEASURED); a call costs
+7.4 ns uncut and 15.0 ns cut (MEASURED, 4M calls each in the same binary at start-up, warm
+cache, so a floor for the solve's own calls); the row is the count times each. Against `deal`
+alone at 0.22 ms before: `deal` 0.20, and the budget adds 0.07 ms of systems and about 0.06 to
+0.11 ms in the solve. The run crossed in 8.0 s with no stall (an observation from the one
+probe run, not a pass).
+
+## Not verified
+
+- No pass of the checkpoint-2 set, no clip; the one hall run above was for cost.
+- The cost is one run; the hosted price is not measured.
+- The limiter's cost inside the solve is derived from a count and a start-up loop, not timed in
+  place.
+- Belts: no belt fixture was added; the two existing belt tests pass unchanged.
+- Backlog destruction-11 (pose advance against velocity) was measured under the old law and is
+  not re-measured.
+- `net::protocol` passes; `WIRE_TYPE_DEFS` is untouched.
+
