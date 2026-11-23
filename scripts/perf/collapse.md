@@ -52,10 +52,11 @@ forward over the step (`src/net/ram.rs`, `HullRow`): solver momentum by the othe
 N s. The belts' implicit support and traction and gravity are not channels, so the channels do
 not sum to m·Δv. `blocks` is every block of standing cells the step bounded
 (`construction::breakage::bounded`): the pressing `body` (`hull` when it is the ram's tank), the
-block's `cells`, the `way` it gives soonest, its price (`force_n`, `work_j`), the body's speed
-along the push after the step, the most it could return (`bound_ns`) and what it did
-(`returned_ns`), whether it returned all of it (`yielded`) and the share of its give crossed
-(`spent`; one frees it). `freed` counts the cells the step freed.
+block's `cells`, the `way` its work reaches first, which it parts by, its price
+(`force_n`, `work_j`), the body's speed along the push at the step's start, what the way's
+points returned (`returned_ns`), and the work its cells' bonds have taken after the step
+(`taken_j`; a block parts when it reaches the price's). `freed`
+counts the cells the step freed.
 `impact.speed_m_s` is the horizontal speed of the row before first contact. `result.json` adds
 `min_forward_m_s`, `largest_forward_change_m_s`, `crossing_s` and `stall_s`, from the contact tick
 on, each defined in its `definitions`. The server's last line adds `structure`, the struck
@@ -71,7 +72,7 @@ right of the instance's origin. A contact is one of three (`src/net/ram.rs`, `Co
 - `{"Governed": {"minimum_fraction", "runup_margin"}}`: full throttle to governed speed, admitted
   at that fraction of it or over.
 - `{"Held": {"speed_m_s", "within_m_s", "runup_margin"}}`: the scripted driver holds that speed
-  over the run-up and through the contact, its demand falling from full to none across 0.5 m/s
+  over the run-up and through the contact, its demand falling from full to none across a band
   under it (`src/net/harness.rs`, `HOLD_BAND_M_S`), as a player holding a speed drives. Admitted
   within `within_m_s` of it. The driver settles a little under the held speed, so the measured
   contact speed is the row's fact, not the name.
@@ -116,8 +117,9 @@ Three passes state a fact of the run beside the route:
   the governed run-up to the long wall the hull drifted 1.2 m to its left (MEASURED, one run:
   with the line to the wall's left it passed the wall untouched), so that line lies to the wall's
   right and the slower contacts meet the wall's end nearer the hull's left side.
-- `ram-wall-boards.json` stands the hull 0.1 m short for its contact from rest: at the others'
-  0.02 m its lowest point met the plinth as it settled, before the capture's first row.
+- `ram-wall-boards.json` stands the hull 0.1 m short for its contact from rest and admits it up
+  to 1.0 m/s: at the others' 0.02 m its lowest point met the plinth as it settled, before the
+  capture's first row.
 - `ram-fir.json` admits its contact from rest up to 1.0 m/s: the trunk's round face stands
   further from the hull's point than the ray's entry, and the hull met it at 0.54 m/s.
 

@@ -1,8 +1,8 @@
 //! The game's building model (game state only): what a standing cell returns to a body that
 //! presses it. Bonds hold up to a force and let go after a work, so a cell answers with at most
-//! `F` for no longer than the body takes to cross its give `W / F` ([`reaction`]); a cell pushed
-//! past that is loose rubble. Nothing here predicts a path: the cells are the ones the narrow
-//! phase found pressed. The design narrative is
+//! `F` ([`Price::force`]) until the bodies pressing it have done `W` on it ([`Standing::work`]);
+//! its bonds are then spent and it is loose rubble. Nothing here predicts a path: the cells are the
+//! ones the narrow phase found pressed. The design narrative is
 //! `.agents/scratch/strength-limited-contact-design-2026-11-21.md`, "As built".
 //!
 //! Pure functions of one structure's state ([`Standing`]); `breakage::bounded` hands the
@@ -33,37 +33,64 @@ fn across(joint: &Joint, c: usize) -> Option<usize> {
     }
 }
 
-/// What one way of giving holds, N, and the work it takes before it lets go, J. Its give is
-/// `work / force`, m, never authored.
+/// What one way of giving holds, N, and the work it takes before it lets go, J.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Price {
     pub force: f64,
     pub work: f64,
 }
 
-/// The impulse a cell priced at `price` returns over a step of `dt` s to a body closing on it at
-/// `closing` m/s, N·s, `spent` of its give already crossed: its strength for the step, or for the
-/// time the body takes to cross the give left, whichever is shorter. The second holds no `dt`,
-/// which is what makes a fast body's loss independent of the step.
-pub(crate) fn reaction(price: Price, spent: f64, closing: f64, dt: f64) -> f64 {
+impl Price {
+    /// Whether bonds that have taken `taken` J are spent: the work has reached theirs. The
+    /// remainder rounding leaves: the design narrative, "What rounding leaves".
+    pub(crate) fn spent(&self, taken: f64) -> bool {
+        taken >= self.work
+    }
+
+    /// The work the bonds still take, J, having taken `taken`.
+    pub(crate) fn left(&self, taken: f64) -> f64 {
+        (self.work - taken).max(0.0)
+    }
+}
+
+/// The work the bonds of `cells` have taken, J, `work` their structure's per chunk
+/// ([`Standing::work`]). Work is one scalar per cell, whoever did it and along whichever way:
+/// every way a block gives is charged with all of it, so a way may part on work done along
+/// another, or by another body. That is a simplification; its measured cost is in the design
+/// narrative (the module doc).
+pub(crate) fn taken(work: &[f64], cells: &[usize]) -> f64 {
+    cells.iter().map(|&c| work[c]).sum()
+}
+
+/// The give cells priced at `price` have left, m, their bonds having taken `taken` J: the
+/// distance over which they still return their strength.
+fn give_left(price: Price, taken: f64) -> f64 {
+    price.left(taken) / price.force
+}
+
+/// Whether a belt closing at `closing` m/s on cells priced at `price` crosses the give they have
+/// left ([`give_left`]) within a step of `dt` s, if it keeps that speed. Cells that hold nothing
+/// have no give to cross. A belt's force is staged before the step, so its start speed is the
+/// only one its bound can read; a solver point's work is bounded inside the solve
+/// (`avian_ext::reaction_bound`) and reads no speed here.
+pub(crate) fn crosses(price: Price, taken: f64, closing: f64, dt: f64) -> bool {
+    price.force > 0.0 && closing * dt > give_left(price, taken)
+}
+
+/// The impulse cells priced at `price` return over a step of `dt` s to a belt closing on them at
+/// `closing` m/s, N·s, their bonds having taken `taken` J already: their strength for the step,
+/// or for the time the body takes to do the work left, whichever is shorter ([`crosses`]). The
+/// second holds no `dt`, which is what makes a fast body's loss independent of the step.
+pub(crate) fn reaction(price: Price, taken: f64, closing: f64, dt: f64) -> f64 {
     if price.force <= 0.0 {
         return 0.0; // Nothing holds it.
     }
-    let left = (1.0 - spent) * price.work / price.force;
     price.force
-        * if closing * dt > left {
-            left / closing
+        * if crosses(price, taken, closing, dt) {
+            give_left(price, taken) / closing
         } else {
             dt
         }
-}
-
-/// The share of a price's give a body closing at `closing` m/s crosses in `dt` s.
-pub(crate) fn crossed(price: Price, closing: f64, dt: f64) -> f64 {
-    if price.work <= 0.0 {
-        return 1.0; // No give: it lets go at once.
-    }
-    closing.max(0.0) * dt * price.force / price.work
 }
 
 /// How pressed cells give.
@@ -89,16 +116,24 @@ pub(crate) struct Push {
     pub lean: f64,
 }
 
-/// How pressed cells give to a body: the cheapest way and direction.
+/// One way pressed cells give to a body along one push.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Yield {
     pub way: Way,
     pub push: Push,
     pub price: Price,
-    /// The most the cells return along the push this step, N·s ([`reaction`]).
-    pub impulse: f64,
     /// The cells that leave if it gives, ordered.
     pub leaves: Vec<usize>,
+}
+
+/// How pressed cells give to a belt: the way, the most they return along the push this step,
+/// N·s ([`reaction`]), and whether the belt crosses the give they have left within the step
+/// ([`crosses`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Rationed {
+    pub given: Yield,
+    pub impulse: f64,
+    pub crossing: bool,
 }
 
 /// The matter one push moves: the pressed cells and every cell behind them along it.
@@ -110,14 +145,16 @@ pub(crate) struct Plug {
     pub grounded: bool,
 }
 
-/// One structure as the law reads it: its graph and live state, its chunk shapes, and its gravity
-/// preload per joint (N, tension positive; `parts::Gravity`).
+/// One structure as the law reads it: its graph and live state, its chunk shapes, its gravity
+/// preload per joint (N, tension positive; `parts::Gravity`), and the work each chunk's bonds
+/// have taken from the bodies that pressed it, J.
 #[derive(Clone, Copy)]
 pub(crate) struct Standing<'a> {
     pub structure: &'a Structure,
     pub state: &'a State,
     pub shapes: &'a [Block],
     pub preload: &'a [f64],
+    pub work: &'a [f64],
 }
 
 impl Standing<'_> {
@@ -251,6 +288,12 @@ impl Standing<'_> {
                     * (-self.preload[j]).max(0.0)
                     * sliding
                     * depth;
+                assert!(
+                    price.work.is_finite() && price.work >= 0.0,
+                    "a joint's bonds take a finite work: joint {j} of cell {c} brings the \
+                     boundary's to {} J",
+                    price.work
+                );
             }
         }
         (price, closed, rough)
@@ -303,38 +346,44 @@ impl Standing<'_> {
         least
     }
 
-    /// How `pressed` (ordered) give to a body pushing them along `push`, `spent` of their give
-    /// crossed already: the way that returns the body least this step. `None` when no way is
-    /// open along it, or the push leans no part of a normal impulse its way ([`Push::lean`]).
-    pub(crate) fn give_along(
-        &self,
-        pressed: &[usize],
-        push: Push,
-        spent: f64,
-        dt: f64,
-    ) -> Option<Yield> {
-        if push.lean <= 0.0 {
-            return None;
-        }
-        let plug = self.plug(pressed, push.along);
-        let ways = [
-            (self.shear_out(&plug, push.along)).map(|price| (Way::ShearOut, price, plug.cells)),
-            (self.shed(pressed, push.along)).map(|(price, leaves)| (Way::Shed, price, leaves)),
-        ];
-        let mut least: Option<Yield> = None;
-        for (way, price, leaves) in ways.into_iter().flatten() {
-            let impulse = reaction(price, spent, push.closing, dt);
-            if least.as_ref().is_none_or(|least| impulse < least.impulse) {
-                least = Some(Yield {
-                    way,
-                    push,
-                    price,
-                    impulse,
-                    leaves,
-                });
-            }
-        }
-        least
+    /// The ways open for `pressed` (ordered) along `push`, shearing out first. None when the
+    /// push leans no part of a normal impulse its way ([`Push::lean`]).
+    fn ways(&self, pressed: &[usize], push: Push) -> impl Iterator<Item = Yield> {
+        let open = (push.lean > 0.0).then(|| {
+            let plug = self.plug(pressed, push.along);
+            let out =
+                (self.shear_out(&plug, push.along)).map(|price| (Way::ShearOut, price, plug.cells));
+            let aside =
+                (self.shed(pressed, push.along)).map(|(price, leaves)| (Way::Shed, price, leaves));
+            [out, aside]
+        });
+        (open.into_iter().flatten().flatten()).map(move |(way, price, leaves)| Yield {
+            way,
+            push,
+            price,
+            leaves,
+        })
+    }
+
+    /// How `pressed` (ordered) give to a body pushing them along `push`: the way that holds
+    /// least, the first a rising force moves; the first of equals. `None` when no way is open
+    /// along it.
+    pub(crate) fn give_along(&self, pressed: &[usize], push: Push) -> Option<Yield> {
+        (self.ways(pressed, push)).min_by(|a, b| a.price.force.total_cmp(&b.price.force))
+    }
+
+    /// How `pressed` (ordered) give to a belt pushing them along `push`: the way that returns
+    /// the belt least this step ([`reaction`]), after the work their bonds have taken
+    /// ([`taken`]); the first of equals. `None` when no way is open along it.
+    pub(crate) fn give_to_belt(&self, pressed: &[usize], push: Push, dt: f64) -> Option<Rationed> {
+        let taken = taken(self.work, pressed);
+        (self.ways(pressed, push))
+            .map(|given| Rationed {
+                impulse: reaction(given.price, taken, push.closing, dt),
+                crossing: crosses(given.price, taken, push.closing, dt),
+                given,
+            })
+            .min_by(|a, b| a.impulse.total_cmp(&b.impulse))
     }
 }
 

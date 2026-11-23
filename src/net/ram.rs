@@ -1,4 +1,4 @@
-//! Tracked full-speed ram instrument for the game's environment destruction model, game state only.
+//! Tracked ram instrument for the game's environment destruction model, game state only.
 //! `scripts/perf/collapse.py --ram` owns `OVERMATCH_RAM`. Default-feature servers derive the
 //! run-up from their loaded drive data and resolve ground height at spawn, without view assets.
 //!
@@ -245,7 +245,7 @@ pub(super) struct HullRow {
     solver_ns: Channels,
     /// Every block of standing cells the step bounded (`construction::breakage::bounded`).
     blocks: Vec<BlockReadout>,
-    /// Cells the step's over-pushed blocks freed.
+    /// Cells the step freed.
     freed: usize,
 }
 
@@ -257,18 +257,14 @@ struct BlockReadout {
     /// The pressing body's entity index.
     body: u32,
     cells: usize,
-    /// The way it gives soonest at the speed it was crossed.
+    /// The way it parted by; standing, the way its work reaches first.
     way: &'static str,
     force_n: f32,
     work_j: f32,
-    /// The pressing body's speed along the push after the step.
+    /// The pressing body's speed along the push at the step's start.
     closing_m_s: f32,
-    /// The most it returned along the push over the step, N s.
-    bound_ns: f32,
-    /// It returned all its bound.
-    yielded: bool,
-    /// The share of its give crossed; one frees it.
-    spent: f32,
+    /// The work its cells' bonds have taken after the step, J.
+    taken_j: f32,
     /// What its points returned along the push over the step, N s.
     returned_ns: f32,
 }
@@ -591,9 +587,7 @@ impl Hull<'_, '_> {
                     force_n: block.price[0] as f32,
                     work_j: block.price[1] as f32,
                     closing_m_s: block.closing as f32,
-                    bound_ns: block.bound as f32,
-                    yielded: block.yielded,
-                    spent: block.spent as f32,
+                    taken_j: block.taken as f32,
                     returned_ns: block.returned,
                 })
                 .collect(),
@@ -953,7 +947,6 @@ mod tests {
         for (field, bad) in [
             ("instance", json!("")),
             ("lateral_m", json!("1")),
-            ("runup_margin", json!(2.0)),
             ("contact", json!("Rest")),
             (
                 "contact",
@@ -978,7 +971,6 @@ mod tests {
             ("settle_s", json!(0)),
             ("deadline_s", json!(-1)),
             ("approach_s", json!("60")),
-            ("drive_s", json!(18)),
             ("typo", json!(1)),
             ("in_place_m", json!(0.1)),
             ("in_place_m", json!([0.0, {"Unit": "a scale"}])),

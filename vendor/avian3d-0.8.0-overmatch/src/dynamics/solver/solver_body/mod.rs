@@ -94,6 +94,9 @@ pub struct SolverBody {
     #[reflect(ignore)]
     #[cfg_attr(feature = "serialize", serde(skip))]
     pub surface_scratch: Option<SurfaceScratch>,
+    /// OVERMATCH PATCH: a normal limiter's state on this body
+    /// ([`super::contact::NORMAL_LIMIT`]), read and written under graph-colored body ownership.
+    pub limit_scratch: Vec<f32>,
     /// The linear velocity of the body.
     ///
     /// 8 bytes in 2D and 12 bytes in 3D.
@@ -131,6 +134,7 @@ impl SolverBody {
     /// A dummy [`SolverBody`] for static bodies.
     pub const DUMMY: Self = Self {
         surface_scratch: None,
+        limit_scratch: Vec::new(),
         linear_velocity: Vector::ZERO,
         #[cfg(feature = "2d")]
         angular_velocity: 0.0,
