@@ -383,9 +383,8 @@ fn cap(left: f32, sum: f32, k: f32) -> f32 {
 /// and the work it does this substep as of its last solve. A solve found the point's impulse,
 /// `increment` more than it held, the bodies closing at `closing` m/s there before it; where
 /// that impulse does more work than the point's budget has left after the budget's other
-/// points, it is cut to the impulse that does what is left ([`cap`]).
-/// The work is judged at the impulse the solve found, never at a lesser one: a body the contact
-/// stops did what it had, and a body held still does none, however hard it is pressed.
+/// points, it is cut to the impulse that does what is left ([`cap`]); one that does less is
+/// left alone (the module doc).
 fn limit(
     part: &mut ContactNormalPart,
     body1: &mut SolverBody,
@@ -431,7 +430,8 @@ fn closing(constraint: &ContactConstraint, at: usize, bodies: &SolverBodies) -> 
 /// substep that ended (the module doc), takes the count from the budget and gives it to the
 /// points; then opens the next substep, each point at its closing speed before the substep's
 /// forces and at the work its carried impulse does if the bodies keep that speed, which its
-/// first solve corrects. The budgets are walked on one thread, as [`deal`] walks the groups.
+/// first solve corrects. The budgets are walked on one thread for their size alone (backlog
+/// destruction-13).
 fn account(
     mut bounds: ResMut<Bounds>,
     mut constraints: ResMut<ConstraintGraph>,

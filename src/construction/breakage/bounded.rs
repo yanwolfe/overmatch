@@ -620,7 +620,7 @@ fn settle(
             Point::Solved { cell, at } => {
                 let share = bounds.work(at);
                 assert!(
-                    share >= 0.0,
+                    share.is_finite() && share >= 0.0,
                     "a share of a count is finite and not negative: {point:?} holds {share} J"
                 );
                 (cell, f64::from(share))

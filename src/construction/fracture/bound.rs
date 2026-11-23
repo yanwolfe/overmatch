@@ -41,9 +41,8 @@ pub(crate) struct Price {
 }
 
 impl Price {
-    /// Whether bonds that have taken `taken` J are spent: the work has reached theirs. A body
-    /// that keeps paying closes what rounding leaves within a few steps
-    /// (`tests::avian_reaction_bound`, the remainder's bound).
+    /// Whether bonds that have taken `taken` J are spent: the work has reached theirs. The
+    /// remainder rounding leaves: the design narrative, "What rounding leaves".
     pub(crate) fn spent(&self, taken: f64) -> bool {
         taken >= self.work
     }

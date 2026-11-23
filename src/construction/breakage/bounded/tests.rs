@@ -61,18 +61,33 @@ fn wall_and_box(mass: f32, at: Vec3, speed: f32) -> (App, Entity, Entity) {
     (app, root, body)
 }
 
-/// Fixture: the points the box lays on the leaf.
-const POINTS: f64 = 16.0;
+/// Fixture: a bound on the points a box lays on the leaf, which [`rounding`] asserts
+/// (MEASURED: 4 on the steps read; backlog destruction-24).
+const POINTS: usize = 16;
 
 fn substeps(app: &App) -> f64 {
     f64::from(app.world().resource::<SubstepCount>().0)
 }
 
-/// The f32 rounding of the box's speed over a step, as a fraction of the speed: the solve
-/// moves it once for each point in each of a substep's two passes, and each move rounds to
-/// half an ulp. An energy read from the speed carries twice it.
-fn rounding(app: &App) -> f64 {
-    f64::from(f32::EPSILON) * POINTS * substeps(app)
+/// The f32 rounding of a body's speed over a step, as a fraction of the speed: the solve moves
+/// it once for each point in each of a substep's two passes, each move rounding to half an ulp.
+/// An energy read from the speed carries twice it.
+fn rounding(app: &App, root: Entity) -> f64 {
+    let mut laid = BTreeMap::<Entity, usize>::new();
+    for pair in app.world().resource::<ContactGraph>().iter_active() {
+        let body = match (pair.body1, pair.body2) {
+            (Some(one), Some(other)) if one == root => other,
+            (Some(one), Some(other)) if other == root => one,
+            _ => continue,
+        };
+        let points = pair.manifolds.iter().map(|manifold| manifold.points.len());
+        *laid.entry(body).or_default() += points.sum::<usize>();
+    }
+    assert!(
+        laid.values().all(|&points| points <= POINTS),
+        "fixture: a box lays at most {POINTS} points on the leaf: {laid:?}"
+    );
+    f64::from(f32::EPSILON) * POINTS as f64 * substeps(app)
 }
 
 /// The fixed step, s.
@@ -258,7 +273,7 @@ fn cells_take_the_kinetic_energy_of_a_body_they_stop() {
         let took = 0.5 * f64::from(mass) * (before.length_squared() - after.length_squared());
         let due = if advancing { took } else { 0.0 };
         assert!(
-            (now - taken - due).abs() <= 2.0 * rounding(&app) * entry,
+            (now - taken - due).abs() <= 2.0 * rounding(&app, root) * entry,
             "tick {tick}: the cells took {} J on a step that took {due} J from the box",
             now - taken
         );
@@ -316,7 +331,7 @@ fn a_body_pushed_out_held_or_resting_does_no_work() {
             // which return the force's impulse `m a dt / n`, do at most that impulse times
             // the residual speed. Over a step's `n` substeps that is the step's rounding over
             // `n²` of `m (a dt)²`, twice the mutant's charge.
-            grown <= 2.0 * rounding(&app) / substeps(&app).powi(2) * mutant,
+            grown <= 2.0 * rounding(&app, root) / substeps(&app).powi(2) * mutant,
             "held at {held} m/s² over 6 s the cells took {grown} J; the mutant charges {mutant} J"
         );
     }
@@ -329,14 +344,13 @@ fn a_body_pushed_out_held_or_resting_does_no_work() {
 /// owns, and it is bounded by the bodies on the block, never by their points. Mutants: a
 /// budget for each point or each way (the block takes more than the bodies on it times its
 /// work); the block's work left shared by nothing at all (it takes whatever stops the
-/// bodies). Fixture: boxes
-/// 0.4 m wide abreast inside one column of the leaf's 1 m cells, 57 t at 4.5 m/s apiece, far
-/// more than the column's bonds take, read on the step the first cells leave; two blocks are
-/// equal when their prices are.
+/// bodies). Fixture: boxes 0.4 m wide abreast inside one column of the leaf's 1 m cells, 57 t
+/// at 4.5 m/s apiece, far more than the column's bonds take, read on the step the first cells
+/// leave; two blocks are equal when their prices are.
 #[test]
 fn bodies_parting_a_block_together_do_its_work_once_each_at_most() {
     for bodies in [1_usize, 2] {
-        let (mut app, _, first) = wall_and_box(57_000.0, START, 4.5);
+        let (mut app, root, first) = wall_and_box(57_000.0, START, 4.5);
         app.world_mut().despawn(first);
         for n in 0..bodies {
             app.world_mut().spawn((
@@ -365,7 +379,7 @@ fn bodies_parting_a_block_together_do_its_work_once_each_at_most() {
             !parted.is_empty(),
             "fixture: the boxes part blocks: {rows:?}"
         );
-        let rounding = 2.0 * rounding(&app) * 0.5 * 57_000.0 * 4.5 * 4.5;
+        let rounding = 2.0 * rounding(&app, root) * 0.5 * 57_000.0 * 4.5 * 4.5;
         for row in parted {
             let on = (rows.iter().filter(|other| other.price == row.price)).count();
             assert_eq!(on, bodies, "fixture: every box is on every block: {rows:?}");
@@ -564,10 +578,11 @@ fn a_belt_keeps_what_standing_matter_returns() {
 /// belt's points not counted (the cells never leave); cells freed by the press alone (they
 /// leave on the first tick); a way spent on the counted work alone (the last step is rationed
 /// to the work left and the belt keeps less than it pressed with, so the count closes on the
-/// way's work over several more ticks). Fixture: a body too heavy for the force to slow, advancing at 2 mm/s under half
-/// the least force any way of the cell holds, so the belt keeps its whole force whichever way
-/// is priced and each tick does `F v dt`; the work is one count on the cell, so the way spent
-/// first is the least in work, whatever it holds, due on tick `W / (F v dt)`, rounded up.
+/// way's work over several more ticks). Fixture: a body too heavy for the force to slow,
+/// advancing at 2 mm/s under half the least force any way of the cell holds, so the belt
+/// keeps its whole force whichever way is priced and each tick does `F v dt`; the work is one
+/// count on the cell, so the way spent first is the least in work, whatever it holds, due on
+/// tick `W / (F v dt)`, rounded up.
 #[test]
 fn cells_a_belt_advances_into_leave_on_the_step_that_spends_their_work() {
     let (mut app, force, ways, dt) = wall_and_belt(1e9);

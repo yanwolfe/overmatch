@@ -518,9 +518,8 @@ fn points_held_at_their_bound_do_the_budget_whatever_their_number() {
 /// Fixture: a 2 kg box on the slab, on four points and on sixteen, under a 2,000 kg box, both
 /// at 4 m/s; the light box's points in a group of 100 N·s a step and a budget of 1,000 J, the
 /// contact between the boxes Avian's. A step does about 400 J, so the count is due on the
-/// third. The driver's push on the piece is solved before the piece's points on the slab and
-/// again in the next pass, so the speed a point's cut reads is not the speed the substep ends
-/// at, and the substep that reaches the budget may pass it. Premise of the bound on that: the
+/// third. The substep that reaches the budget may pass it (the cause: the design narrative,
+/// "Overshoot within one substep"). Premise of the bound on that: the
 /// points return at most the group's bound a substep, closing no faster than the approach
 /// (MEASURED: the count is 1,015.5 J on four points and 1,018.0 J on sixteen). The pair's
 /// energy is counted too: each solve that raises the points' impulse parts the boxes and lets
@@ -557,7 +556,7 @@ fn a_light_body_pressed_by_a_heavy_one_costs_the_pair_the_budget() {
             entry.reached == Some(3)
                 && done >= f64::from(work)
                 && done < f64::from(work) + a_substep,
-            "{shape:?}: the light box's points did {done} J of a budget of {work} J, counted \
+            "{shape:?}: the light box's points did {done} J of a budget of {work} J, reached \
              on step {:?}",
             entry.reached
         );
@@ -629,9 +628,11 @@ fn a_body_at_rest_or_held_still_does_no_work() {
 /// slab, flooring each point first moved no count by a thousandth). Fixture: a 2 kg box on
 /// sixteen points 5 cm into the slab under a 2,000 kg box 5 cm into it, both at 0.25 m/s, the
 /// points in a group of 100 N·s a step on a budget far over the pair's energy, read over the
-/// first step. Premise: the contact between the two boxes gives the pair no energy (MEASURED:
-/// the count is 20.92 J of the 21.28 J the pair lost). Mutant: each point's work floored
-/// before the sum (MEASURED: 23.02 J).
+/// first step. Premises: the contact between the two boxes gives the pair no energy; pushing
+/// the two overlaps out gives it none either; and no substep's signed sum is negative here,
+/// so the floor per substep takes nothing off the pair's loss (MEASURED: the count is 20.92 J
+/// of the 21.28 J the pair lost). Mutant: each point's work floored before the sum (MEASURED:
+/// 23.02 J).
 #[test]
 fn a_driven_pieces_count_is_no_more_than_the_pair_lost() {
     let (light, heavy, into, approach) = (2.0_f32, 2_000.0, 0.05, 0.25);
@@ -656,10 +657,11 @@ fn a_driven_pieces_count_is_no_more_than_the_pair_lost() {
 /// A body that keeps paying reaches a budget's work exactly, within a few steps of coming
 /// within rounding of it: the building model parts a block on `taken >= work` with no
 /// allowance (`fracture::bound::Price::spent`). Each step hands the points what is left; the
-/// count meets it but for the rounding of the points' moves, a fraction `ε · points` of what
-/// was handed at most, so what is left shrinks by that factor a step, and it is gone when it
-/// passes under the grain of the f64 the work is kept in: `ln ε64 / ln(ε32 · points)` steps,
-/// rounded up (3 on one point, 4 on sixteen; MEASURED over 540 budgets: none in 479, one step
+/// count meets it but for a step's rounding of the points' moves ([`rounding`]), a fraction
+/// `ε32 · points · substeps` of what was handed at most, so what is left shrinks by that
+/// factor a step, and it is gone when it passes under the grain of the f64 the work is kept
+/// in: `ln ε64 / ln(ε32 · points · substeps)` steps, rounded up (DERIVED, at six substeps: 3
+/// on one point and on four, 4 on sixteen; MEASURED over 540 budgets: none in 479, one step
 /// in 61, never more). Fixture: a 2,000 kg body at 4 m/s, free and held at 100 N·s a step, on
 /// budgets that measured one step late and on ones that measured none. Mutant: a count that
 /// drops what rounding left (the remainder never closes).
@@ -679,7 +681,7 @@ fn a_paying_body_reaches_the_work_exactly_within_the_remainders_bound() {
             ..default()
         });
         let it = body(&mut app, shape, mass, INTO, approach);
-        let grain = f32::EPSILON * shape.points() as f32;
+        let grain = rounding(&app, shape.points(), 1);
         let bound = (f64::EPSILON.ln() / f64::from(grain).ln()).ceil() as usize;
         let mut near = None;
         for n in 1..=32 {
