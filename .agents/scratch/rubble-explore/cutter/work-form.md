@@ -576,3 +576,98 @@ tables: `clips-work/instrument/measure/`.
 Not verified: the state of the unreproduced 124-step run; why the second clause's blocks return
 so little (masses not logged); checkpoint 3's tie rule under the a2r patch; the 2 km/h pass on
 c3 or a2r; any pass at more than five lines or on another machine load.
+
+# Second clause: which mechanism
+
+Subject: the game's building model (game state only). Measurement only; code is `f3193ea8`. The
+build measured is `f3193ea8` with a census probe (per substep and member point of every group on
+a crossing way: share, dealt work, impulse, clamped, held, lean, and the point's closing speed
+from the solver bodies before the substep's forces and after its relax solve; per block: the
+pressing body's mass, its effective mass along the push at the mean pressed point, and the
+dynamic bodies touching it at the step's start), two-thread pool. Passes: house end-on at five
+lines, house long wall at 10 km/h at five lines, wall at 2 km/h five times. It tests the three
+derivations of `second-clause-premise.md` section 1. All numbers MEASURED unless marked DERIVED.
+`L` is the work the way had left at the step's start. "True work" is the sum over the parting
+way's member points and the six substeps of impulse × ½(closing before the substep's forces +
+closing after its last solve). "Can pay alone" is ½ × effective mass × start closing² ≥ `L`
+(DERIVED from logged values). "Touched" is contact with another dynamic body at the step's start;
+whether that body pushed is not measured.
+
+## By the report's reading key
+
+| | end-on | long wall 10 km/h | wall 2 km/h |
+|---|---|---|---|
+| blocks parted by the second clause (cells) | 417 (1068) | 505 (1480) | 280 (707) |
+| could not pay, untouched (1.3 by the key) | 3 | 1 | 0 |
+| could pay or touched, held fraction under 0.5 (1.2 by the key) | 306 | 358 | 221 |
+| could pay or touched, true work ≥ 0.9 `L`, built count under half of it (1.1 by the key) | 0 | 0 | 0 |
+| none of the three | 108 | 146 | 59 |
+
+The three readings as keyed account for 74 %, 71 % and 79 % of the blocks. The rest are not a
+fourth mechanism: their held fraction is p50 0.80, 0.78, 0.87 and their true work p50 0.85,
+0.84, 0.89 of `L` with the built count equal to it (p50 1.00): the same parting, short of the
+work left by a sixth, by bodies that could pay.
+
+The key's first two rows do not separate 1.2 from 1.3, because "touched" is nearly universal.
+Split by what the body could pay alone:
+
+| pressing body | end-on | long wall | wall 2 km/h | held fraction, p50 | true work over `L`, p50 | own energy over `L`, p50 |
+|---|---|---|---|---|---|---|
+| can pay alone (the hull's: 21, 125, 76) | 77 | 163 | 79 | 0.80, 0.72, 0.78 | 0.86, 0.78, 0.77 | 5.3, 138, 33 |
+| cannot, touching the hull | 116 | 274 | 169 | 0.042, 0.003, 0.002 | 0.17, 0.054, 0.032 | 0.009, 0.006, 0.005 |
+| cannot, touching loose pieces only | 221 | 67 | 32 | 0.006, 0.000003, 0.008 | 0.078, 0.0001, 0.097 | 0.005, 0.003, 0.002 |
+| cannot, untouched | 3 | 1 | 0 | | | |
+
+So 82 %, 68 % and 72 % of the blocks are parted by a loose piece of p50 30 kg whose own energy
+is under 1 % of the work left, at a held fraction under 5 %, having done p50 0.01 % to 17 % of the
+work left across the rows above. Those pieces did 15 to 20 times their own energy, so something drove them; the log does
+not say what did beyond the touch.
+
+The tail the report asks about: of the blocks whose built count is under a tenth of `L` (138,
+186, 102), every held member's share is under 0.05 in 131, 177 and 100, and a held member's lean
+is under 0.5 in 114, 150 and 92. Held members hold p50 4 %, 8 % and 27 % of their dealt impulse.
+That is 1.3 as derived: a point at a collapsed share, cut by the work term, reads the group
+limited.
+
+1.1 is seen and carries nothing: true work over the sum of impulse × end speed is p50 1.09,
+1.07, 1.14 (p90 2.7, 2.7, 2.2), so the ration under-reads the work as derived, by a tenth at the
+median; no block has true work near `L` and a count far under it. The built count over the
+group's true work is p50 1.10, 1.07, 1.26; the count covers every point on the block's cells
+and the true work only the parting way's members, so the two are not the same sum.
+
+No block in these tables parted by the belt path: they are the solver-point loop's. The belt
+loop parted 7 blocks in the fifteen runs, 6 by the first clause and 1 by its second.
+
+## Replay of the hull's crossing steps (trajectory fixed, nothing built)
+
+Hull block-steps with a crossing way, and how many would part under each reading of the second
+clause:
+
+| reading | end-on | long wall | wall 2 km/h |
+|---|---|---|---|
+| hull block-steps with a crossing way | 128 | 269 | 472 |
+| as built: a crossing way limited | 83 | 186 | 112 |
+| first clause alone on a crossing way | 62 | 61 | 38 |
+| (b) equality: every substep's whole deal on held points | 36 | 26 | 15 |
+| (b) equality within 1 % | 37 | 27 | 16 |
+| (b) impulse: returned × closing ≥ `L` | 45 | 42 | 45 |
+| true work over the step ≥ `L` | 46 | 39 | 36 |
+
+## Code check
+
+Confirmed. The fork's substep order is integrate velocities, warm start, biased solve, integrate
+positions, relax (`SubstepSolverSystems`, chained in `schedule.rs`); `warm_start` applies the
+whole accumulated impulse to the bodies; `solve` computes `relative_velocity` from the bodies as
+they then are and `solve_impulse` takes `normal_speed` from it for `max_work / -normal_speed`.
+The ration bounds impulse times the speed left, after the warm start and every earlier row.
+
+## Saved, and not verified
+
+Probe patch, scripts and tables:
+`.agents/scratch/rubble-explore/clips-work/instrument/second-clause/` in the main checkout.
+
+Not verified: whether a touching body pushed (no impulse between dynamic bodies is logged), so
+"touched" over-reads "backed"; what drove the pieces that did many times their own energy;
+whether any reading of the replay would cross or stall, since a replay keeps the trajectory; the
+0.5 and 0.9 lines of the key are this pass's choices; the probe's closing speeds are the solver
+bodies' at two points of the substep and miss what happens between.
