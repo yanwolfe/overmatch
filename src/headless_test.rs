@@ -1213,8 +1213,28 @@ fn contact_law_service_stop_publishes_capacity_and_reports_rollback() {
     let mut reverse = 0.0_f32;
     let mut last = 0.0_f32;
     let mut capacity = 0.0_f32;
+    // Premise: on flat ground no solver contact loads a belt face, so each pass's capacity, which
+    // reads the step before it, is the sampled sum alone.
+    let hard = |app: &mut App| {
+        use crate::track::stop_contacts::{BeltFace, by_owner, reactions};
+        use bevy::ecs::system::RunSystemOnce;
+        app.world_mut()
+            .run_system_once(
+                move |transfers: Res<crate::contact_transfer::ContactTransfers>,
+                      faces: Query<(&BeltFace, &avian3d::prelude::ColliderOf)>| {
+                    by_owner(&transfers, &faces)
+                        .get(&tank)
+                        .is_some_and(|points| {
+                            reactions(points, transfers.dt(), &faces) != [None; 2]
+                        })
+                },
+            )
+            .unwrap()
+    };
+    assert!(!hard(&mut app));
     for _ in 0..20 * FIXED_TICKS_PER_SECOND {
         app.update();
+        assert!(!hard(&mut app), "a solver contact loaded a belt face");
         let world = app.world();
         last = world.get::<Position>(tank).unwrap().0.z;
         peak = peak.max(last);

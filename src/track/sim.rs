@@ -165,7 +165,10 @@ pub struct TrackGripEffect {
     pub tangential_force: Vec3,
     /// Contact capacity (N), before mobilization, for prospective stopping: this pass's sampled
     /// contacts' `mu × load`, plus the grip limit of the solver's belt-face contacts over the
-    /// physics step that just ran (`HardReaction::grip`). Each solid loads one of the two.
+    /// physics step that just ran (`HardReaction::grip`). The two are separate forces on the
+    /// hull, so the sum counts no load twice: a loose piece loads a belt through the solver alone
+    /// (`RubbleQuery::supports` refuses it), while terrain and standing cells may load both, the
+    /// sampled spring and a bump stop at full travel, each with its own normal force.
     pub traction_capacity_n: f32,
     /// Delivered world-space rolling force on the hull (N), for prospective stopping.
     pub rolling_force: Vec3,
@@ -1638,6 +1641,7 @@ fn apply_track_forces(
             gravity: gravity.0,
         };
         let hard = super::stop_contacts::reactions(
+            // No entry: no solver contact touched this tank's belt faces over the last step.
             supports
                 .hard_contacts
                 .get(&tank.entity)
@@ -1934,10 +1938,10 @@ mod tests {
         app
     }
 
-    /// Fixture: a left belt face on a 2 m square outline, bearing whole.
-    fn square_face() -> super::super::stop_contacts::BeltFace {
+    /// Fixture: `side`'s belt face on a 2 m square outline, bearing whole.
+    fn square_face(side: Side) -> super::super::stop_contacts::BeltFace {
         super::super::stop_contacts::BeltFace::new(
-            Side::Left,
+            side,
             vec![
                 Vec2::new(-1.0, -1.0),
                 Vec2::new(1.0, -1.0),
@@ -1946,6 +1950,32 @@ mod tests {
             ],
             super::super::stop_contacts::Bearing::Whole,
         )
+    }
+
+    /// Fixture: the reading of one physics step of `step` s in which each `(face, impulse, mu)` is
+    /// one solver point under `body`'s belt-face collider `face`: `impulse` (N s) is what the body
+    /// below took, `mu` the row's friction.
+    fn face_transfers(app: &mut App, body: Entity, points: &[(Entity, Vec3, f32)], step: f32) {
+        use crate::contact_transfer::{ContactTransfer, ContactTransfers};
+        let other = app.world_mut().spawn_empty().id();
+        let groups = points
+            .iter()
+            .map(|&(face, impulse, friction)| {
+                vec![ContactTransfer {
+                    reference: body,
+                    reference_collider: face,
+                    other,
+                    other_collider: other,
+                    point: Vec3::Y * 99.0,
+                    normal: Vec3::NEG_Y,
+                    impulse,
+                    effective_mass: 1.0,
+                    closing_speed: 0.0,
+                    friction,
+                }]
+            })
+            .collect();
+        app.insert_resource(ContactTransfers::fixture(groups, step));
     }
 
     /// Avian's tick-start velocity state on `body`, then the production adapter once.
@@ -2308,7 +2338,9 @@ mod tests {
                         },
                     ));
                 }
-                app.world_mut().entity_mut(root).insert(square_face());
+                app.world_mut()
+                    .entity_mut(root)
+                    .insert(square_face(Side::Left));
                 let y = app.world().get::<Position>(root).unwrap().0.y;
                 app.world_mut().spawn((
                     RigidBody::Static,
@@ -2463,7 +2495,7 @@ mod tests {
                                 SleepingDisabled,
                                 LockedAxes::ROTATION_LOCKED,
                                 Friction::new(1.0), // Fixture grip exceeds tan(30 degrees).
-                                square_face(),
+                                square_face(Side::Left),
                             ));
                             let size = Vec3::new(20.0, 1.0, 20.0); // Fixture slab dimensions, m.
                             let centre = top - rotation * Vec3::Y * size.y * 0.5;
@@ -2777,7 +2809,6 @@ mod tests {
     /// their same-step exchange; billing them again can reverse an airborne belt.
     #[test]
     fn solver_contact_history_does_not_charge_a_belt_again() {
-        use crate::contact_transfer::{ContactTransfer, ContactTransfers};
         let step = 1.0 / 64.0; // Fixture transfer interval, s.
         let run = |impulse: f32| {
             let mu = 0.712; // Fixture contact friction.
@@ -2786,7 +2817,7 @@ mod tests {
             let mut drive = TrackDrive::default();
             drive.sides.iter_mut().for_each(|side| side.speed = 2.0);
             app.world_mut().entity_mut(root).insert((
-                square_face(),
+                square_face(Side::Left),
                 drive,
                 ParsedTankCommand::try_from(crate::command::TankCommand {
                     throttle: 1.0,
@@ -2800,22 +2831,8 @@ mod tests {
             ));
             app.update();
             app.update();
-            let other = app.world_mut().spawn_empty().id();
-            app.insert_resource(ContactTransfers::fixture(
-                vec![vec![ContactTransfer {
-                    reference: root,
-                    reference_collider: root,
-                    other,
-                    other_collider: other,
-                    point: Vec3::Y * 99.0,
-                    normal: Vec3::NEG_Y,
-                    impulse: Vec3::Z * impulse - Vec3::Y * (impulse / mu),
-                    effective_mass: 1.0,
-                    closing_speed: 0.0,
-                    friction: mu,
-                }]],
-                step,
-            ));
+            let moved = Vec3::Z * impulse - Vec3::Y * (impulse / mu);
+            face_transfers(&mut app, root, &[(root, moved, mu)], step);
             // The second driving pass closes the first's ledger sample with the transfer read.
             run_adapter(&mut app, &[(root, Vec3::ZERO)]);
             run_adapter(&mut app, &[(root, Vec3::ZERO)]);
@@ -2854,36 +2871,38 @@ mod tests {
     }
 
     /// A hull whose weight rests wholly on solver belt-face rows (a soft run or a bump stop on
-    /// loose pieces) reports those rows' grip limit as its capacity. A stopping forecast relies
-    /// on it (`TrackGear::braking_deceleration`): a sum over sampled contacts alone reads zero
-    /// here and plans a stop with no grip.
+    /// loose pieces) reports the sum of both sides' grip limits as its capacity. A stopping
+    /// forecast relies on it (`TrackGear::braking_deceleration`): a sum over sampled contacts
+    /// alone reads zero here and plans a stop with no grip; one side alone, or the greater side,
+    /// reads short.
     #[test]
     fn capacity_counts_the_grip_of_solver_belt_contacts() {
-        use crate::contact_transfer::{ContactTransfer, ContactTransfers};
         let step = 1.0 / 64.0; // Fixture transfer interval, s.
         let mu = 0.712; // Fixture contact friction.
         let (mut app, _) = adapter_app();
         let root = fixture_tank(&mut app, Vec3::Y * 100.0); // Fixture: no spring support.
-        app.world_mut().entity_mut(root).insert(square_face());
+        app.world_mut()
+            .entity_mut(root)
+            .insert(square_face(Side::Left));
+        let right = app
+            .world_mut()
+            .spawn((
+                square_face(Side::Right),
+                avian3d::prelude::Collider::sphere(0.1), // Fixture: a collider to own the face.
+                ChildOf(root),
+            ))
+            .id();
         app.update();
         app.update();
         let weight = app.world().resource::<TrackGear>().construction.weight_n();
-        let other = app.world_mut().spawn_empty().id();
-        app.insert_resource(ContactTransfers::fixture(
-            vec![vec![ContactTransfer {
-                reference: root,
-                reference_collider: root,
-                other,
-                other_collider: other,
-                point: Vec3::Y * 99.0,
-                normal: Vec3::NEG_Y,
-                impulse: Vec3::NEG_Y * weight * step,
-                effective_mass: 1.0,
-                closing_speed: 0.0,
-                friction: mu,
-            }]],
+        // Fixture: the weight's shares on the left and right faces.
+        let press = |share: f32| Vec3::NEG_Y * share * weight * step;
+        face_transfers(
+            &mut app,
+            root,
+            &[(root, press(0.75), mu), (right, press(0.25), mu)],
             step,
-        ));
+        );
         run_adapter(&mut app, &[(root, Vec3::ZERO)]);
         let world = app.world();
         assert!(
@@ -2896,7 +2915,7 @@ mod tests {
             .get::<TrackGripEffect>(root)
             .unwrap()
             .traction_capacity_n;
-        // Resolution: the impulse's product and quotient by the step round in f32.
+        // Resolution: each impulse's product and quotient by the step round in f32.
         assert!(
             (capacity - mu * weight).abs() <= mu * weight * 1e-6,
             "{capacity} N of {} N",
@@ -4495,6 +4514,14 @@ mod tests {
                 Some(oracle.with_ground(Some(crate::ground_field::GroundField::uniform(ground))));
         }
         hull.distance = 0.0;
+        // Premise: the adapter runs no contact solve, so capacity is the sampled sum alone.
+        assert!(
+            (hull.app.world())
+                .resource::<crate::contact_transfer::ContactTransfers>()
+                .solver_groups()
+                .next()
+                .is_none()
+        );
         let mut peak = 0.0_f32;
         let mut reverse = 0.0_f32;
         let mut capacity = 0.0_f32;

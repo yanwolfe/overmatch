@@ -53,8 +53,8 @@ Run B of each pass (the second, with the friction readings). Support in % of W; 
 | pile, parked (12.5 s) | 0 / 0 | 34.1 | 57.1 | 11.1 | top −2.6 | −34.5 (park) | −37.3 / 4.2 / −1.1 |
 | pile, full throttle from rest (3 s) | 1.61 / 1.62 (window mean), 1 % | 28.3 | 56.1 | 17.2 | top −2.6 | 62.0 | 17.4 / 31.2 / −0.5 |
 
-- The parked split in run A: soft run 63.2, stop 7.3, sampled 32.0 (the earlier section read
-  58.6 / 5.9 / 38.1).
+- The parked split in run A: soft run 63.2, stop 7.3, sampled 32.0 (`work-form.md`, "Parked on pieces",
+  read 58.6 / 5.9 / 38.1).
 - A hull started from rest with 73 % of its weight on pieces drives off them: 4.8 m in 3 s at
   1 % slip, the soft runs delivering the largest share of the drive (31.2 kN of 48.1 kN).
 - Crossing the house the belts carry 84 % of the weight on pieces and deliver 53.2 kN of the
@@ -104,7 +104,7 @@ drive is not lost at the belt: it is lost with the load.
 Nothing in the force balance. Left to the eye, not to a law found missing:
 - Whether a hull should come down onto its underside on a heap this size within 3 s. The
   readings that decide it are the heap's, not the belt's: how fast pieces leave from under a
-  slipping belt, and the 20 cm of soft-run overlap a parked hull shows (earlier section).
+  slipping belt, and the 20 cm of soft-run overlap a parked hull shows (`work-form.md`, "Parked on pieces").
 - The two runs' different ends from one recipe.
 
 ## Not verified
