@@ -62,14 +62,17 @@ struct Group {
     most: Bound,
 }
 
-/// A read manifold's prepared constraint, and of each of its points this substep's bound and the
-/// normal impulse it has returned over the step, N·s.
+/// A read manifold's prepared constraint, and of each of its points this substep's bound, the
+/// groups that dealt it (its impulse, its work), the normal impulse it has returned over the
+/// step, N·s, and the group whose bound the step's last solve left it holding, if any.
 #[derive(Debug)]
 struct Manifold {
     /// Colour and index in it; `None` for a manifold the step prepared no constraint for.
     slot: Option<(usize, usize)>,
     points: Vec<Bound>,
+    dealers: Vec<[usize; 2]>,
     returned: Vec<f32>,
+    limited: Vec<Option<usize>>,
 }
 
 /// This step's groups, in the order their writers named them.
@@ -90,11 +93,15 @@ impl Bounds {
             .or_insert(Manifold {
                 slot: None,
                 points: Vec::new(),
+                dealers: Vec::new(),
                 returned: Vec::new(),
+                limited: Vec::new(),
             });
         if manifold.points.len() <= point {
             manifold.points.resize(point + 1, Bound::RIGID);
             manifold.returned.resize(point + 1, 0.0);
+            manifold.dealers.resize(point + 1, [usize::MAX; 2]);
+            manifold.limited.resize(point + 1, None);
         }
     }
 
@@ -135,6 +142,17 @@ impl Bounds {
         (self.groups[group].members.iter())
             .map(|member| self.impulse(member.contact, member.manifold, member.point) * member.lean)
             .sum()
+    }
+
+    /// Whether group `group` did not stop what closed on it over the last step: the step's last
+    /// solve left one of its points holding an impulse at the bound this group dealt it, so the
+    /// approach there wanted more than the group could return. A point held at another group's
+    /// lesser bound says nothing of this one.
+    pub fn limited(&self, group: usize) -> bool {
+        (self.groups[group].members.iter()).any(|member| {
+            self.manifolds[&(member.contact.0, member.manifold)].limited[member.point]
+                == Some(group)
+        })
     }
 }
 
@@ -272,11 +290,12 @@ pub(crate) fn deal(
     let substep = (substeps.0 as f32).recip();
     for manifold in manifolds.values_mut() {
         manifold.points.fill(Bound::RIGID);
+        manifold.dealers.fill([usize::MAX; 2]);
         if *dealt {
             manifold.add_returned(&constraints); // What the last substep applied.
         }
     }
-    for group in groups.iter_mut() {
+    for (index, group) in groups.iter().enumerate() {
         // A member whose manifold has no constraint this step carries and wants nothing.
         let carried: Vec<f32> = (group.members.iter())
             .map(|member| {
@@ -290,12 +309,23 @@ pub(crate) fn deal(
         let work = group.most.work * substep;
         let shares = shares(&carried, &wanting, !*dealt, impulse);
         for (member, share) in group.members.iter().zip(shares) {
-            let point = &mut manifolds
+            let manifold = manifolds
                 .get_mut(&(member.contact.0, member.manifold))
-                .expect("the group's manifolds are in the store")
-                .points[member.point];
-            point.impulse = point.impulse.min(impulse * share / member.lean);
-            point.work = point.work.min(work * share);
+                .expect("the group's manifolds are in the store");
+            let (point, dealers) = (
+                &mut manifold.points[member.point],
+                &mut manifold.dealers[member.point],
+            );
+            let dealt = Bound {
+                impulse: impulse * share / member.lean,
+                work: work * share,
+            };
+            if dealt.impulse < point.impulse {
+                (point.impulse, dealers[0]) = (dealt.impulse, index);
+            }
+            if dealt.work < point.work {
+                (point.work, dealers[1]) = (dealt.work, index);
+            }
         }
     }
     *dealt = true;
@@ -327,10 +357,25 @@ impl Manifold {
 }
 
 /// After the step's last solve: what the last substep and restitution applied
-/// ([`Bounds::impulse`]).
+/// ([`Bounds::impulse`]), and which points that solve left at their bound ([`Bounds::limited`]).
 fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
     for manifold in bounds.manifolds.values_mut() {
         manifold.add_returned(&constraints);
+        let Some((color, index)) = manifold.slot else {
+            continue; // No constraint: its points returned nothing and met no bound.
+        };
+        let constraint = &constraints.colors[color].contact_constraints[index];
+        for ((limited, dealers), point) in
+            (manifold.limited.iter_mut().zip(&manifold.dealers)).zip(&constraint.points)
+        {
+            let part = &point.normal_part;
+            // A point dealt nothing sits at its bound without holding anything back. The solve
+            // clamps at the lesser of the impulse bound and the work bound at its closing speed:
+            // short of the first, it was held by the second.
+            *limited = (part.clamped && part.impulse > 0.0)
+                .then(|| dealers[usize::from(part.impulse < part.max_impulse)])
+                .filter(|&dealer| dealer != usize::MAX);
+        }
     }
 }
 

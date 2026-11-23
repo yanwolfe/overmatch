@@ -78,20 +78,27 @@ fn a_leaf_gives_to_a_body_its_bonds_cannot_stop_and_stops_one_they_can() {
     );
 }
 
-/// Invariant: a cell's bonds take the work a body does on them and no more, they never give it
-/// back, and a block leaves on the step its cells' work reaches a way's and on no other. The
-/// stall the law replaced was this count lost; every body meeting standing matter relies on it.
-/// The bound on the work is the body's own loss: with no gravity and nothing else touching it,
-/// what its kinetic energy fell by is the most its contacts did on anything. Mutants: the work
-/// counted once per give that holds a point, or at the price in place of what was returned (it
-/// passes the body's loss); the count cleared on a step that frees nothing (a cell's work
-/// falls); a block freed short of its work or kept past it. Fixture: 57 t at 4.5 m/s and at
-/// 0.5 m/s, the energy read until the first cells leave and become bodies of their own.
+/// Invariant: a cell's bonds never give work back, they take no more than the body lost, and
+/// cells leave only on a step that spent a way: its work reached, or all it had left held in the
+/// step. The stall the law replaced was this count lost; every body meeting standing matter
+/// relies on it. The bound on the work is the body's own loss: with no gravity and nothing else
+/// touching it, what its kinetic energy fell by is the most its contacts did on anything.
+/// Mutants: the work counted once per give that holds a point, or at the price in place of what
+/// was returned (it passes the body's loss); the count cleared on a step that frees nothing (a
+/// cell's work falls); a block kept past its work; a block freed by a touch (cells leave on a
+/// step whose rows show neither). Fixture: 57 t at 4.5 m/s and at 0.5 m/s, the energy read
+/// until the first cells leave and become bodies of their own.
 #[test]
-fn bonds_take_the_work_done_on_them_once_and_part_when_it_reaches_their_price() {
+fn bonds_take_the_work_done_on_them_once_and_part_only_when_a_way_is_spent() {
     for speed in [4.5_f32, 0.5] {
         let mass = 57_000.0_f32;
         let (mut app, root, body) = wall_and_box(mass, START, speed);
+        let dt = f64::from(
+            app.world()
+                .resource::<Time<Fixed>>()
+                .timestep()
+                .as_secs_f32(),
+        );
         let lost = |app: &App| {
             let after = app.world().get::<LinearVelocity>(body).unwrap().0;
             0.5 * f64::from(mass) * f64::from(speed * speed - after.length_squared())
@@ -107,11 +114,17 @@ fn bonds_take_the_work_done_on_them_once_and_part_when_it_reaches_their_price() 
             );
             let account = app.world().resource::<BoundAccount>();
             let reached = (account.blocks.iter()).any(|block| block.taken >= block.price[1]);
-            assert_eq!(
-                reached,
-                !account.freed.is_empty(),
-                "tick {tick}: cells leave when a block's work reaches its price, and only \
-                 then: {:?}",
+            // `reaction` rations a step below the way's strength only when the body crosses the
+            // give left within it.
+            let held_all = (account.blocks.iter()).any(|block| block.bound < block.price[0] * dt);
+            assert!(
+                !reached || !account.freed.is_empty(),
+                "tick {tick}: a block stands past its work: {:?}",
+                account.blocks
+            );
+            assert!(
+                account.freed.is_empty() || reached || held_all,
+                "tick {tick}: cells leave with no way spent: {:?}",
                 account.blocks
             );
             if !parted {
@@ -130,15 +143,85 @@ fn bonds_take_the_work_done_on_them_once_and_part_when_it_reaches_their_price() 
     }
 }
 
-/// Invariant: work is force through an advance, so a body that does not advance does none: one
-/// pushed back out of the cells it overlaps, and one held against them by a force they bear.
-/// Rubble born beside standing matter and rubble resting on it rely on this not to wear a
-/// building away. Mutants: the advance read before the solve, or its sign dropped (the body
-/// pushed out does work); the work counted from the impulse alone (the held body's grows every
-/// step). Fixture: a 1 t box 50 mm inside the leaf's face and at rest; the same box touching the
-/// face under 5 kN, read over 6 s after 1 s to settle.
+/// Fixture: the two cells squarely in the box's path, (2, 1) and (3, 1) of the wall's 1 m by
+/// 0.6 m cells.
+const AHEAD: [usize; 2] = [2 + 6, 3 + 6];
+
+/// Invariant: a way whose step held all the work it had left, and did not stop the body, is
+/// spent on that step, so a cell does not stand while a body it cannot stop is deeper in it than
+/// its give and the travel of the steps that find and cross it. A hull driving through a wall
+/// relies on it: cells that stood on while returning nothing let it sink 0.1 to 0.25 m into
+/// standing matter (MEASURED before this rule, 10 km/h). Mutant: a block parted on the counted
+/// work alone (the last work is rationed at the solve's speed and counted at a lower one, so
+/// the count closes on the way's work without reaching it). Fixture: 57 t at 0.5 m/s; two
+/// steps of travel, one for the narrow phase to hand the contact over and one to cross.
 #[test]
-fn a_body_pushed_out_or_held_does_no_work() {
+fn a_cell_does_not_stand_in_a_body_past_its_give() {
+    let speed = 0.5_f32;
+    let (mut app, root, body) = wall_and_box(57_000.0, START, speed);
+    let dt = app
+        .world()
+        .resource::<Time<Fixed>>()
+        .timestep()
+        .as_secs_f32();
+    let mut give = 0.0_f64;
+    for tick in 0..160 {
+        app.update();
+        let world = app.world();
+        give = (world.resource::<BoundAccount>().blocks.iter())
+            .map(|block| block.price[1] / block.price[0])
+            .fold(give, f64::max);
+        let state = &world.get::<Breakage>(root).unwrap().live.state;
+        if AHEAD.iter().any(|&c| state.standing(c)) {
+            let inside = world.get::<Position>(body).unwrap().0.z + BOX.z / 2.0 + WALL.z / 2.0;
+            assert!(
+                f64::from(inside) <= give + f64::from(2.0 * speed * dt),
+                "tick {tick}: the box is {inside} m inside cells that stand, their give {give} m"
+            );
+        }
+    }
+    let state = &app.world().get::<Breakage>(root).unwrap().live.state;
+    assert!(
+        AHEAD.iter().all(|&c| !state.standing(c)),
+        "the box frees the cells in its path"
+    );
+}
+
+/// Invariant: the work a cell takes is the impulse it returned times the body's mean speed into
+/// it over the step, which for a force constant over the step is the work that force did. So a
+/// body the cells stop gives them the kinetic energy it lost, however few steps the stop takes.
+/// Loose pieces rely on it: one stopped inside a step is charged half its entry speed times the
+/// impulse, and one thrown is not charged at the speed it left with. Mutants: the speed read at
+/// the step's end alone (a body stopped in one step does no work), or at its start alone (twice
+/// the loss). Fixture: 20 kg at 4.5 m/s, which the leaf stops; no gravity. The stop is uneven
+/// over the face, so up to a tenth of the loss goes to friction and to the spin it leaves.
+#[test]
+fn cells_take_the_kinetic_energy_of_a_body_they_stop() {
+    let (mass, speed) = (20.0_f32, 4.5_f32);
+    let (mut app, root, body) = wall_and_box(mass, START, speed);
+    for _ in 0..64 {
+        app.update();
+    }
+    let after = app.world().get::<LinearVelocity>(body).unwrap().0;
+    let lost = 0.5 * f64::from(mass) * f64::from(speed * speed - after.length_squared());
+    let taken = work(&app, root).iter().sum::<f64>();
+    assert!(
+        after.z < 0.01 * speed && taken <= lost && taken > 0.9 * lost,
+        "the stopped box, now at {after} m/s, lost {lost} J and the cells took {taken} J"
+    );
+}
+
+/// Invariant: work is force through an advance, so a body that does not advance does none: one
+/// pushed back out of the cells it overlaps, one held against them by a force they bear, and one
+/// resting on them under gravity. Rubble born beside standing matter and rubble resting on it
+/// rely on this not to wear a building away. Mutants: the sign of the advance dropped (the body
+/// pushed out does work); the work counted from the impulse alone, or the entering speed read
+/// after the step's forces are added to it (the held and the resting body are charged every
+/// step: the resting one its weight times half a step's fall). Fixture: a 1 t box 50 mm inside
+/// the leaf's face and at rest; the same box touching the face under 5 kN, and under a gravity
+/// turned along +z, which makes the face its floor, each read over 6 s after 1 s to settle.
+#[test]
+fn a_body_pushed_out_held_or_resting_does_no_work() {
     let face = -WALL.z / 2.0 - BOX.z / 2.0;
     let (mut app, root, _) = wall_and_box(1000.0, Vec3::new(0.0, 1.0, face + 0.05), 0.0);
     for _ in 0..64 {
@@ -147,25 +230,31 @@ fn a_body_pushed_out_or_held_does_no_work() {
     }
     assert_eq!(work(&app, root).iter().sum::<f64>(), 0.0);
 
-    let (mut app, root, body) = wall_and_box(1000.0, Vec3::new(0.0, 1.0, face + 0.001), 0.0);
-    (app.world_mut().entity_mut(body)).insert(ConstantForce(Vec3::Z * 5000.0));
-    for _ in 0..64 {
-        app.update();
+    for gravity in [false, true] {
+        let (mut app, root, body) = wall_and_box(1000.0, Vec3::new(0.0, 1.0, face + 0.001), 0.0);
+        if gravity {
+            app.insert_resource(Gravity(Vec3::Z * 9.81));
+        } else {
+            (app.world_mut().entity_mut(body)).insert(ConstantForce(Vec3::Z * 5000.0));
+        }
+        for _ in 0..64 {
+            app.update();
+        }
+        let settled = work(&app, root).iter().sum::<f64>();
+        for _ in 0..384 {
+            app.update();
+        }
+        let account = app.world().resource::<BoundAccount>();
+        let least = (account.blocks.iter())
+            .map(|block| block.price[1])
+            .fold(f64::INFINITY, f64::min);
+        let grown = work(&app, root).iter().sum::<f64>() - settled;
+        assert!(
+            // The solver leaves a held body a residual speed of f32 rounding.
+            least.is_finite() && grown < 1e-5 * least,
+            "gravity {gravity}: over 6 s the cells took {grown} J against a price of {least} J"
+        );
     }
-    let settled = work(&app, root).iter().sum::<f64>();
-    for _ in 0..384 {
-        app.update();
-    }
-    let account = app.world().resource::<BoundAccount>();
-    let least = (account.blocks.iter())
-        .map(|block| block.price[1])
-        .fold(f64::INFINITY, f64::min);
-    let grown = work(&app, root).iter().sum::<f64>() - settled;
-    assert!(
-        // The solver leaves a held body a residual speed of f32 rounding.
-        least.is_finite() && grown < 1e-5 * least,
-        "held for 6 s, the cells took {grown} J against a price of {least} J"
-    );
 }
 
 /// Fixture: one force on a belt's body, staged every tick while set.
@@ -268,16 +357,17 @@ fn a_belt_keeps_what_standing_matter_returns() {
 }
 
 /// Invariant: a belt's force on standing cells is read as a contact point's is: the cells take
-/// what they returned times the belt's advance into them, and leave when that reaches the work
-/// of a way to give, not before. A hull whose belts ride onto standing matter relies on it; the
-/// staged force has no solver point to be read from. Mutants: the belt's points not counted
-/// (the cells never leave), cells freed by the press alone (they leave on the first tick).
-/// Fixture: a body too heavy for the force to slow, advancing at 2 mm/s under half the least
-/// force the cell holds, so the cell's least work is due after `W / (F v dt)` ticks. The last
-/// step's work is rationed to what is left and a ration is met from below, so the sum lands on
-/// the price a few steps late.
+/// what they returned times the belt's advance into them, and leave on the step that spends a
+/// way's work, not before and not after. A hull whose belts ride onto standing matter relies on
+/// it; the staged force has no solver point to be read from. Mutants: the belt's points not
+/// counted (the cells never leave); cells freed by the press alone (they leave on the first
+/// tick); a way spent on the counted work alone (the last step is rationed to the work left and
+/// the belt keeps less than it pressed with, so the count closes on the way's work over several
+/// more ticks). Fixture: a body too heavy for the force to slow, advancing at 2 mm/s under half
+/// the least force the cell holds, so each tick does `F v dt` and the way's work is due on tick
+/// `W / (F v dt)`, rounded up.
 #[test]
-fn cells_a_belt_advances_into_leave_when_its_work_reaches_their_price() {
+fn cells_a_belt_advances_into_leave_on_the_step_that_spends_their_work() {
     let (mut app, force, ways, dt) = wall_and_belt(1e9);
     let pressing = 0.5 * ways[0].0.force.min(ways[1].0.force);
     let (least, leaves) = (ways.iter())
@@ -296,7 +386,7 @@ fn cells_a_belt_advances_into_leave_when_its_work_reaches_their_price() {
         app.update();
         ticks += 1.0;
         assert!(
-            ticks < due + 6.0,
+            ticks <= due.ceil(),
             "the cell stands past its work, {due} ticks"
         );
     }
@@ -304,7 +394,7 @@ fn cells_a_belt_advances_into_leave_when_its_work_reaches_their_price() {
         .map(|&(_, c)| usize::from(c))
         .collect();
     assert!(
-        ticks >= due.floor() && freed == *leaves,
+        ticks == due.ceil() && freed == *leaves,
         "cells {freed:?} left after {ticks} ticks; the work is due after {due}"
     );
 }

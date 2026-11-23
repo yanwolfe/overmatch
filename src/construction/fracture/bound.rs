@@ -54,18 +54,30 @@ pub(crate) fn taken(work: &[f64], cells: &[usize]) -> f64 {
     cells.iter().map(|&c| work[c]).sum()
 }
 
+/// The give cells priced at `price` have left, m, their bonds having taken `taken` J: the
+/// distance over which they still return their strength.
+fn give_left(price: Price, taken: f64) -> f64 {
+    (price.work - taken).max(0.0) / price.force
+}
+
+/// Whether a body closing at `closing` m/s on cells priced at `price` crosses the give they have
+/// left ([`give_left`]) within a step of `dt` s: the step then holds all the work the bonds can
+/// still take. Cells that hold nothing have no give to cross.
+pub(crate) fn crosses(price: Price, taken: f64, closing: f64, dt: f64) -> bool {
+    price.force > 0.0 && closing * dt > give_left(price, taken)
+}
+
 /// The impulse cells priced at `price` return over a step of `dt` s to a body closing on them at
 /// `closing` m/s, N·s, their bonds having taken `taken` J already: their strength for the step,
-/// or for the time the body takes to do the work left, whichever is shorter. The second holds no
-/// `dt`, which is what makes a fast body's loss independent of the step.
+/// or for the time the body takes to do the work left, whichever is shorter ([`crosses`]). The
+/// second holds no `dt`, which is what makes a fast body's loss independent of the step.
 pub(crate) fn reaction(price: Price, taken: f64, closing: f64, dt: f64) -> f64 {
     if price.force <= 0.0 {
         return 0.0; // Nothing holds it.
     }
-    let left = (price.work - taken).max(0.0) / price.force;
     price.force
-        * if closing * dt > left {
-            left / closing
+        * if crosses(price, taken, closing, dt) {
+            give_left(price, taken) / closing
         } else {
             dt
         }
@@ -102,6 +114,8 @@ pub(crate) struct Yield {
     pub price: Price,
     /// The most the cells return along the push this step, N·s ([`reaction`]).
     pub impulse: f64,
+    /// Whether the body crosses the give the cells have left within the step ([`crosses`]).
+    pub crossing: bool,
     /// The cells that leave if it gives, ordered.
     pub leaves: Vec<usize>,
 }
@@ -333,6 +347,7 @@ impl Standing<'_> {
                     push,
                     price,
                     impulse,
+                    crossing: crosses(price, taken, push.closing, dt),
                     leaves,
                 });
             }

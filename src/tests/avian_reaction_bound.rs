@@ -20,6 +20,8 @@ enum Hand {
     Point(Bound),
     /// To all the points of all manifolds between them, as one group.
     Block(Bound),
+    /// To all the points between them, as two groups over the same points.
+    Blocks(Bound, Bound),
 }
 
 /// The groups the last step named.
@@ -53,12 +55,29 @@ fn hand_over(
             }
         }
         Some(Hand::Block(most)) => named.0.push(bounds.group(members, most)),
+        Some(Hand::Blocks(one, other)) => {
+            named.0.push(bounds.group(members.clone(), one));
+            named.0.push(bounds.group(members, other));
+        }
     }
 }
 
 /// What the groups' points returned between them over the last step, N·s.
 fn returned(bounds: Res<Bounds>, named: Res<Named>) -> f32 {
     named.0.iter().map(|&group| bounds.returned(group)).sum()
+}
+
+/// Which of the groups the last step left limited.
+fn limited(bounds: Res<Bounds>, named: Res<Named>) -> Vec<bool> {
+    named.0.iter().map(|&group| bounds.limited(group)).collect()
+}
+
+/// [`press`] over two updates; what [`limited`] reads after the second, the first step.
+fn limits(mass: f32, approach: f32, each: Hand) -> Vec<bool> {
+    let (mut app, _) = pressing(mass, approach, Some(each), false);
+    app.update();
+    app.update();
+    app.world_mut().run_system_once(limited).unwrap()
 }
 
 /// Fixture: a box of `mass` kg closing at `approach` m/s, without gravity, on a slab whose four
@@ -71,6 +90,19 @@ fn press(mass: f32, approach: f32, each: Option<Hand>) -> (Vec<f32>, Vec<f32>) {
 /// [`press`]; with `idle`, a second box rests on the slab beside the first, closing on nothing,
 /// so its face points carry no load.
 fn press_beside(mass: f32, approach: f32, each: Option<Hand>, idle: bool) -> (Vec<f32>, Vec<f32>) {
+    let (mut app, cube) = pressing(mass, approach, each, idle);
+    let mut speeds = vec![];
+    let mut reports = vec![];
+    for _ in 0..4 {
+        app.update();
+        speeds.push(app.world().get::<LinearVelocity>(cube).unwrap().0.y);
+        reports.push(app.world_mut().run_system_once(returned).unwrap());
+    }
+    (speeds, reports)
+}
+
+/// The app of [`press_beside`] before its first update, and the closing box.
+fn pressing(mass: f32, approach: f32, each: Option<Hand>, idle: bool) -> (App, Entity) {
     let mut app = super::avian_child_pose_churn::physics_app();
     app.insert_resource(Gravity(Vec3::ZERO))
         .insert_resource(Each(each))
@@ -102,14 +134,43 @@ fn press_beside(mass: f32, approach: f32, each: Option<Hand>, idle: bool) -> (Ve
             Position(Vec3::new(1.5, 0.999, 0.0)),
         ));
     }
-    let mut speeds = vec![];
-    let mut reports = vec![];
-    for _ in 0..4 {
-        app.update();
-        speeds.push(app.world().get::<LinearVelocity>(cube).unwrap().0.y);
-        reports.push(app.world_mut().run_system_once(returned).unwrap());
-    }
-    (speeds, reports)
+    (app, cube)
+}
+
+/// A group reads as limited when the step's last solve left a point at the bound that group
+/// dealt it, and only then. The building model's release relies on it to tell a way that could
+/// not stop a body from one whose points another, cheaper way held. Fixture: the 2,000 kg box
+/// closing at 4 m/s, which 8,000 N·s stops. Mutants: every group of a clamped point read as
+/// limited (the generous group beside a tight one reads limited); a point's clamp never read
+/// (the tight group does not).
+#[test]
+fn a_group_is_limited_by_its_own_bound_alone() {
+    let (mass, approach) = (2_000.0_f32, 4.0);
+    let rigid = Bound::RIGID;
+    let (tight, generous) = (
+        Bound {
+            impulse: 100.0,
+            ..rigid
+        },
+        Bound {
+            impulse: 4.0 * mass * approach,
+            ..rigid
+        },
+    );
+    assert_eq!(limits(mass, approach, Hand::Block(tight)), [true]);
+    assert_eq!(limits(mass, approach, Hand::Block(generous)), [false]);
+    assert_eq!(
+        limits(mass, approach, Hand::Blocks(tight, generous)),
+        [true, false]
+    );
+    let worked = Bound {
+        impulse: 4.0 * mass * approach,
+        work: 400.0,
+    };
+    assert_eq!(
+        limits(mass, approach, Hand::Blocks(worked, generous)),
+        [true, false]
+    );
 }
 
 /// A bounded point returns its bound over the step, whatever the approach needs, and what its

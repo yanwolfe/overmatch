@@ -12,8 +12,15 @@
 //! * [`bound_belts`], before the step: the force a belt takes from standing matter, which has no
 //!   solver point, is bounded by the same price; the belt keeps what the cells can return.
 //! * [`release`], after the step: every point adds to its cell ([`Live::work`]) what it returned
-//!   times how far its body advanced into the cell there as the solve left it; nothing removes
-//!   it. A block whose cells' work has reached a way's leaves that way.
+//!   times how fast its body advanced into the cell there, the mean of the step's start and
+//!   end; nothing removes it. A block leaves a way when its cells' work has reached the way's,
+//!   or when the step held all the work the way had left and still did not stop the body
+//!   ([`settle`]).
+//!
+//! Work is one number per cell, whoever did it and along whichever way: every way a block gives
+//! is charged with all of it ([`fracture::bound::taken`]), so a way may part on work done along
+//! another, or by another body. MEASURED on the shipped map's wall, house and hall: of the cells
+//! that part, 23 to 44 % leave through a way whose own body added under a tenth of its work.
 //!
 //! One physics step runs between two [`release`]s: [`Pressed`] holds the step's solver point
 //! keys, and `Bounds` holds a step's impulses only until the next step clears them, so a second
@@ -67,6 +74,8 @@ struct Point {
     arm: Vec3,
     /// Unit, from the body into the cell, world.
     into: Vec3,
+    /// The body's speed into the cell there at the step's start, before the step's forces, m/s.
+    entering: f32,
     returned: Returned,
 }
 
@@ -76,18 +85,19 @@ struct Point {
 struct Press {
     points: Vec<Point>,
     blocks: Vec<Block>,
-    /// The cells (ordered) each belt bears on as one block, and how they give to it.
-    belts: Vec<(Vec<usize>, Yield)>,
+    /// The cells (ordered) each belt bears on as one block, how they give to it, and whether
+    /// the belt pressed harder than they returned.
+    belts: Vec<(Vec<usize>, Yield, bool)>,
 }
 
 /// What pressed each owner since the last [`release`], which takes it every tick.
 #[derive(Resource, Default, Debug)]
 pub(crate) struct Pressed(BTreeMap<Entity, Press>);
 
-/// One block's step, for the operator's instruments: the way its work reaches first, which is
-/// the way it parts by. Work is kept per cell, never per way, and a step's impulse belongs to
-/// points that several ways' groups share, so no way is the one that took the step's work:
-/// `closing`, `bound` and `returned` are this way's, and it may have carried nothing this step.
+/// One block's step, for the operator's instruments: the way it parted by, or the way its work
+/// reaches first. Work is kept per cell, never per way, and a step's impulse belongs to points
+/// that several ways' groups share, so no way is the one that took the step's work: `closing`,
+/// `bound` and `returned` are this way's, and it may have carried nothing this step.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BlockRow {
     pub(crate) body: Entity,
@@ -442,18 +452,23 @@ fn bound_contacts(mut p: BoundContacts) {
     for ((root, _, _, bodies), priced) in pressed.iter().zip(priced) {
         let press = p.pressed.0.entry(*root).or_default();
         for (body, touches) in bodies {
-            let (_, at, facing, _, _, centre, ..) =
+            // The velocities are the step's start: Avian adds a step's forces to its solver
+            // bodies inside the substep (`integrate_velocities`) and writes them back to these
+            // components after the solve.
+            let (_, at, facing, linear, angular, centre, ..) =
                 (p.movers.get(*body)).expect("the body was read from this query");
             let centre = at.0 + facing.0 * centre.0;
             // Every point on a standing cell is read, in a bounded block or not.
             for touch in touches {
                 let (contact, manifold, point) = touch.point;
                 p.bounds.read(ContactId(contact), manifold, point);
+                let arm = touch.at - centre;
                 press.points.push(Point {
                     body: *body,
                     cell: touch.cell,
-                    arm: touch.at - centre,
+                    arm,
                     into: touch.toward,
+                    entering: (linear.0 + angular.0.cross(arm)).dot(touch.toward),
                     returned: Returned::Solved(ContactId(contact), manifold, point),
                 });
             }
@@ -561,9 +576,20 @@ struct Release<'w, 's> {
     stages: Option<Res<'w, Stages>>,
 }
 
-/// One owner's step settled: `press`'s points add their work to `work` (per chunk, J), in their
-/// order, and the blocks whose cells' work has reached a way's leave that way. Returns the
-/// contact blocks' rows and the cells that leave.
+/// One owner's step settled. Each of `press`'s points adds to its cell in `work` (per chunk, J),
+/// in their order, the impulse it returned times the body's speed into the cell there, the mean
+/// of the step's start and end: under forces constant over a step a body's speed is linear in
+/// time, so that is the work the impulse did, whatever else pushed the body. A body backing out
+/// on that mean did none.
+///
+/// A block then leaves by the first of its ways, cheapest in work first, that is spent: its
+/// cells' work has reached the way's; or the body was crossing all the give the way had left
+/// within the step ([`Yield::crossing`]), so the step held every joule the bonds could still
+/// take, and the way did not stop it (`Bounds::limited`; a belt pressed harder than the cells
+/// returned). The solve rations that last work at its own closing speed, which the count above
+/// does not read, so the count alone lands under the way's work on every such step and never
+/// reaches it. The cells a block presses all leave with it, so that work has no cell left to be
+/// written on. Returns the contact blocks' rows and the cells that leave.
 fn settle(
     work: &mut [f64],
     press: &Press,
@@ -574,10 +600,8 @@ fn settle(
         let Ok((linear, angular)) = movers.get(point.body) else {
             continue; // The body left the world inside the tick: it advanced into nothing.
         };
-        // How fast the body advances into the cell at the point as the solve left it; over the
-        // step that is a distance, and against the force returned there, work. A body held or
-        // parting does none.
-        let advance = (linear.0 + angular.0.cross(point.arm)).dot(point.into);
+        let leaving = (linear.0 + angular.0.cross(point.arm)).dot(point.into);
+        let advance = 0.5 * (point.entering + leaving);
         let returned = match point.returned {
             Returned::Solved(contact, manifold, at) => bounds.impulse(contact, manifold, at),
             Returned::Staged(kept) => kept,
@@ -588,10 +612,12 @@ fn settle(
     let mut rows = Vec::with_capacity(press.blocks.len());
     for block in &press.blocks {
         let taken = taken(work, &block.cells);
-        // Work only rises, so of a block's ways the one it reaches first takes the least.
-        let (given, group) = (block.gives.iter())
-            .min_by(|(a, _), (b, _)| a.price.work.total_cmp(&b.price.work))
-            .expect("a block holds a way to give");
+        let mut ways: Vec<&(Yield, usize)> = block.gives.iter().collect();
+        ways.sort_by(|(a, _), (b, _)| a.price.work.total_cmp(&b.price.work));
+        let parted = (ways.iter().copied()).find(|(given, group)| {
+            given.price.spent(taken) || given.crossing && bounds.limited(*group)
+        });
+        let (given, group) = parted.unwrap_or_else(|| ways.first().expect("a block holds a way"));
         rows.push(BlockRow {
             body: block.body,
             cells: block.cells.len(),
@@ -602,12 +628,12 @@ fn settle(
             taken,
             returned: bounds.returned(*group),
         });
-        if given.price.spent(taken) {
+        if parted.is_some() {
             leaving.extend(&given.leaves);
         }
     }
-    for (cells, given) in &press.belts {
-        if given.price.spent(taken(work, cells)) {
+    for (cells, given, pressed_past) in &press.belts {
+        if given.price.spent(taken(work, cells)) || given.crossing && *pressed_past {
             leaving.extend(&given.leaves);
         }
     }
@@ -689,6 +715,8 @@ struct Borne {
     body: Entity,
     /// The body's centre of mass, m, world.
     centre: Vec3,
+    /// The body's linear and angular velocity at the step's start, world.
+    motion: [Vec3; 2],
     /// The cells, ordered, and how they give to the belt; no way when none is open, and the
     /// cells bear whatever the belt presses with.
     cells: Vec<usize>,
@@ -734,6 +762,7 @@ fn borne(standing: Standing, to_owner: Quat, belt: &Belt, dt: f64) -> Vec<Borne>
             Borne {
                 body: belt.body,
                 centre,
+                motion: [linear, angular],
                 cells,
                 given,
                 kept,
@@ -809,18 +838,21 @@ fn bound_belts(mut p: BoundBelts) {
                 let Ok(onto) = Dir3::new(-force) else {
                     continue; // The belt bears nothing here.
                 };
+                let arm = at - block.centre;
+                let [linear, angular] = block.motion;
                 press.points.push(Point {
                     body: block.body,
                     cell,
-                    arm: at - block.centre,
+                    arm,
                     into: *onto,
+                    entering: (linear + angular.cross(arm)).dot(*onto),
                     returned: Returned::Staged(
                         (f64::from(force.length()) * block.kept * f64::from(dt)) as f32,
                     ),
                 });
             }
             if let Some(given) = block.given {
-                press.belts.push((block.cells, given));
+                press.belts.push((block.cells, given, block.kept < 1.0));
             }
         }
     }
