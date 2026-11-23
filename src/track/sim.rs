@@ -163,7 +163,9 @@ pub struct TrackGrip {
 pub struct TrackGripEffect {
     /// Total world-space grip and rolling force on the hull (N).
     pub tangential_force: Vec3,
-    /// Current contact capacity (N), before mobilization, for prospective stopping.
+    /// Contact capacity (N), before mobilization, for prospective stopping: this pass's sampled
+    /// contacts' `mu × load`, plus the grip limit of the solver's belt-face contacts over the
+    /// physics step that just ran (`HardReaction::grip`). Each solid loads one of the two.
     pub traction_capacity_n: f32,
     /// Delivered world-space rolling force on the hull (N), for prospective stopping.
     pub rolling_force: Vec3,
@@ -1635,6 +1637,14 @@ fn apply_track_forces(
                 .to_mat3(),
             gravity: gravity.0,
         };
+        let hard = super::stop_contacts::reactions(
+            supports
+                .hard_contacts
+                .get(&tank.entity)
+                .map_or(&[], Vec::as_slice),
+            supports.hard_dt,
+            &faces,
+        );
         #[cfg_attr(
             not(feature = "bitprobe"),
             expect(
@@ -1657,14 +1667,7 @@ fn apply_track_forces(
                 elements: &mut tank.elements,
                 transmission: tank.transmission.0,
                 sense: &mut tank.sense,
-                hard_reactions: super::stop_contacts::reactions(
-                    supports
-                        .hard_contacts
-                        .get(&tank.entity)
-                        .map_or(&[], Vec::as_slice),
-                    supports.hard_dt,
-                    &faces,
-                ),
+                hard_reactions: hard,
             },
         );
         #[cfg(feature = "bitprobe")]
@@ -1702,7 +1705,10 @@ fn apply_track_forces(
             .extend(contacts().filter_map(|contact| contact.collider));
         last.colliders.sort_unstable();
         last.colliders.dedup();
-        let mut effect = TrackGripEffect::default();
+        let mut effect = TrackGripEffect {
+            traction_capacity_n: hard.iter().flatten().map(|hard| hard.grip).sum(),
+            ..default()
+        };
         for (si, report) in reports.into_iter().enumerate() {
             effect.belt_reaction[si] = report.belt_reaction;
             for contact in &report.contacts {
@@ -2844,6 +2850,57 @@ mod tests {
         assert!(
             (push[0].abs() - traction).abs() <= traction * 1e-6,
             "the Driver reads the delivered traction, {push:?}"
+        );
+    }
+
+    /// A hull whose weight rests wholly on solver belt-face rows (a soft run or a bump stop on
+    /// loose pieces) reports those rows' grip limit as its capacity. A stopping forecast relies
+    /// on it (`TrackGear::braking_deceleration`): a sum over sampled contacts alone reads zero
+    /// here and plans a stop with no grip.
+    #[test]
+    fn capacity_counts_the_grip_of_solver_belt_contacts() {
+        use crate::contact_transfer::{ContactTransfer, ContactTransfers};
+        let step = 1.0 / 64.0; // Fixture transfer interval, s.
+        let mu = 0.712; // Fixture contact friction.
+        let (mut app, _) = adapter_app();
+        let root = fixture_tank(&mut app, Vec3::Y * 100.0); // Fixture: no spring support.
+        app.world_mut().entity_mut(root).insert(square_face());
+        app.update();
+        app.update();
+        let weight = app.world().resource::<TrackGear>().construction.weight_n();
+        let other = app.world_mut().spawn_empty().id();
+        app.insert_resource(ContactTransfers::fixture(
+            vec![vec![ContactTransfer {
+                reference: root,
+                reference_collider: root,
+                other,
+                other_collider: other,
+                point: Vec3::Y * 99.0,
+                normal: Vec3::NEG_Y,
+                impulse: Vec3::NEG_Y * weight * step,
+                effective_mass: 1.0,
+                closing_speed: 0.0,
+                friction: mu,
+            }]],
+            step,
+        ));
+        run_adapter(&mut app, &[(root, Vec3::ZERO)]);
+        let world = app.world();
+        assert!(
+            (world.get::<TrackContacts>(root).unwrap().0)
+                .iter()
+                .all(Vec::is_empty),
+            "the fixture loads no sampled contact"
+        );
+        let capacity = world
+            .get::<TrackGripEffect>(root)
+            .unwrap()
+            .traction_capacity_n;
+        // Resolution: the impulse's product and quotient by the step round in f32.
+        assert!(
+            (capacity - mu * weight).abs() <= mu * weight * 1e-6,
+            "{capacity} N of {} N",
+            mu * weight
         );
     }
 
