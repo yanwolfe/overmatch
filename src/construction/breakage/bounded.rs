@@ -55,7 +55,11 @@ enum Returned {
     /// A solver point's normal impulse, read after the solve ([`Bounds::impulse`]): its contact
     /// pair, manifold and point.
     Solved(ContactId, usize, usize),
-    /// What a belt's body kept of a staged force, N·s.
+    /// What a belt's body kept of a staged force, N·s. The belt law has no solver point and
+    /// stages its friction itself, so the force is its support and both tangent terms
+    /// (`track::rubble::source_force`); [`bound_belts`] bounds the sum of a block's forces whole,
+    /// and the work is counted along each whole force, where a solver point's is its normal
+    /// impulse's alone.
     Staged(f32),
 }
 
@@ -603,7 +607,15 @@ fn settle(
             Returned::Solved(contact, manifold, at) => bounds.impulse(contact, manifold, at),
             Returned::Staged(kept) => kept,
         };
-        work[point.cell] += f64::from(returned) * f64::from(advance.max(0.0));
+        let joules = f64::from(returned) * f64::from(advance);
+        assert!(
+            joules.is_finite(),
+            "work is kept for good, and body {} did {joules} J on cell {} (returned {returned} \
+             N·s, advancing {advance} m/s)",
+            point.body,
+            point.cell
+        );
+        work[point.cell] += joules.max(0.0);
     }
     let mut leaving = BTreeSet::new();
     let mut rows = Vec::with_capacity(press.blocks.len());

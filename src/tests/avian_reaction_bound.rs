@@ -22,11 +22,13 @@ enum Hand {
     Block(Bound),
     /// To all the points between them, as two groups over the same points.
     Blocks(Bound, Bound),
+    /// No bound: every point is read, in no group.
+    Read,
 }
 
-/// The groups the last step named.
+/// The groups the last step named, and the points it read in no group.
 #[derive(Resource, Default)]
-struct Named(Vec<usize>);
+struct Named(Vec<usize>, Vec<Member>);
 
 fn hand_over(
     graph: Res<ContactGraph>,
@@ -35,6 +37,7 @@ fn hand_over(
     mut named: ResMut<Named>,
 ) {
     named.0.clear();
+    named.1.clear();
     let members: Vec<Member> = (graph.iter_active())
         .flat_map(|pair| {
             (pair.manifolds.iter().enumerate()).flat_map(move |(manifold, points)| {
@@ -59,12 +62,23 @@ fn hand_over(
             named.0.push(bounds.group(members.clone(), one));
             named.0.push(bounds.group(members, other));
         }
+        Some(Hand::Read) => {
+            for member in &members {
+                bounds.read(member.contact, member.manifold, member.point);
+            }
+            named.1 = members;
+        }
     }
 }
 
-/// What the groups' points returned between them over the last step, N·s.
+/// What the groups' points and the points read in no group returned between them over the last
+/// step, N·s.
 fn returned(bounds: Res<Bounds>, named: Res<Named>) -> f32 {
-    named.0.iter().map(|&group| bounds.returned(group)).sum()
+    let groups: f32 = named.0.iter().map(|&group| bounds.returned(group)).sum();
+    let read: f32 = (named.1.iter())
+        .map(|member| bounds.impulse(member.contact, member.manifold, member.point))
+        .sum();
+    groups + read
 }
 
 /// Which of the groups the last step left limited.
@@ -137,39 +151,60 @@ fn pressing(mass: f32, approach: f32, each: Option<Hand>, idle: bool) -> (App, E
     (app, cube)
 }
 
-/// A group reads as limited when the step's last solve left a point at the bound that group
-/// dealt it, and only then. The building model's release relies on it to tell a way that could
-/// not stop a body from one whose points another, cheaper way held. Fixture: the 2,000 kg box
-/// closing at 4 m/s, which 8,000 N·s stops. Mutants: every group of a clamped point read as
-/// limited (the generous group beside a tight one reads limited); a point's clamp never read
-/// (the tight group does not).
+/// A group reads as limited when the step's last solve left a point holding an impulse at the
+/// work bound that group dealt it, and only then. The building model's release
+/// (`breakage::bounded::settle`) relies on it to tell a way whose last work a body took without
+/// stopping from one held at its strength, and from one whose points another way held. Fixture:
+/// the 2,000 kg box closing at 4 m/s, 16,000 J, which 8,000 N·s stops; `worked` lets a step take
+/// 400 J and `tight` 100 N·s, each far short of stopping it. Mutants: a point held at its impulse
+/// bound read as limited (`tight` reads limited); the group that dealt a point's impulse bound
+/// taken for the one that dealt its work (`[generous, worked]` reads `[true, false]`); every
+/// group of a held point read as limited (`generous` beside `worked` reads limited); of two
+/// groups dealing the same work, one alone read as limited.
 #[test]
-fn a_group_is_limited_by_its_own_bound_alone() {
+fn a_group_is_limited_by_the_work_it_dealt_alone() {
     let (mass, approach) = (2_000.0_f32, 4.0);
-    let rigid = Bound::RIGID;
-    let (tight, generous) = (
-        Bound {
-            impulse: 100.0,
-            ..rigid
-        },
-        Bound {
-            impulse: 4.0 * mass * approach,
-            ..rigid
-        },
-    );
-    assert_eq!(limits(mass, approach, Hand::Block(tight)), [true]);
-    assert_eq!(limits(mass, approach, Hand::Block(generous)), [false]);
-    assert_eq!(
-        limits(mass, approach, Hand::Blocks(tight, generous)),
-        [true, false]
-    );
-    let worked = Bound {
+    let generous = Bound {
         impulse: 4.0 * mass * approach,
-        work: 400.0,
+        ..Bound::RIGID
     };
-    assert_eq!(
-        limits(mass, approach, Hand::Blocks(worked, generous)),
-        [true, false]
+    let tight = Bound {
+        impulse: 100.0,
+        ..Bound::RIGID
+    };
+    let worked = Bound {
+        work: 400.0,
+        ..generous
+    };
+    let limits = |each| limits(mass, approach, each);
+    assert_eq!(limits(Hand::Block(worked)), [true]);
+    assert_eq!(limits(Hand::Block(generous)), [false]);
+    assert_eq!(limits(Hand::Block(tight)), [false]);
+    assert_eq!(limits(Hand::Blocks(worked, generous)), [true, false]);
+    assert_eq!(limits(Hand::Blocks(generous, worked)), [false, true]);
+    // The impulse bound is `tight`'s and the work bound `worked`'s: the points end at whichever
+    // is less at the speed the solve finds, and only the work's group may read limited.
+    assert!(!limits(Hand::Blocks(tight, worked))[0]);
+    assert_eq!(limits(Hand::Blocks(worked, worked)), [true, true]);
+}
+
+/// A point read in no group returns what Avian's rigid contact does, and reads it, whether or
+/// not the step names any group anywhere. The building model's work account
+/// (`breakage::bounded::settle`) reads every point on a standing cell, in a bounded block or
+/// not, so a cell's work must not depend on what else is pressed that step. Fixture: the 2 kg
+/// box at 1 m/s, which the slab stops, alone in the world with every point read and none
+/// bounded. Mutant: the seam's systems skipped on a step with no group (the points read
+/// nothing).
+#[test]
+fn a_point_read_in_no_group_reads_what_it_returned() {
+    let (mass, approach) = (2.0_f32, 1.0);
+    let (speeds, read) = press(mass, approach, Some(Hand::Read));
+    // The app's first update runs no physics step.
+    let lost = (speeds[1] - speeds[0]) * mass;
+    assert!(
+        lost > 0.5 * mass * approach && (read[1] - lost).abs() < f32::EPSILON * 64.0 * lost,
+        "the box lost {lost} N·s in the step and its points read {}: {speeds:?}",
+        read[1]
     );
 }
 
