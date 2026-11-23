@@ -4,12 +4,14 @@ The law as built is stated once, in `.agents/scratch/strength-limited-contact-de
 
 # Work form: checkpoint 1
 
+Law as of `e9751c45`; replaced by `a0839b2d` (the count at the step's mean speed and a second spent clause), then `b6b776d5` (one budget per body and block), then `55abd699` (a block parts on its counted work alone; the design doc states the law).
+
 Subject: the game's building model (game state only). Lane `lane/work-form`, law commit `e9751c45` on `4edd1852`.
 
 The stall is gone at the plain wall: 9 of 9 passes at 10 km/h cross, and 2 km/h and the standing start cross too (MEASURED).
 Over-freeing is real: with the work form 29 to 96 % of the cells the contact law frees leave on ticks when only loose pieces, not the hull, parted a block (today 8 to 81 %), and every building keeps less in place (MEASURED).
 
-## The law as built at checkpoint 1 (SUPERSEDED: the count reads the step's mean speed and a second clause spends a way; see the design doc)
+## The law as built at checkpoint 1 (SUPERSEDED: the law as of `e9751c45`; the design doc states the current one)
 
 Every step, each contact point on a standing cell adds to that cell the normal impulse the solver returned there times the speed its body advances into the cell there as the solve left it (negatives add nothing). Impulse (N s) times speed (m/s) is the step's work (J): the step length is inside the impulse. Nothing removes it. A block is charged with all the work on its pressed cells; when that reaches the work `W` of a way the block gives, that way's `leaves` part.
 
@@ -94,7 +96,7 @@ Two-thread p95 stays under 15.6 ms in every pass except the end-on house (15.27 
 
 `construction::breakage::bounded` (5), `construction::fracture::bound`, `avian_ext::reaction_bound`, `tests::avian_reaction_bound`:
 
-- (SUPERSEDED: cells also leave by the second clause.) work per cell never decreases, a cell leaves if and only if a row's taken work reached its way's, and the work counted is at most the kinetic energy the body lost (a double count would break that bound; there is no separate duplicated-give fixture);
+- (SUPERSEDED: the fixtures as of `e9751c45`.) work per cell never decreases, a cell leaves if and only if a row's taken work reached its way's, and the work counted is at most the kinetic energy the body lost (a double count would break that bound; there is no separate duplicated-give fixture);
 - a body placed inside and pushed out adds exactly none; a held body adds 1.5e-3 J in 6 s (asserted small, not zero);
 - a belt keeps what standing matter returns, and the cells it advances into leave when their work reaches their price;
 - the read impulse equals the momentum the body lost.
@@ -132,6 +134,8 @@ Probe patch, run scripts, analysis scripts and their outputs: `/Users/Yan/github
 - The six lenses were not run by this lane.
 
 # Work form: checkpoint 2
+
+Law as of `e9751c45`; replaced by `a0839b2d`, then `b6b776d5`, then `55abd699` (a block parts on its counted work alone; the design doc states the law).
 
 Subject: the game's building model (game state only). Lane merged with main `6a443e8f` (`484541d0`); every number here is on the merged lane, checkpoint-1 law, release build, pool capped at two threads, the per-point probe logging in every run (so tick times carry its cost).
 
@@ -253,6 +257,8 @@ Scripts, plans, outputs and the unbuilt patch: `/Users/Yan/github/vikng-dev/over
 
 # Work form: checkpoint 3
 
+Law as of `a0839b2d`; replaced by `b6b776d5` (one budget per body and block), then `55abd699` (a block parts on its counted work alone; the design doc states the law).
+
 Subject: the game's building model (game state only). Lane `lane/work-form` on main `6a443e8f`; law commit `a0839b2d`, commitment pass `325c6083`. Passes: release build of `a0839b2d` with the per-point probe, pool capped at two threads, one tank. The commitment pass changed no arithmetic after that build and was not re-measured.
 
 Stall: gone, 11 of 11 plain-wall passes cross; deepest hull-to-standing overlap 0.001 to 0.066 m at the wall and 0.000 to 0.101 m over all passes (MEASURED; checkpoint 2: 0.056 to 0.253 m at the wall).
@@ -373,6 +379,8 @@ Probe patch, scripts, plans and outputs: `/Users/Yan/github/vikng-dev/overmatch/
 
 # Work form: fix pass
 
+Law as of `f3193ea8`; replaced by `b6b776d5`, then `55abd699` (a block parts on its counted work alone; the design doc states the law).
+
 Subject: the game's building model (game state only). The lens review's sections A to E (`lens-review-work-form.md`), on `5c0181ab`. Commits `9c2f3d10` (behaviour), `b0abda6a` (structure), `7b87d19a` (tests), `8ea98694` (prose), and this report's commit. Passes: release build of `8ea98694` with the per-point probe and stage timers, pool capped at two threads, one tank; the last commit changes comments and docs only.
 
 **Stopped after the re-measure on one of its conditions.** The house met end-on at governed speed keeps 0.09 in place against checkpoint 3's 0.19, a fall of 54 % (MEASURED, two runs, the same 1.187 m³ in both). Nothing was built to counter it, and the clips were not refilmed.
@@ -460,6 +468,8 @@ What was done with it: the gather and commit do not dominate, so the walk is unc
 - The clips in `clips-work/` are checkpoint 3's (`a0839b2d`) and do not show this code.
 
 # Work form: end-on and lag measurement
+
+Law as of `f3193ea8`; replaced by `b6b776d5`, then `55abd699` (a block parts on its counted work alone; the design doc states the law).
 
 Subject: the game's building model (game state only). Measurement only: no law changed, the
 lane's code is `f3193ea8`. Every result is an observation; a crossed or held pass and a larger or
@@ -579,6 +589,8 @@ c3 or a2r; any pass at more than five lines or on another machine load.
 
 # Second clause: which mechanism
 
+Law as of `f3193ea8`; replaced by `b6b776d5`, then `55abd699` (a block parts on its counted work alone; the design doc states the law).
+
 Subject: the game's building model (game state only). Measurement only; code is `f3193ea8`. The
 build measured is `f3193ea8` with a census probe (per substep and member point of every group on
 a crossing way: share, dealt work, impulse, clamped, held, lean, and the point's closing speed
@@ -673,6 +685,8 @@ whether any reading of the replay would cross or stall, since a replay keeps the
 bodies' at two points of the substep and miss what happens between.
 
 # One budget: checkpoint 1
+
+Law as of `b6b776d5`; replaced by `55abd699` (a block parts on its counted work alone; the design doc states the law).
 
 Subject: the game's building model (game state only). Build `b6b776d5` on `lane/work-form`: one
 work budget per body and block, spent inside the solve by true work. The law is stated once in
@@ -804,6 +818,8 @@ probe run, not a pass).
 
 
 # One budget: checkpoint 2
+
+Law as of `b6b776d5`; replaced by `55abd699` (a block parts on its counted work alone; the design doc states the law).
 
 Subject: the game's building model (game state only). The pass set on the build of `b6b776d5`
 (the law) with a temporary probe, never committed (kept at
@@ -951,6 +967,8 @@ Left `f3193ea8`, right the new build, labels burned in:
 - Friction work on standing cells (the attack's 1c) was not read.
 
 # One budget: spent-budget mechanism
+
+Law as of `b6b776d5`; replaced by `55abd699` (a block parts on its counted work alone; the design doc states the law).
 
 Subject: the game's building model (game state only). Measurement only, code at `b6b776d5`; a
 temporary probe, never committed (kept at

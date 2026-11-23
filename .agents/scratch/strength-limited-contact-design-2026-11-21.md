@@ -124,12 +124,11 @@ construction with a loose group is refused.
 - **A soft spring on yielding cells, a cap at the body's weight, turning freed cells to dust.**
   Each was a rule on one kind of contact; none survived its own run.
 - **Spent when clamped**: give counted at the price on any step a block's point ended at its
-  bound, steps bounded by force included, and forgotten on any other step (the law until the
-  work form above) or never forgotten. Kept, the long wall crossed slower than either arm alone
+  bound, steps bounded by force included, and forgotten on any other step (main's law before
+  this lane) or never forgotten. Kept, the long wall crossed slower than either arm alone
   and the junction still did not cross (MEASURED, checkpoint 1); forgotten, a plain wall held a
   slowed hull inside cells that never left: at 2 km/h, from a standing start and in 2 of 3
-  passes at 10 km/h (MEASURED, `work-form.md` checkpoint 1, the `TODAY` arm). The spent clause
-  above differs in firing only when the body crosses all the give left within the step.
+  passes at 10 km/h (MEASURED, `work-form.md` checkpoint 1, the `TODAY` arm).
 - **The work bound dealt per way and the second spent clause** (the law until the budget above):
   each way's work left was dealt to its points as `W / v` at the solve's closing speed, the count
   was taken after the step from the impulse and the mean of the step's start and end speeds, and
