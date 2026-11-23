@@ -32,7 +32,8 @@ use bevy::prelude::*;
 use bevy::tasks::{ComputeTaskPool, ParallelSlice};
 
 /// The most a group returns over a step: an impulse, N·s, and the work it does on the bodies
-/// closing through it, J. An infinite part leaves that side rigid.
+/// closing through it, J. A group's impulse is finite, since its deal carries the work; an
+/// infinite work leaves that side rigid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bound {
     pub impulse: f32,
@@ -70,7 +71,7 @@ struct Manifold {
     /// Colour and index in it; `None` for a manifold the step prepared no constraint for.
     slot: Option<(usize, usize)>,
     points: Vec<Bound>,
-    dealers: Vec<[usize; 2]>,
+    dealers: Vec<[Option<usize>; 2]>,
     returned: Vec<f32>,
     limited: Vec<Option<usize>>,
 }
@@ -100,7 +101,7 @@ impl Bounds {
         if manifold.points.len() <= point {
             manifold.points.resize(point + 1, Bound::RIGID);
             manifold.returned.resize(point + 1, 0.0);
-            manifold.dealers.resize(point + 1, [usize::MAX; 2]);
+            manifold.dealers.resize(point + 1, [None; 2]);
             manifold.limited.resize(point + 1, None);
         }
     }
@@ -120,8 +121,8 @@ impl Bounds {
         // Nothing a point carries measures the work it took, so the work follows the impulse's
         // deal; without an impulse bound there is no deal to follow.
         assert!(
-            most.impulse.is_finite() || members.len() == 1,
-            "a group of several points bounded in work alone has no deal"
+            most.impulse.is_finite(),
+            "a group bounded in work alone has no deal: {most:?}"
         );
         for member in &members {
             self.read(member.contact, member.manifold, member.point);
@@ -218,47 +219,37 @@ fn locate(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
     }
 }
 
-/// Each point's share of a group's bound, given what each carries against it (`carried`, a
-/// point's impulse times its lean), which points the last solve left at their bound
-/// (`wanting`), whether this is the step's first deal, and the bound. The shares sum to one, so
-/// the points' bounds sum to the group's whatever the split: a point keeps what it carries, and
-/// what the group has left goes evenly to the points that want more, or to all when none does.
-/// The first deal has no solve behind it and gives what is left to the points by what they
-/// carried into the step. Carried past the bound, every point is cut alike.
-fn shares(carried: &[f32], wanting: &[bool], first: bool, bound: f32) -> Vec<f32> {
-    let total: f32 = carried.iter().sum();
-    let count = carried.len() as f32;
-    if !bound.is_finite() {
-        return vec![count.recip(); carried.len()];
-    }
-    if total >= bound {
-        // A bound of nothing deals nothing; the split is then no one's.
-        return (carried.iter())
-            .map(|&carried| {
-                if total > 0.0 {
-                    carried / total
-                } else {
-                    count.recip()
-                }
-            })
-            .collect();
-    }
-    let left = bound - total;
-    let wanters = wanting.iter().filter(|&&wanting| wanting).count() as f32;
-    (carried.iter().zip(wanting))
-        .map(|(&carried, &wanting)| {
-            let of_left = if first && total > 0.0 {
+/// Each point's share of a group's bound, given what each carries against it (a point's
+/// impulse times its lean) and whether the last solve left it at its bound (`points`), whether
+/// this is the step's first deal, and the bound. The shares sum to one, so the points' bounds sum
+/// to the group's whatever the split: a point keeps what it carries, and what the group has left
+/// goes evenly to the points that want more, or to all when none does. The first deal has no
+/// solve behind it and gives what is left to the points by what they carried into the step.
+/// Carried past the bound, every point is cut alike.
+fn shares(points: &[(f32, bool)], first: bool, bound: f32) -> impl Iterator<Item = f32> + '_ {
+    let total: f32 = points.iter().map(|&(carried, _)| carried).sum();
+    let count = points.len() as f32;
+    let wanters = points.iter().filter(|&&(_, wanting)| wanting).count() as f32;
+    points.iter().map(move |&(carried, wanting)| {
+        if total >= bound {
+            // A bound of nothing deals nothing; the split is then no one's.
+            return if total > 0.0 {
                 carried / total
-            } else if first || wanters == 0.0 {
-                count.recip()
-            } else if wanting {
-                wanters.recip()
             } else {
-                0.0
+                count.recip()
             };
-            (carried + left * of_left) / bound
-        })
-        .collect()
+        }
+        let of_left = if first && total > 0.0 {
+            carried / total
+        } else if first || wanters == 0.0 {
+            count.recip()
+        } else if wanting {
+            wanters.recip()
+        } else {
+            0.0
+        };
+        (carried + (bound - total) * of_left) / bound
+    })
 }
 
 /// `member`'s prepared normal part; none when the step prepared its manifold no constraint.
@@ -273,11 +264,14 @@ fn part<'a>(
 
 /// Before each substep's solve: deals every group's bound over one substep to its points (the
 /// module doc) and cuts what a point carries to its bound. Another writer of the substep's
-/// constraints orders itself against this system.
+/// constraints orders itself against this system. Groups are dealt one after another, in their
+/// order: they share points, a shared point takes the least of its groups' deals, and of equal
+/// deals the first group's is the one it is held by ([`Bounds::limited`]).
 pub(crate) fn deal(
     mut bounds: ResMut<Bounds>,
     mut constraints: ResMut<ConstraintGraph>,
     substeps: Res<SubstepCount>,
+    mut points: Local<Vec<(f32, bool)>>,
 ) {
     if bounds.groups.is_empty() {
         return;
@@ -290,25 +284,22 @@ pub(crate) fn deal(
     let substep = (substeps.0 as f32).recip();
     for manifold in manifolds.values_mut() {
         manifold.points.fill(Bound::RIGID);
-        manifold.dealers.fill([usize::MAX; 2]);
+        manifold.dealers.fill([None; 2]);
         if *dealt {
             manifold.add_returned(&constraints); // What the last substep applied.
         }
     }
     for (index, group) in groups.iter().enumerate() {
+        points.clear();
         // A member whose manifold has no constraint this step carries and wants nothing.
-        let carried: Vec<f32> = (group.members.iter())
-            .map(|member| {
-                part(member, manifolds, &constraints).map_or(0.0, |part| part.impulse * member.lean)
+        points.extend(group.members.iter().map(|member| {
+            part(member, manifolds, &constraints).map_or((0.0, false), |part| {
+                (part.impulse * member.lean, part.clamped)
             })
-            .collect();
-        let wanting: Vec<bool> = (group.members.iter())
-            .map(|member| part(member, manifolds, &constraints).is_some_and(|part| part.clamped))
-            .collect();
+        }));
         let impulse = group.most.impulse * substep;
         let work = group.most.work * substep;
-        let shares = shares(&carried, &wanting, !*dealt, impulse);
-        for (member, share) in group.members.iter().zip(shares) {
+        for (member, share) in (group.members.iter()).zip(shares(&points, !*dealt, impulse)) {
             let manifold = manifolds
                 .get_mut(&(member.contact.0, member.manifold))
                 .expect("the group's manifolds are in the store");
@@ -321,10 +312,10 @@ pub(crate) fn deal(
                 work: work * share,
             };
             if dealt.impulse < point.impulse {
-                (point.impulse, dealers[0]) = (dealt.impulse, index);
+                (point.impulse, dealers[0]) = (dealt.impulse, Some(index));
             }
             if dealt.work < point.work {
-                (point.work, dealers[1]) = (dealt.work, index);
+                (point.work, dealers[1]) = (dealt.work, Some(index));
             }
         }
     }
@@ -374,7 +365,7 @@ fn read_bounds(mut bounds: ResMut<Bounds>, constraints: Res<ConstraintGraph>) {
             // short of the first, it was held by the second.
             *limited = (part.clamped && part.impulse > 0.0)
                 .then(|| dealers[usize::from(part.impulse < part.max_impulse)])
-                .filter(|&dealer| dealer != usize::MAX);
+                .flatten();
         }
     }
 }
@@ -409,7 +400,8 @@ mod tests {
         for carried in splits {
             for wanting in wants {
                 for first in [true, false] {
-                    let shares = shares(&carried, &wanting, first, bound);
+                    let points: Vec<(f32, bool)> = carried.into_iter().zip(wanting).collect();
+                    let shares: Vec<f32> = shares(&points, first, bound).collect();
                     let sum: f32 = shares.iter().sum();
                     assert!(
                         (sum - 1.0).abs() < 1e-5,

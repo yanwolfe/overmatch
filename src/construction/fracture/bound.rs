@@ -48,8 +48,11 @@ impl Price {
 }
 
 /// The work the bonds of `cells` have taken, J, `work` their structure's per chunk
-/// ([`Standing::work`]). Work is a scalar on a cell: every way a block gives is charged with all
-/// of it, whatever direction it was done in.
+/// ([`Standing::work`]). Work is one scalar per cell, whoever did it and along whichever way:
+/// every way a block gives is charged with all of it, so a way may part on work done along
+/// another, or by another body. That is a simplification, and its cost is MEASURED on a wall, a
+/// house and a hall a 57 t hull drives through: of the cells that part, 12 to 30 % leave through
+/// a way whose own body added under a tenth of the work on it.
 pub(crate) fn taken(work: &[f64], cells: &[usize]) -> f64 {
     cells.iter().map(|&c| work[c]).sum()
 }

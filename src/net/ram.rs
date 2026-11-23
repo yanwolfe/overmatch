@@ -257,7 +257,7 @@ struct BlockReadout {
     /// The pressing body's entity index.
     body: u32,
     cells: usize,
-    /// The way its work reaches first.
+    /// The way it parted by; standing, the way its work reaches first.
     way: &'static str,
     force_n: f32,
     work_j: f32,

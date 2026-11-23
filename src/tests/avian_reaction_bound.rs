@@ -218,14 +218,15 @@ fn a_bounded_point_returns_its_bound_over_the_step() {
 /// the kinetic energy a step removes is the points' work, whatever the speed, and a body whose
 /// energy the work exceeds is stopped. Relied on by the game's building model, where a body
 /// shoved inside a step meets a cell at a speed no writer saw. Fixture: a 2,000 kg box, four
-/// points of 100 J each; at 4 m/s and at 8 m/s a step removes 400 J. Mutant: the fork's work
-/// clamp removed (the contact is rigid and stops the box).
+/// points of 100 J each under an impulse bound no approach here reaches; at 4 m/s and at 8 m/s
+/// a step removes 400 J. Mutant: the fork's work clamp removed (the contact is rigid and stops
+/// the box).
 #[test]
 fn a_work_bounded_point_takes_its_work_at_the_speed_it_is_crossed() {
     let (mass, work) = (2_000.0_f32, 100.0);
     let each = Some(Hand::Point(Bound {
         work,
-        ..Bound::RIGID
+        impulse: 16.0 * mass,
     }));
     for approach in [4.0, 8.0] {
         let (speeds, _) = press(mass, approach, each);

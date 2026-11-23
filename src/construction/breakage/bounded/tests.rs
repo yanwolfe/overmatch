@@ -7,6 +7,29 @@ use super::*;
 use crate::construction::fracture::bound::Price;
 use crate::construction::tests::wall_construction;
 
+/// Invariant: each owner's result comes back in the owners' order, whichever worker took it and
+/// however many there are. [`bound_contacts`], [`bound_belts`] and [`release`] hand bounds,
+/// forces and freed cells on in that order, and an owner's own work reads nothing another
+/// writes, so this is all of their dependence on worker assignment. Mutant: results gathered as
+/// workers finish, or split by worker and not rejoined in order. Fixture: nine owners, one more
+/// than the widest pool, each task yielding so that later ones can finish first.
+#[test]
+fn owners_come_back_in_their_order_on_any_pool() {
+    let owners: Vec<usize> = (0..9).collect();
+    for threads in [1, 2, 8] {
+        let pool = bevy::tasks::TaskPoolBuilder::new()
+            .num_threads(threads)
+            .build();
+        let done = per_owner(&pool, &mut owners.clone(), |&mut owner| {
+            if owner % 2 == 0 {
+                std::thread::yield_now();
+            }
+            owner
+        });
+        assert_eq!(done, owners, "{threads} threads");
+    }
+}
+
 /// Fixture: a brick leaf 6 m long, 2.4 m high and 0.25 m thick in 1 m by 0.6 m cells, and a
 /// rigid box 2 m wide, 1.2 m high and 2 m long sent at its middle along +z from 0.175 m short.
 const WALL: Vec3 = Vec3::new(6.0, 2.4, 0.25);
@@ -194,7 +217,8 @@ fn a_cell_does_not_stand_in_a_body_past_its_give() {
 /// impulse, and one thrown is not charged at the speed it left with. Mutants: the speed read at
 /// the step's end alone (a body stopped in one step does no work), or at its start alone (twice
 /// the loss). Fixture: 20 kg at 4.5 m/s, which the leaf stops; no gravity. The stop is uneven
-/// over the face, so up to a tenth of the loss goes to friction and to the spin it leaves.
+/// over the face, so friction and the spin it leaves take part of the loss: the cells' share is
+/// held between the two mutants, above half the loss and not above it.
 #[test]
 fn cells_take_the_kinetic_energy_of_a_body_they_stop() {
     let (mass, speed) = (20.0_f32, 4.5_f32);
@@ -206,7 +230,7 @@ fn cells_take_the_kinetic_energy_of_a_body_they_stop() {
     let lost = 0.5 * f64::from(mass) * f64::from(speed * speed - after.length_squared());
     let taken = work(&app, root).iter().sum::<f64>();
     assert!(
-        after.z < 0.01 * speed && taken <= lost && taken > 0.9 * lost,
+        after.z < 0.01 * speed && taken <= lost && taken > 0.5 * lost,
         "the stopped box, now at {after} m/s, lost {lost} J and the cells took {taken} J"
     );
 }

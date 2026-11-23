@@ -6,12 +6,13 @@ was built or run; it cites code at `main` (`d10f30d9`) unless a lane is named; `
 MEASURED (with its record), DERIVED (with its inputs) or ASSUMED. The 57.6 t hull, `house_1`,
 `hall_1` and `fir_1` are fixtures, never the spec.
 
-## As built (2026-11-22)
+## As built (2026-11-23)
 
 This section is the law the game runs; it owns the narrative. Everything below it is the
 pre-build design check of 2026-11-21, kept as written: where the two differ, this section is the
 code. Measurements and the checkpoint tables are in
-`.agents/scratch/rubble-explore/cutter/mass-limited-build.md` and `commitment-pass.md`.
+`.agents/scratch/rubble-explore/cutter/mass-limited-build.md`, `commitment-pass.md` and
+`work-form.md`.
 
 ### The law
 
@@ -45,14 +46,33 @@ always sum to the block's. The fork carries only the per-point clamp (`OVERMATCH
 "Bounded contact").
 
 After the step, every contact point on a standing cell adds to that cell the normal impulse it
-returned times the speed its body advances into the cell there as the solve left it (a body held
-or parting adds nothing), and nothing removes it: the work is kept per cell on the construction
-(`Live::work`) and leaves with the cell. A block is charged with all the work on its cells,
-whatever body or direction did it. When that reaches the work of a way the block gives, the
-least first, that way's boundary joints part, and its cells and whatever they alone held up leave
-at rest as ordinary rubble. A belt's sampled support on standing matter is bounded by the same
-price before the step and its work is counted the same way, from the force the belt kept and its
-body's advance. The support check hears no contact: it reads weights.
+returned times the body's speed into the cell there, the mean of the step's start (before the
+step's forces) and its end, negatives adding nothing. For a force constant over the step that is
+the work it did (DERIVED: the speed is then linear in time), so a body stopped inside one step
+is charged half its entry speed times the impulse, and a body held or resting is charged nothing.
+Nothing removes the work: it is kept per cell on the construction (`Live::work`) and leaves with
+the cell.
+
+A way of a block is spent, cheapest in work first, when the work on the block's cells has
+reached the way's, or when the step held all the work the way had left and still did not stop
+the body: the body was crossing the give left within the step, and the solve left a point at the
+bound that way dealt it. The second clause is exact, not a tolerance. The solve rations the
+last work at its own closing speed and the count reads another, so without it the count closes
+on `W` from below and never arrives: cells stood for a median 8 steps at 10 km/h inside a hull
+they returned nothing to, and the hull sank 0.11 to 0.25 m into standing matter (MEASURED,
+`work-form.md` checkpoint 2); with it the deepest overlap is 0.003 to 0.050 m at 10 km/h
+(MEASURED, checkpoint 3). A spent way's boundary joints part, and its cells and whatever they
+alone held up leave at rest as ordinary rubble. A belt's sampled support on standing matter is
+bounded by the same price before the step, counted the same way from the force the belt kept,
+and spent the same way when the belt pressed harder than the cells returned. The support check
+hears no contact: it reads weights.
+
+**Work is one scalar per cell**, whoever did it and along whichever way: a block is charged with
+all the work on its cells, so a way may part on work done along another way or by another body.
+The cost, MEASURED (checkpoint 3; wall, house and hall, a 57 t hull): 12 to 30 % of the cells
+that part leave through a way whose own body added under a tenth of the work on it, and a third
+to a half of the blocks a loose piece parts are of that kind. Accepted: a wall worked on from
+several sides is a damaged wall. A charge per direction is the alternative, not built.
 
 What stays rigid: an unbreakable element, a buried cell, a face slid along, and a block with no
 way open. `buried` is judged against the terrain at spawn (`Breakage::sited`), and a sited
@@ -73,11 +93,23 @@ construction with a loose group is refused.
   replaced it and needs no number.
 - **A soft spring on yielding cells, a cap at the body's weight, turning freed cells to dust.**
   Each was a rule on one kind of contact; none survived its own run.
-- **Give counted at the price on the steps a block read as spent**, forgotten on any other step
-  (the law until the work form above) or never forgotten: kept, the long wall crossed slower than
-  either arm alone and the junction still did not cross (MEASURED, checkpoint 1); forgotten, a
-  plain wall held a slowed hull inside cells that never left
-  (`.agents/scratch/rubble-explore/cutter/work-form.md`).
+- **Spent when clamped**: give counted at the price on any step a block's point ended at its
+  bound, steps bounded by force included, and forgotten on any other step (the law until the
+  work form above) or never forgotten. Kept, the long wall crossed slower than either arm alone
+  and the junction still did not cross (MEASURED, checkpoint 1); forgotten, a plain wall held a
+  slowed hull inside cells that never left: at 2 km/h, from a standing start and in 2 of 3
+  passes at 10 km/h (MEASURED, `work-form.md` checkpoint 1, the `TODAY` arm). The spent clause
+  above differs in firing only when the body crosses all the give left within the step.
+- **The work counted at the step's end speed alone** (the work form's first build). Off by the
+  impulse times half the body's speed change: nothing for a piece stopped inside the step, double
+  for one thrown (DERIVED); the fixture's stopped box was charged 14 J of the 186 J it lost
+  (MEASURED).
+- **Depth read from the contact** (the advance taken from the narrow phase's overlap) and
+  **depth gained** (work only for travel past the deepest the body had been in the cell, one
+  mark per contact). Replayed from logged rows, never built: a hull's pose barely advances on
+  the steps where cells return most while its velocity is kept (84, 7, 84 mm at a steady
+  5.38 m/s), so depth counts 55 and 50 % of the hull's work at 10 km/h, 34 % at 20 km/h and 16 %
+  at the junction, while loose pieces' work rises (MEASURED, `work-form.md` checkpoint 2).
 - **A slower push-out speed** (0.5 m/s for Avian's 4). The house keeps less and frees twice the
   pieces; the engine's default stays and the game states no number for it.
 - **Leaving with the pusher's momentum** (a plastic exchange at release) and **shared plugs**
@@ -87,10 +119,13 @@ construction with a loose group is refused.
 
 ### Known and accepted
 
-The hall junction does not cross at any contact speed. It is a strength stall: the pile bears on
-one pier stub, mostly downward, and that block holds under its shed price, whose `1 / (1 − μ)` is
-the stand-in above (MEASURED, checkpoint 6). No number is tuned for it; the sideways share of a
-push is the law that would settle it.
+The hall junction does not cross at 20 km/h. At the hold the hull is lifted off the soil onto
+loose pieces: the belt law carries nothing (it samples soil and standing cells, never a loose
+piece), so there is no traction, and the solver carries the weight through the belt-face
+colliders (8101 N·s a step) and the belly (721 N·s) (MEASURED, `work-form.md` checkpoint 3).
+That is a fault of the track law on rubble, not of this law (`.agents/lenses/backlog.md`,
+driving-22). The shed price's `1 / (1 − μ)` stays the stand-in above; no number is tuned for
+either.
 
 ## The design check (2026-11-21)
 

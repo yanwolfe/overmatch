@@ -15,12 +15,7 @@
 //!   times how fast its body advanced into the cell there, the mean of the step's start and
 //!   end; nothing removes it. A block leaves a way when its cells' work has reached the way's,
 //!   or when the step held all the work the way had left and still did not stop the body
-//!   ([`settle`]).
-//!
-//! Work is one number per cell, whoever did it and along whichever way: every way a block gives
-//! is charged with all of it ([`fracture::bound::taken`]), so a way may part on work done along
-//! another, or by another body. MEASURED on the shipped map's wall, house and hall: of the cells
-//! that part, 23 to 44 % leave through a way whose own body added under a tenth of its work.
+//!   ([`settle`]). Work is one number per cell, whoever did it ([`fracture::bound::taken`]).
 //!
 //! One physics step runs between two [`release`]s: [`Pressed`] holds the step's solver point
 //! keys, and `Bounds` holds a step's impulses only until the next step clears them, so a second
@@ -363,16 +358,17 @@ struct BoundContacts<'w, 's> {
 /// measured: a higher floor waits on a profile of a step that presses several owners.
 const PARALLEL_OWNERS: usize = 2;
 
-/// `work` on each of `owners`, in their order. An owner's work reads its own state and the
-/// step's immutable inputs alone, so each is a task of the compute pool.
+/// `work` on each of `owners`, in their order whichever of `pool`'s workers takes which. An
+/// owner's work reads its own state and the step's immutable inputs alone, so each is a task.
 fn per_owner<T: Send, R: Send + 'static>(
+    pool: &TaskPool,
     mut owners: &mut [T],
     work: impl Fn(&mut T) -> R + Sync,
 ) -> Vec<R> {
     if owners.len() < PARALLEL_OWNERS {
         return owners.iter_mut().map(work).collect();
     }
-    let done = owners.par_splat_map_mut(ComputeTaskPool::get(), None, |_, owners| {
+    let done = owners.par_splat_map_mut(pool, None, |_, owners| {
         owners.iter_mut().map(&work).collect::<Vec<R>>()
     });
     done.into_iter().flatten().collect()
@@ -435,7 +431,8 @@ fn bound_contacts(mut p: BoundContacts) {
         })
         .collect();
     let (movers, gravity) = (&p.movers, p.gravity.0);
-    let priced = per_owner(&mut pressed, |(_, to_owner, owner, bodies)| {
+    let pool = ComputeTaskPool::get();
+    let priced = per_owner(pool, &mut pressed, |(_, to_owner, owner, bodies)| {
         let pricing = Pricing {
             standing: standing(owner),
             to_owner: *to_owner,
@@ -443,7 +440,7 @@ fn bound_contacts(mut p: BoundContacts) {
             gravity,
             dt,
         };
-        bodies.par_splat_map(ComputeTaskPool::get(), None, |_, bodies| {
+        bodies.par_splat_map(pool, None, |_, bodies| {
             (bodies.iter())
                 .map(|(body, touches)| pricing.price(*body, touches))
                 .collect::<Vec<Priced>>()
@@ -657,12 +654,16 @@ fn release(mut p: Release) {
         .filter_map(|(owner, (root, press))| Some((root, owner.ok()?, press)))
         .collect();
     let (bounds, movers) = (&*p.bounds, &p.movers);
-    let settled = per_owner(&mut owners, |(_, (.., owner), press)| {
-        // The work is no reader's change: what a view or the wire carries changes when cells
-        // leave, below.
-        let work = &mut owner.bypass_change_detection().live.work;
-        settle(work, press, bounds, movers)
-    });
+    let settled = per_owner(
+        ComputeTaskPool::get(),
+        &mut owners,
+        |(_, (.., owner), press)| {
+            // The work is no reader's change: what a view or the wire carries changes when cells
+            // leave, below.
+            let work = &mut owner.bypass_change_detection().live.work;
+            settle(work, press, bounds, movers)
+        },
+    );
     for ((root, (_, position, rotation, mut owner), _), (rows, leaving)) in
         owners.into_iter().zip(settled)
     {
@@ -818,13 +819,17 @@ fn bound_belts(mut p: BoundBelts) {
             (root, to_owner, owner, belts)
         })
         .collect();
-    let borne = per_owner(&mut pressed, |(root, to_owner, owner, belts)| {
-        let standing = standing(owner);
-        let borne: Vec<Borne> = (belts.iter())
-            .flat_map(|belt| borne(standing, *to_owner, belt, f64::from(dt)))
-            .collect();
-        (*root, borne)
-    });
+    let borne = per_owner(
+        ComputeTaskPool::get(),
+        &mut pressed,
+        |(root, to_owner, owner, belts)| {
+            let standing = standing(owner);
+            let borne: Vec<Borne> = (belts.iter())
+                .flat_map(|belt| borne(standing, *to_owner, belt, f64::from(dt)))
+                .collect();
+            (*root, borne)
+        },
+    );
     for (root, borne) in borne {
         let press = p.pressed.0.entry(root).or_default();
         for block in borne {

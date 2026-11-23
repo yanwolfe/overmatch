@@ -350,7 +350,8 @@ Existing ring geometry may remain an angular sampling stand-in if it passes the 
 
 Subject: the game's environment destruction, game state only. A standing cell returns a body no
 more than its bonds can, through the physics contact solver, and a cell whose bonds have taken
-their work from the bodies pressing it leaves at rest as ordinary rubble. Structural collapse remains the part graph's decision. Neither
+their work from the bodies pressing it, or cannot stop a body with all the work they have left,
+leaves at rest as ordinary rubble. Structural collapse remains the part graph's decision. Neither
 law names a vehicle or construction. The law, its terms, what was tried and lost (the hull sweep
 that stood here until 2026-11-22 among them) and what is known and accepted are in
 `.agents/scratch/strength-limited-contact-design-2026-11-21.md`, "As built"; the modules are
