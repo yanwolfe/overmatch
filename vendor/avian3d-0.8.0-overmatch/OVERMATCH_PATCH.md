@@ -23,7 +23,7 @@ Each patch takes one form, named in its section:
 - **dropped**: upstream 0.8.0 does it; the old witness runs against unpatched code.
 
 Patched sites in upstream files are tagged `OVERMATCH PATCH`. Fork lines are counted by `diff --minimal -ruN`
-of `src/` against the published crate: 1032 in all (MEASURED), 954 in upstream files and 78 in the
+of `src/` against the published crate: 1117 in all (MEASURED), 1039 in upstream files and 78 in the
 fork-only `src/collision/narrow_phase/stationary_miss.rs`.
 
 Guards run as the game's own tests, each named in its patch's section.
@@ -254,9 +254,11 @@ every enabled collider's pose, shape, bounds and proxy key, then skips those who
 thousands of standing static colliders fetched every step for nothing.
 
 The patch adds a third query to the system's `ParamSet`, the same data filtered
-`Or<(Changed<Position>, Changed<Rotation>, Changed<C>)>`, so a collider whose ticks did not move
-since the system's previous run costs the filter's three tick reads. Upstream's per-collider body,
-its `LastPhysicsTick` check included, is unchanged and runs for every collider the filter passes.
+`Or<(Changed<Position>, Changed<Rotation>, Changed<C>, Changed<ColliderTreeProxyKey>)>`, so a
+collider whose ticks did not move since the system's previous run costs the filter's four tick
+reads; the key's read, once per enabled collider per step, is unmeasured. Upstream's
+per-collider body, its `LastPhysicsTick` check with the joined-a-tree term ("Bounds at the
+collider's pose") included, runs for every collider the filter passes.
 That is exact while `LastPhysicsTick` is newer than the system's previous run: every tick newer
 than `LastPhysicsTick` is then newer than that run, so the filter passes every collider the check
 accepts. `update_last_physics_tick` runs after this system in every step, so inside the physics
@@ -284,10 +286,35 @@ the narrow phase's per-pair update before the geometry query, warm-start matchin
 stationary-miss cache and the pair's collision hooks, keeping last step's manifolds. The game runs
 with recycling off, set where the game composes physics (`src/net/physics.rs`, guard
 `shared_physics_keeps_contact_recycling_off`); the guard fixtures here do the same. Turning it on
-stops warm-start matching and the stationary cache for recycled pairs, leaves a reduced pair's lost
-manifolds unregenerated while it rests, and skips the belt's `WorldContacts::modify_contacts`
-(`src/track/stop_contacts.rs`), which must run every step for every candidate belt-face pair: those
-pairs at least would have to stay exempt.
+stops warm-start matching and the stationary cache for recycled pairs (0.00 cache returns per
+awake piece per tick against 0.4 to 1.9, MEASURED 2026-11-28), and skips the belt's
+`WorldContacts::modify_contacts` (`src/track/stop_contacts.rs`), which must run every step for
+every candidate belt-face pair: those pairs at least would have to stay exempt.
+
+Exempting them is not enough. The recycle test reads the two bodies' relative pose and nothing
+else of what the query reads, and a recycled contact keeps the last query's anchors, world point
+and normal speed. With pairs under `modify_contacts` exempt and a recycled point's world point
+and normal speed recomputed (MEASURED 2026-11-28, a trial that did not land):
+
+- A collider moved on its body is not seen: a tank's turret proxy turns on a hull at rest and its
+  pairs stay recycled (DERIVED from the test, which reads `body.position` and `body.rotation`
+  only). Neither is a collider reshaped in place:
+  `a_sleeping_island_that_meets_a_frozen_one_waits_for_its_thaw` (`src/debris/freeze.rs`) fails
+  at "the grown collider touches the sleeping piece".
+- The solver takes a recycled point's anchors as the last query left them, so the game's contact
+  reading does not reproduce the solver's effective mass from the point
+  (`the_reading_is_the_momentum_the_solver_moved` and its finite-surface twin in
+  `src/contact_transfer.rs` fail), and the work-budget seam charges a held body work
+  (`a_body_pushed_out_held_or_resting_does_no_work`, 0.0057 J where none is done).
+- A reduced pair is never recycled (see Body-pair contact reduction), so among loose pieces
+  recycling holds 0.6 to 0.9 of 2.6 to 3.2 touching pairs per awake piece per tick; what it
+  spares is misses.
+
+Per awake piece per tick on local passes through the map's house and hall, bounds test live in
+both arms (two or three gate-valid passes an arm and workload): 4.7 to 6.9 geometry queries with
+recycling against 9.4 to 12.2 without. The effect on tick time on the hosted allocation is
+unmeasured. A recycler the game could run keys on every input the stationary-miss key holds,
+within a motion budget; that is one design with that cache, not a setting.
 
 ## Minimum speculative margin: dropped
 
@@ -464,6 +491,83 @@ kept through a hook rejection fails the hook test (MEASURED). The wake test also
 side's miss to stay active, which Avian 0.8.0's island sleep breaks (it moves every pair whose
 other body rests to the sleeping set); see "Resting misses stay active", which keeps it. Count evidence and
 reproduction: `upstream/avian-still-pairs.md`.
+
+## Bounds test before the geometry query (`src/collision/narrow_phase/system_param.rs`, `src/collider_tree/update.rs`): kept
+
+Subject: the game's server physics, contacts between bodies, game state only.
+
+A pair lives while its enlarged bounds overlap, and upstream runs the geometry query for every
+such pair it does not recycle. The patch tests the two colliders' own bounds first: with one
+`ColliderAabb` grown by `max_contact_distance - contact_tolerance`, disjoint bounds are the
+query's miss. The query is skipped, the manifold list is cleared as the query clears it, and the
+rest of the per-pair update (pruning, the stationary key, matching, the status flags) runs as
+after any miss.
+
+Same contacts: the comment beside the test states the invariant, and
+`upstream/avian-bounds-test-before-query.md` holds the argument and the counts. Each thing it
+relies on has its gate:
+
+- Bounds at the collider's pose: "Bounds at the collider's pose" below.
+- Valid bounds: `assert_posed_bounds` at each of the three writes in `collider_tree/update.rs`,
+  in every build: six finiteness tests and three ordered compares per write, about one write per
+  awake collider per tick. Its cost in tick time is unmeasured.
+- A margin is never negative: a `const` assert beside the game's one authored margin
+  (`src/world/boundary.rs`).
+- Each bounds holds the tolerance the query runs with: the game writes the narrow-phase settings
+  once, before play (`src/net/physics.rs`). Growing by the whole reach instead needs neither this
+  nor the spare tolerance, and spares 2.05 of the 2.70 queries per awake piece per tick that the
+  test spares, in the one pass that counted both (MEASURED 2026-11-28). The effect on tick time
+  on the hosted allocation is unmeasured.
+
+Kept: the test sits beside the query inside the private per-pair closure. 34 fork lines for the
+test (MEASURED), 20 of them the query call re-indented under it; 14 for the asserts.
+
+Guards, in `src/tests/avian_narrow_phase.rs`:
+`a_contact_inside_a_margin_the_static_body_lends_is_found_past_the_bounds` and its dynamic-body
+twin witness the margin term of the reach (both red with the growth two tolerances short, in a
+build of that mutant alone, MEASURED); its speculative term has no witness, backlog
+`destruction-30`. `a_pair_the_bounds_test_skips_holds_no_contact` and the gate's per-component
+refusals went red under their mutants applied together in one build (MEASURED). The game's
+required-state gate (`avian_ext::required_state`) refuses a posed enabled collider without its
+`ColliderAabb`, which the bounds test reads.
+
+## Bounds at the collider's pose (`src/collider_tree/update.rs`): kept bug fix
+
+Subject: the game's server physics, collider bounds, game state only.
+
+Stock Avian leaves a collider's `ColliderAabb` and tree proxy behind its pose in two cases; the
+defects, a repro and the measured lag are in the Record. The patch is two changes, each told
+beside its code:
+
+- `update_solver_body_aabbs` runs last in the solver's set, not after
+  `PhysicsStepSystems::Finalize`, so a body that leaves the solver later in the step (its island
+  sleeps, a system disables it or makes it static) had its bounds refreshed while it still had
+  its index.
+- `update_moved_collider_aabbs` also examines a collider that joined a tree since the last
+  step, which covers one enabled again (`ColliderDisabled` or Bevy's `Disabled`) after its pose
+  changed while no pass visited it.
+
+The window that remains: `update_moved_collider_aabbs` accepts only ticks newer than
+`LastPhysicsTick`, which is set after `PhysicsStepSystems::Last`. So inside the physics schedule
+from `ColliderTreeSystems::UpdateAabbs` to the end of the step, a pose, shape or tree-key write
+reaches the bounds only as the pose of an awake solver body written before the solver-body
+pass. For any collider that pass skips (static, sleeping, on a disabled body, standalone) the
+window is the whole of that span; a collider enabled inside it keeps its old bounds; each waits
+until its pose next changes. No game system writes there (checked by reading every game writer
+of `Position`, `Rotation`, `ColliderDisabled`, `Disabled` and `RigidBody`: child placement in
+`First` and `AfterFixedMainLoop`, the launched turret's pose in `FixedUpdate`, construction
+release and freeze in `FixedPostUpdate`, the rehome toggle outside the schedule). A form that
+closes the window is backlog `destruction-31`.
+
+34 fork lines (MEASURED: `update.rs`'s count less the 64 it held before and the asserts' 14, so
+the prune's reworded comment is inside it). Rejected: a list in `SolverBodies` of the bodies that left,
+with a second pass over them in all four trees, did the first change's job in 94 fork lines
+(MEASURED; 92 as a draft diff, against 17 for both changes here) and lost to moving the pass.
+
+Guards: `src/tests/avian_bounds_at_pose.rs` (asleep, made static, disabled; a collider and an
+entity enabled again). The first three are red with the pass back after `Finalize` and the last
+two red without the joined-a-tree check, each mutant in its own build (MEASURED). Record:
+`upstream/avian-bounds-of-a-body-leaving-the-solver.md`.
 
 ## Resting misses stay active (`src/collision/contact_types/contact_graph.rs`, `src/dynamics/solver/islands/sleeping.rs`): hook
 

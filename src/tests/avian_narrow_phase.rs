@@ -1,13 +1,15 @@
 //! Guards for the game's required-state gate (`avian_ext::required_state`) and Avian's stationary
 //! miss cache (`vendor/avian3d-0.8.0-overmatch`, `OVERMATCH_PATCH.md`). Game state only: the server's
 //! contacts between bodies. The gate refuses incomplete posed participants while preserving
-//! unposed and disabled states; the cache skips only geometry queries whose inputs remain equal.
+//! unposed and disabled states; the cache skips only geometry queries whose inputs remain equal;
+//! the bounds test before the query reaches as far as the query.
 
 use avian3d::collision::CollisionDiagnostics;
+use avian3d::collision::collider::EnlargedAabb;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use super::avian_child_pose_churn::physics_app;
+use super::avian_child_pose_churn::{physics_app, tolerance};
 
 /// Fixture: separated spheres with overlapping AABBs, at a scale whose gap exceeds the configured
 /// contact tolerance. Sensors keep contact tests independent of solver response. One fixed step per
@@ -47,16 +49,37 @@ fn stationary_pair() -> (App, Entity, Entity, f32) {
     (app, fixed, moving, radius)
 }
 
-/// Contact users rely on admission refusing a posed enabled collider without its required layers
-/// before the narrow phase can skip the pair and leave its previous update in place.
-#[test]
-#[should_panic(expected = "a posed enabled collider retains CollisionLayers and EnlargedAabb")]
-fn a_pair_whose_collider_lost_its_layers_is_refused() {
+fn step_without<T: Component>() {
     let (mut app, fixed, _, _) = stationary_pair();
-    app.world_mut()
-        .entity_mut(fixed)
-        .remove::<CollisionLayers>();
+    app.world_mut().entity_mut(fixed).remove::<T>();
     app.update();
+}
+
+/// Contact users rely on admission refusing a posed enabled collider without a component the
+/// narrow phase reads, before the narrow phase can skip the pair and leave its previous update in
+/// place. One witness per component: a gate that forgets one lets that loss through unseen.
+#[test]
+#[should_panic(
+    expected = "a posed enabled collider retains CollisionLayers, ColliderAabb and EnlargedAabb"
+)]
+fn a_pair_whose_collider_lost_its_layers_is_refused() {
+    step_without::<CollisionLayers>();
+}
+
+#[test]
+#[should_panic(
+    expected = "a posed enabled collider retains CollisionLayers, ColliderAabb and EnlargedAabb"
+)]
+fn a_pair_whose_collider_lost_its_bounds_is_refused() {
+    step_without::<ColliderAabb>();
+}
+
+#[test]
+#[should_panic(
+    expected = "a posed enabled collider retains CollisionLayers, ColliderAabb and EnlargedAabb"
+)]
+fn a_pair_whose_collider_lost_its_enlarged_bounds_is_refused() {
+    step_without::<EnlargedAabb>();
 }
 
 /// The client's replication may lift a body's pose for a frame (`crate::tests::avian_body_query_gap`),
@@ -388,6 +411,93 @@ fn stationary_miss_follows_child_motion_and_rehoming() {
     app.world_mut().entity_mut(child).insert(ChildOf(other));
     app.update();
     assert_eq!(miss_work(&app), (1, 1));
+}
+
+/// Fixture: unit spheres, each a child of its body, whose gap is past both bounds' tolerance; the
+/// body on side `lender` lends its child a margin half a tolerance short of the gap, so the contact
+/// sits at the edge of the query's reach. Asserts the pair touches.
+fn a_contact_at_the_edge_of_a_lent_margin_is_found(lender: usize) {
+    let mut app = physics_app();
+    crate::headless_test::start_fixed_clock(&mut app);
+    app.insert_resource(Gravity::ZERO);
+    let tolerance = tolerance(&app);
+    let gap = 3.5 * tolerance;
+    let margin = gap - 0.5 * tolerance;
+    let sides = [(RigidBody::Static, 0.0), (RigidBody::Dynamic, 2.0 + gap)].map(|(kind, x)| {
+        let body = app
+            .world_mut()
+            .spawn((kind, Transform::from_xyz(x, 0.0, 0.0)))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((
+                ChildOf(body),
+                Transform::IDENTITY,
+                Collider::sphere(1.0),
+                Sensor,
+            ))
+            .id();
+        (body, child)
+    });
+    app.world_mut()
+        .entity_mut(sides[lender].0)
+        .insert(CollisionMargin(margin));
+    for _ in 0..3 {
+        app.update();
+    }
+    let [fixed, child] = sides.map(|(_, child)| child);
+    let bounds = |entity| *app.world().get::<ColliderAabb>(entity).unwrap();
+    assert!(
+        !bounds(fixed).intersects(&bounds(child)),
+        "fixture: the stored bounds are apart"
+    );
+    let graph = app.world().resource::<ContactGraph>();
+    assert!(graph.get(fixed, child).unwrap().1.is_touching());
+}
+
+/// Every contact relies on the bounds test before the geometry query reaching as far as the query
+/// does. The two part where the reach holds what no collider's bounds do: here a margin a body
+/// lends its child collider. A test that reaches less than the query, by the stored bounds alone
+/// or by any shortfall past the half tolerance the fixture leaves, drops this contact.
+#[test]
+fn a_contact_inside_a_margin_the_static_body_lends_is_found_past_the_bounds() {
+    a_contact_at_the_edge_of_a_lent_margin_is_found(0);
+}
+
+/// The same with the margin lent from the pair's other side.
+#[test]
+fn a_contact_inside_a_margin_the_dynamic_body_lends_is_found_past_the_bounds() {
+    a_contact_at_the_edge_of_a_lent_margin_is_found(1);
+}
+
+/// The solver and every contact reader rely on a pair the bounds test skips ending the step as
+/// the query's miss leaves it: no manifold, not touching. A skip that leaves the pair as it was
+/// keeps last step's contact on shapes that have parted.
+/// Fixture: touching spheres, then one moved out past the reach yet inside its enlarged bounds,
+/// so the pair lives on.
+#[test]
+fn a_pair_the_bounds_test_skips_holds_no_contact() {
+    let (mut app, fixed, moving, radius) = stationary_pair();
+    app.world_mut().get_mut::<Position>(moving).unwrap().0 = Vec3::X * 2.0 * radius;
+    app.update();
+    let touching = |app: &App| {
+        let (_, pair) = app
+            .world()
+            .resource::<ContactGraph>()
+            .get(fixed, moving)
+            .expect("fixture: the enlarged bounds hold the pair");
+        (pair.is_touching(), pair.manifolds.len())
+    };
+    assert_eq!(touching(&app), (true, 1), "fixture: the spheres touch");
+    let gap = 3.5 * tolerance(&app);
+    app.world_mut().get_mut::<Position>(moving).unwrap().0.x += gap;
+    app.update();
+    let bounds = |entity| *app.world().get::<ColliderAabb>(entity).unwrap();
+    assert!(
+        !bounds(fixed).intersects(&bounds(moving)),
+        "fixture: the stored bounds are apart"
+    );
+    assert_eq!(touching(&app), (false, 0));
 }
 
 #[derive(Resource)]

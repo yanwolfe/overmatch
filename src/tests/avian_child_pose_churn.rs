@@ -59,6 +59,14 @@ pub(super) fn physics_app_on(mut app: App) -> App {
     app
 }
 
+/// The contact tolerance in world units (m).
+pub(super) fn tolerance(app: &App) -> f32 {
+    app.world()
+        .resource::<NarrowPhaseConfig>()
+        .contact_tolerance
+        * app.world().resource::<PhysicsLengthUnit>().0
+}
+
 /// A static root, posed off the origin and turned, with one turned, offset box collider child: the
 /// shape of an intact construction element. Returns `(root, child)` after the spawn has
 /// settled.

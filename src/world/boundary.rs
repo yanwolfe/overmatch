@@ -19,6 +19,9 @@ use super::BoundaryWall;
 /// 930 m): of 4,000 resting hulls per face, none dropped and no normal off the face;
 /// map-surroundings §3.6.
 const CONTACT_MARGIN_M: f32 = 0.5;
+// The narrow phase's bounds test reads a margin as a thickness: a negative one would shrink a
+// collider's bounds inside its shape.
+const _: () = assert!(CONTACT_MARGIN_M >= 0.0);
 
 pub(super) fn spawn(commands: &mut Commands, manifest: &MapManifest) {
     let friction = crate::substances::contact_friction(manifest.play_area.friction());

@@ -15,7 +15,7 @@ use avian3d::prelude::*;
 use bevy::ecs::{entity_disabling::Disabled, system::RunSystemOnce};
 use bevy::prelude::*;
 
-use super::avian_child_pose_churn::physics_app;
+use super::avian_child_pose_churn::{physics_app, tolerance};
 
 /// Fixture: the side of [`body`]'s cube (m).
 const SIDE: f32 = 0.4;
@@ -569,14 +569,6 @@ fn solved(app: &App, contact: ContactId) -> usize {
         .resource::<ConstraintGraph>()
         .contact_handles(contact)
         .len()
-}
-
-/// The configured contact tolerance (m).
-fn tolerance(app: &App) -> f32 {
-    app.world()
-        .resource::<NarrowPhaseConfig>()
-        .contact_tolerance
-        * app.world().resource::<PhysicsLengthUnit>().0
 }
 
 /// Solver users need a miss that a body's last awake step closed to within the contact tolerance

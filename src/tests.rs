@@ -10,6 +10,7 @@
 pub(crate) mod alloc_count;
 mod avian_body_query_gap;
 mod avian_body_size_metrics;
+mod avian_bounds_at_pose;
 mod avian_broad_phase_layers;
 mod avian_child_pose_churn;
 mod avian_collider_of_removal;

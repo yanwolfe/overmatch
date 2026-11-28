@@ -29,6 +29,7 @@ struct ColliderQuery<C: AnyCollider> {
     of: Option<Read<ColliderOf>>,
     shape: Ref<'static, C>, // OVERMATCH PATCH: its change tick keys a stationary miss.
     enlarged_aabb: Read<EnlargedAabb>,
+    aabb: Read<ColliderAabb>, // OVERMATCH PATCH: the bounds test before the geometry query.
     position: Read<Position>,
     rotation: Read<Rotation>,
     transform: Option<Read<ColliderTransform>>,
@@ -483,6 +484,8 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                 .collider_query
                 .get_many([contacts.collider1, contacts.collider2])
             else {
+                // OVERMATCH PATCH: an unposed, disabled or despawned collider: not a
+                // participant this step.
                 return;
             };
 
@@ -849,17 +852,35 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                 // Compute the contact manifolds.
                 let context =
                     ColliderPairContext::new(collider1.entity, collider2.entity, collider_context);
-                self.miss_work.count(false, still); // OVERMATCH PATCH
-                collider1.shape.contact_manifolds_with_context(
-                    &*collider2.shape,
-                    collider1.position.0,
-                    *collider1.rotation,
-                    collider2.position.0,
-                    *collider2.rotation,
-                    max_contact_distance,
-                    &mut contacts.manifolds,
-                    context,
+                // OVERMATCH PATCH: bounds farther apart than the query reaches are its miss.
+                // Each `ColliderAabb` holds its shape at the collider's pose (kept by
+                // `collider_tree::update`), grown by the contact tolerance and the collider's
+                // own margin (a thickness, never negative), so with one of them grown by the
+                // rest of the reach, disjoint bounds put the shapes more than
+                // `max_contact_distance + contact_tolerance` apart: the spare tolerance covers
+                // the rounding of the bounds and of the query. A tolerance changed mid-run
+                // reaches a collider's bounds when its pose or shape next changes; the broad
+                // phase pairs colliders under the same lag.
+                let within_reach = collider1.aabb.intersects(
+                    &collider2
+                        .aabb
+                        .grow(Vector::splat(max_contact_distance - contact_tolerance)),
                 );
+                if within_reach {
+                    self.miss_work.count(false, still); // OVERMATCH PATCH
+                    collider1.shape.contact_manifolds_with_context(
+                        &*collider2.shape,
+                        collider1.position.0,
+                        *collider1.rotation,
+                        collider2.position.0,
+                        *collider2.rotation,
+                        max_contact_distance,
+                        &mut contacts.manifolds,
+                        context,
+                    );
+                } else {
+                    contacts.manifolds.clear();
+                }
 
                 // Transform and prune contact data.
                 contacts.manifolds.retain_mut(|manifold| {
