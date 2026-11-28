@@ -218,6 +218,20 @@ fn announce_reenabled(removed: On<Remove<()>>, mut reenabled: MessageWriter<Reen
     });
 }
 
+/// A collider's bounds stand still while it carries `ColliderDisabled`, and Avian recomputes them
+/// only for a pose or shape changed since its last step. Marking the pose changed as the marker
+/// leaves has Avian recompute them before its next broad phase, wherever the collider went
+/// meanwhile. On a body's own collider the mark also wakes the body's island.
+pub(super) fn refresh_reenabled_bounds(
+    enabled: On<Remove<ColliderDisabled>>,
+    mut poses: Query<&mut Position>,
+) {
+    // An unposed replica has no bounds to refresh; its pose's return marks it.
+    if let Ok(mut pose) = poses.get_mut(enabled.entity) {
+        pose.set_changed();
+    }
+}
+
 /// Proof that cleanup replaced Avian's scheduled pose writer.
 #[derive(Resource)]
 pub(super) struct PhysicsPlacementReady;

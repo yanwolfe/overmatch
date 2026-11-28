@@ -23,7 +23,7 @@ Each patch takes one form, named in its section:
 - **dropped**: upstream 0.8.0 does it; the old witness runs against unpatched code.
 
 Patched sites in upstream files are tagged `OVERMATCH PATCH`. Fork lines are counted by `diff --minimal -ruN`
-of `src/` against the published crate: 1066 in all (MEASURED), 988 in upstream files and 78 in the
+of `src/` against the published crate: 1175 in all (MEASURED), 1097 in upstream files and 78 in the
 fork-only `src/collision/narrow_phase/stationary_miss.rs`.
 
 Guards run as the game's own tests, each named in its patch's section.
@@ -284,36 +284,35 @@ the narrow phase's per-pair update before the geometry query, warm-start matchin
 stationary-miss cache and the pair's collision hooks, keeping last step's manifolds. The game runs
 with recycling off, set where the game composes physics (`src/net/physics.rs`, guard
 `shared_physics_keeps_contact_recycling_off`); the guard fixtures here do the same. Turning it on
-stops warm-start matching and the stationary cache for recycled pairs, leaves a reduced pair's lost
-manifolds unregenerated while it rests, and skips the belt's `WorldContacts::modify_contacts`
-(`src/track/stop_contacts.rs`), which must run every step for every candidate belt-face pair: those
-pairs at least would have to stay exempt.
+stops warm-start matching and the stationary cache for recycled pairs (0.00 cache returns per
+awake piece per tick against 0.4 to 1.9, MEASURED 2026-11-28), and skips the belt's
+`WorldContacts::modify_contacts` (`src/track/stop_contacts.rs`), which must run every step for
+every candidate belt-face pair: those pairs at least would have to stay exempt.
 
 Exempting them is not enough. The recycle test reads the two bodies' relative pose and nothing
 else of what the query reads, and a recycled contact keeps the last query's anchors, world point
-and normal speed. A trial at Avian's default (2026-11-28: pairs under `modify_contacts` exempt,
-the world point and normal speed recomputed for a recycled point) left these:
+and normal speed. With pairs under `modify_contacts` exempt and a recycled point's world point
+and normal speed recomputed (MEASURED 2026-11-28, a trial that did not land):
 
 - A collider moved on its body is not seen: a tank's turret proxy turns on a hull at rest and its
   pairs stay recycled (DERIVED from the test, which reads `body.position` and `body.rotation`
-  only). Neither is a collider reshaped in place: `a_sleeping_island_that_meets_a_frozen_one_waits_for_its_thaw`
-  (`src/debris/freeze.rs`) fails at "the grown collider touches the sleeping piece" (MEASURED).
+  only). Neither is a collider reshaped in place:
+  `a_sleeping_island_that_meets_a_frozen_one_waits_for_its_thaw` (`src/debris/freeze.rs`) fails
+  at "the grown collider touches the sleeping piece".
 - The solver takes a recycled point's anchors as the last query left them, so the game's contact
-  reading no longer reproduces the solver's effective mass from the point
+  reading does not reproduce the solver's effective mass from the point
   (`the_reading_is_the_momentum_the_solver_moved` and its finite-surface twin in
-  `src/contact_transfer.rs` fail, MEASURED), and the work-budget seam charges a held body work
-  (`a_body_pushed_out_held_or_resting_does_no_work`, 0.0057 J where none is done, MEASURED).
-- A touching pair of two bodies under the reduction pass loses its cache every step
-  (`avian_ext::contact_reduction`), so among loose pieces recycling holds 0.6 to 0.9 of 2.6 to
-  3.2 touching pairs per awake piece per tick (MEASURED); what it spares is misses.
-- A recycled miss never reaches the stationary-miss cache: 0.00 returns per awake piece per tick
-  against 0.4 to 1.9 with recycling off (MEASURED).
+  `src/contact_transfer.rs` fail), and the work-budget seam charges a held body work
+  (`a_body_pushed_out_held_or_resting_does_no_work`, 0.0057 J where none is done).
+- A reduced pair is never recycled (see Body-pair contact reduction), so among loose pieces
+  recycling holds 0.6 to 0.9 of 2.6 to 3.2 touching pairs per awake piece per tick; what it
+  spares is misses.
 
-What the trial counted, per awake piece per tick on local passes through the map's house and
-hall, bounds test live in both arms (MEASURED, two or three gate-valid passes an arm and workload): 4.7 to
-6.9 geometry queries with recycling against 9.4 to 12.2 without. A recycler the game could run
-keys on every input the stationary-miss key holds, within a motion budget; that is one design
-with that cache, not a setting.
+Per awake piece per tick on local passes through the map's house and hall, bounds test live in
+both arms (two or three gate-valid passes an arm and workload): 4.7 to 6.9 geometry queries with
+recycling against 9.4 to 12.2 without. The effect on tick time on the hosted allocation is
+unmeasured. A recycler the game could run keys on every input the stationary-miss key holds,
+within a motion budget; that is one design with that cache, not a setting.
 
 ## Minimum speculative margin: dropped
 
@@ -491,7 +490,7 @@ side's miss to stay active, which Avian 0.8.0's island sleep breaks (it moves ev
 other body rests to the sleeping set); see "Resting misses stay active", which keeps it. Count evidence and
 reproduction: `upstream/avian-still-pairs.md`.
 
-## Bounds test before the geometry query (`src/collision/narrow_phase/system_param.rs`): kept
+## Bounds test before the geometry query (`src/collision/narrow_phase/system_param.rs`, `src/collider_tree/update.rs`): kept
 
 Subject: the game's server physics, contacts between bodies, game state only.
 
@@ -502,32 +501,65 @@ query's miss. The query is skipped, the manifold list is cleared as the query cl
 rest of the per-pair update (pruning, the stationary key, matching, the status flags) runs as
 after any miss.
 
-Same contacts. A `ColliderAabb` is its shape's bounds grown by the contact tolerance and the
-collider's own `CollisionMargin` (`collider_tree/update.rs`); the query reaches
-`max_contact_distance`: both margins, a body's included, plus the speculative distance, which is
-at least the tolerance. Two shapes within the reach have bounds within it on every axis, so bounds
-still disjoint after the growth put the shapes more than the reach plus one tolerance apart, and
-the spare tolerance covers the rounding of the bounds and of the query. The growth reads the
-query's own reach, so what no bounds hold (a margin a body lends its colliders, a requested
-speculative distance) is inside it. Two things it relies on: a margin is never negative, and each
-bounds holds the current tolerance: a tolerance changed mid-run reaches a collider's bounds when
-its pose or shape next changes, a lag the broad phase already pairs colliders under.
+Same contacts: the comment beside the test states the invariant, and
+`upstream/avian-bounds-test-before-query.md` holds the argument and the counts. Each thing it
+relies on has its gate:
 
-MEASURED 2026-11-28, local passes of two tanks through the map's house and hall: with the query
-still run for every pair, 0 of 4,550,540 pairs the test would have skipped kept a contact after
-pruning (three gate-valid passes); with the test live and recycling off it spares 2.3 to 3.5 of
-11.7 to 15.7 queries per awake piece per tick (20 to 22 %, four passes). Growing by the whole
-reach instead, which relies on neither bounds holding the tolerance, spares 2.05 of the 2.70 in
-the one pass that counted both.
+- Bounds at the collider's pose: "Bounds of a body leaving the solver" below, and for a collider
+  enabled again the game's `avian_ext::child_poses::refresh_reenabled_bounds`.
+- Valid bounds: `assert_posed_bounds` at each of the three writes in `collider_tree/update.rs`,
+  in every build. A NaN or inverted bound answers "apart" to every comparison, which the test
+  would read as a miss. The assert is six comparisons beside a shape's bounds computation; it
+  also refuses a half-space, whose bounds are unbounded and which the game does not use.
+- A margin is never negative: a `const` assert beside the game's one authored margin
+  (`src/world/boundary.rs`).
+- Each bounds holds the tolerance the query runs with: the game writes the narrow-phase settings
+  once, before play (`src/net/physics.rs`). Growing by the whole reach instead needs neither this
+  nor the spare tolerance, and spares 2.05 of the 2.70 queries per awake piece per tick that the
+  test spares, in the one pass that counted both (MEASURED 2026-11-28). The effect on tick time
+  on the hosted allocation is unmeasured.
 
-Kept: the test sits beside the query inside the private per-pair closure. 34 fork lines
-(MEASURED), 20 of them the query call re-indented under the test.
+Kept: the test sits beside the query inside the private per-pair closure. 34 fork lines for the
+test (MEASURED), 20 of them the query call re-indented under it; 14 for the asserts.
 
-Guard: `a_contact_inside_the_querys_reach_is_found_past_the_colliders_bounds` in
-`src/tests/avian_narrow_phase.rs` (red with the reach left out of the growth, MEASURED). The
-game's required-state gate (`avian_ext::required_state`) refuses a posed enabled collider without
-its `ColliderAabb`, which the narrow phase now reads. Record:
-`upstream/avian-bounds-test-before-query.md`.
+Guards, in `src/tests/avian_narrow_phase.rs`:
+`a_contact_inside_the_querys_reach_is_found_past_the_colliders_bounds` (the margin term of the
+reach, lent from each side; its speculative term has no witness, backlog `destruction-30`) and
+`a_pair_the_bounds_test_skips_holds_no_contact`. The game's required-state gate
+(`avian_ext::required_state`) refuses a posed enabled collider without its `ColliderAabb`, which
+the bounds test reads.
+
+## Bounds of a body leaving the solver (`src/collider_tree/update.rs`, `src/dynamics/solver/solver_body/`): kept bug fix
+
+Subject: the game's server physics, collider bounds, game state only.
+
+Upstream refreshes the bounds of awake solver bodies after each step (`update_solver_body_aabbs`,
+`With<SolverBodyIndex>`) and of colliders whose pose changed since the last step
+(`update_moved_collider_aabbs`). A body the solver moved and that then left the solver in the
+same step (its island slept, a system in the physics schedule disabled it or made it static) is
+in neither: its index is gone before the first runs, and the solver's pose write is older than
+the tick the second compares against. Its `ColliderAabb` and tree proxy stay where the previous
+step put them until something else moves it: MEASURED 1.17 mm behind on a sphere asleep at half
+the default rest speed, a whole step's travel on a body made static.
+
+The patch records each body `SolverBodies::swap_remove` drops, from the solver's prepare to the
+next, and `update_solver_body_aabbs` runs its per-body pass over those too. A body that left as
+static is in the static tree, so the pass sizes all four trees' bit vectors, applies them all,
+and gives a static collider the tolerance-only enlargement `update_moved_collider_aabbs` gives
+it.
+
+A bug fix upstream would adopt: bounds that lag the pose are wrong for the broad phase and
+spatial queries on stock Avian too. 94 fork lines (MEASURED).
+
+A collider that carried `ColliderDisabled` while its pose changed is a second case, fixed
+game-side: its bounds stand still while it is disabled and no change tick moves when the marker
+leaves. `avian_ext::child_poses::refresh_reenabled_bounds` marks the pose changed on the removal,
+so `update_moved_collider_aabbs` recomputes the bounds before the next broad phase; on a body's
+own collider the mark also wakes the island.
+
+Guards: `src/tests/avian_bounds_at_pose.rs`, one test per case (asleep, made static, enabled
+again), each red without its fix (MEASURED). Record:
+`upstream/avian-bounds-of-a-body-leaving-the-solver.md`.
 
 ## Resting misses stay active (`src/collision/contact_types/contact_graph.rs`, `src/dynamics/solver/islands/sleeping.rs`): hook
 

@@ -9,7 +9,7 @@ use crate::{
     },
     collision::collider::{ColliderAabbMargin, EnlargedAabb},
     data_structures::bit_vec::BitVec,
-    dynamics::solver::solver_body::SolverBodyIndex,
+    dynamics::solver::solver_body::{SolverBodies, SolverBodyIndex},
     prelude::*,
     schedule::LastPhysicsTick,
     utils::{MIN_PAR_ITER_ENTITIES, ParallelQueryForEach},
@@ -18,7 +18,7 @@ use bevy::{
     ecs::{
         change_detection::Tick,
         entity_disabling::Disabled,
-        query::{QueryFilter, QueryItem},
+        query::{QueryFilter, QueryItem, ROQueryItem},
         system::{StaticSystemParam, SystemChangeTick},
     },
     platform::collections::HashMap,
@@ -99,6 +99,7 @@ impl<C: AnyCollider> Plugin for ColliderTreeUpdatePlugin<C> {
                     let context = ColliderContext::new(trigger.entity, &*collider_context);
                     let growth = contact_tolerance + collision_margin;
                     *aabb = collider.aabb_with_context(pos.0, *rot, growth, context);
+                    assert_posed_bounds(&aabb, trigger.entity); // OVERMATCH PATCH
 
                     // Compute and cache the size-relative AABB margin for the collider.
                     let context = ColliderContext::new(trigger.entity, &*collider_context);
@@ -687,18 +688,35 @@ impl EnlargedProxiesBitVec {
 // TODO: Once dynamic an kinematic bodies have their own marker components,
 //       we should use those instead of `SolverBody`. Solver bodies should
 //       be an implementation detail of the solver.
+/// OVERMATCH PATCH: every reader of a [`ColliderAabb`] compares it; a NaN or inverted one answers
+/// "apart" to each comparison, and the narrow phase's bounds test would drop the pair's contact
+/// unseen.
+#[inline]
+fn assert_posed_bounds(aabb: &ColliderAabb, collider: Entity) {
+    assert!(
+        aabb.min.is_finite() && aabb.max.is_finite() && aabb.min.cmple(aabb.max).all(),
+        "a posed collider's shape has finite, non-empty bounds: {collider} has {aabb:?}"
+    );
+}
+
+// OVERMATCH PATCH: the data `update_solver_body_aabbs` reads per body.
+type AabbBody = (
+    &'static Position,
+    &'static ComputedCenterOfMass,
+    &'static LinearVelocity,
+    &'static AngularVelocity,
+    &'static RigidBodyColliders,
+    Option<&'static SpeculativeCcd>,
+);
+
 fn update_solver_body_aabbs<C: AnyCollider>(
-    body_query: Query<
-        (
-            &Position,
-            &ComputedCenterOfMass,
-            &LinearVelocity,
-            &AngularVelocity,
-            &RigidBodyColliders,
-            Option<&SpeculativeCcd>,
-        ),
-        With<SolverBodyIndex>,
-    >,
+    body_query: Query<AabbBody, With<SolverBodyIndex>>,
+    // OVERMATCH PATCH: a body the solver moved this step and that then left the solver (its
+    // island slept, it was disabled or made static) has no index here, and its pose change is
+    // older than the tick `update_moved_collider_aabbs` compares against: without this pass its
+    // bounds would stay one step behind its pose.
+    left_query: Query<AabbBody, (Without<SolverBodyIndex>, Allow<Disabled>)>,
+    solver_bodies: Res<SolverBodies>,
     mut colliders: ParamSet<(
         Query<
             (
@@ -734,11 +752,16 @@ fn update_solver_body_aabbs<C: AnyCollider>(
     // TODO: Use a better way to track the number of proxies.
     let cap_dynamic = trees.dynamic_tree.proxies.capacity();
     let cap_kinematic = trees.kinematic_tree.proxies.capacity();
+    // OVERMATCH PATCH: a body that left the solver may now be static.
+    let cap_static = trees.static_tree.proxies.capacity();
+    let cap_standalone = trees.standalone_tree.proxies.capacity();
 
     // Clear and resize the enlarged proxy structures.
     let e = &mut enlarged_proxies;
     e.dynamic_proxies.clear_and_set_capacity(cap_dynamic);
     e.kinematic_proxies.clear_and_set_capacity(cap_kinematic);
+    e.static_proxies.clear_and_set_capacity(cap_static); // OVERMATCH PATCH
+    e.standalone_proxies.clear_and_set_capacity(cap_standalone); // OVERMATCH PATCH
 
     // A small, fixed contact tolerance is added to each AABB so the narrow phase
     // can predict slightly separated contacts.
@@ -748,9 +771,10 @@ fn update_solver_body_aabbs<C: AnyCollider>(
 
     let collider_query = colliders.p0();
 
-    body_query.par_for_each(
-        MIN_PAR_ITER_ENTITIES,
-        |(rb_pos, center_of_mass, lin_vel, ang_vel, body_colliders, speculative_ccd)| {
+    // OVERMATCH PATCH: upstream's per-body pass, named so the bodies that left take it too.
+    let update_body = |item: ROQueryItem<'_, '_, AabbBody>| {
+        {
+            let (rb_pos, center_of_mass, lin_vel, ang_vel, body_colliders, speculative_ccd) = item;
             for collider_entity in body_colliders.iter() {
                 let Ok((
                     collider,
@@ -802,6 +826,7 @@ fn update_solver_body_aabbs<C: AnyCollider>(
                     collider
                         .aabb_with_context(pos.0, *rot, growth, context)
                 };
+                assert_posed_bounds(&aabb, collider_entity); // OVERMATCH PATCH
 
                 // Recompute the cached AABB margin if the collider shape changed.
                 if collider.is_changed() {
@@ -812,9 +837,15 @@ fn update_solver_body_aabbs<C: AnyCollider>(
                     );
                 }
 
-                // Solver bodies are always dynamic or kinematic, so they use the size-relative
-                // AABB margin to allow some movement without triggering tree updates.
-                let moved = enlarged_aabb.update(&aabb, aabb_margin.0);
+                // Dynamic and kinematic colliders use the size-relative AABB margin to allow some
+                // movement without triggering tree updates.
+                // OVERMATCH PATCH: a body that left the solver as static keeps its bounds tight,
+                // as `update_moved_collider_aabbs` does.
+                let margin = match proxy_key.tree_type() {
+                    ColliderTreeType::Dynamic | ColliderTreeType::Kinematic => aabb_margin.0,
+                    ColliderTreeType::Static | ColliderTreeType::Standalone => contact_tolerance,
+                };
+                let moved = enlarged_aabb.update(&aabb, margin);
 
                 if moved {
                     let tree_type = proxy_key.tree_type();
@@ -825,7 +856,8 @@ fn update_solver_body_aabbs<C: AnyCollider>(
                             let capacity = match tree_type {
                                 ColliderTreeType::Dynamic => cap_dynamic,
                                 ColliderTreeType::Kinematic => cap_kinematic,
-                                _ => unreachable!("Static or standalone proxy {proxy_key:?} moved in dynamic AABB update"),
+                                ColliderTreeType::Static => cap_static, // OVERMATCH PATCH
+                                ColliderTreeType::Standalone => cap_standalone, // OVERMATCH PATCH
                             };
                             let mut bit_vec = BitVec::new(capacity);
                             bit_vec.set_bit_count_and_clear(capacity);
@@ -836,12 +868,21 @@ fn update_solver_body_aabbs<C: AnyCollider>(
                     thread_local_bit_vec.set(proxy_key.id().index());
                 }
             }
-        },
-    );
+        }
+    };
+    body_query.par_for_each(MIN_PAR_ITER_ENTITIES, &update_body);
+    // OVERMATCH PATCH: a body that left and came back is in both passes; the second repeats the
+    // first.
+    for &body in solver_bodies.left() {
+        if let Ok(item) = left_query.get(body) {
+            update_body(item);
+        }
+    }
 
-    // Update the AABBs of moved proxies in the dynamic and kinematic trees.
+    // Update the AABBs of moved proxies in each tree.
     let aabb_query = colliders.p1();
-    for &tree_type in &[ColliderTreeType::Dynamic, ColliderTreeType::Kinematic] {
+    // OVERMATCH PATCH: every tree, for the bodies that left.
+    for tree_type in ColliderTreeType::ALL {
         update_tree_for_moved_proxies(
             tree_type,
             trees.tree_for_type_mut(tree_type),
@@ -955,6 +996,7 @@ pub fn update_moved_collider_aabbs<C: AnyCollider>(
             let context = ColliderContext::new(entity, &*collider_context);
             let growth = contact_tolerance + collision_margin;
             *aabb = collider.aabb_with_context(pos.0, *rot, growth, context);
+            assert_posed_bounds(&aabb, entity); // OVERMATCH PATCH
 
             // Recompute the cached AABB margin if the collider shape changed.
             if collider_changed {

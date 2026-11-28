@@ -484,6 +484,7 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                 .collider_query
                 .get_many([contacts.collider1, contacts.collider2])
             else {
+                // OVERMATCH PATCH: a collider whose pose replication has lifted for the frame.
                 return;
             };
 
@@ -851,13 +852,16 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                 let context =
                     ColliderPairContext::new(collider1.entity, collider2.entity, collider_context);
                 // OVERMATCH PATCH: bounds farther apart than the query reaches are its miss.
-                // Each `ColliderAabb` holds its shape grown by the contact tolerance and the
-                // collider's own margin (a thickness, never negative), so with one of them grown
-                // by the rest of the reach, disjoint bounds put the shapes more than
-                // `max_contact_distance + contact_tolerance` apart: the spare tolerance covers
-                // the rounding of the bounds and of the query. A tolerance changed mid-run
-                // reaches a collider's bounds when its pose or shape next changes; the broad
-                // phase pairs colliders under the same lag.
+                // Each `ColliderAabb` holds its shape at the collider's pose, grown by the
+                // contact tolerance and the collider's own margin (a thickness, never negative),
+                // so with one of them grown by the rest of the reach, disjoint bounds put the
+                // shapes more than `max_contact_distance + contact_tolerance` apart: the spare
+                // tolerance covers the rounding of the bounds and of the query. The bounds are
+                // at the pose because `collider_tree::update` refreshes them for every pose
+                // changed since the last step and every body the solver moved, one that then
+                // left the solver included. A tolerance changed mid-run reaches a collider's
+                // bounds when its pose or shape next changes; the broad phase pairs colliders
+                // under the same lag.
                 let within_reach = collider1.aabb.intersects(
                     &collider2
                         .aabb

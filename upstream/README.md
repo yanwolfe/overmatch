@@ -27,6 +27,7 @@ a public seam and has no crate patch to retire.
 | [avian-unknown-contact-feature-identity.md](avian-unknown-contact-feature-identity.md) | avian3d 0.8.0 | bug fix | 26 | not sent |
 | [avian-island-rest-history.md](avian-island-rest-history.md) | avian3d 0.8.0 | bug fix | 23 | not sent |
 | [avian-bounds-test-before-query.md](avian-bounds-test-before-query.md) | avian3d 0.8.0 | optimisation, same contacts | 34 | not sent; applies to the published crate, library compile check not run |
+| [avian-bounds-of-a-body-leaving-the-solver.md](avian-bounds-of-a-body-leaving-the-solver.md) | avian3d 0.8.0 | bug fix | 94 | not sent; library compile check not run |
 | [bevy-invisible-mesh-removal-churn.md](bevy-invisible-mesh-removal-churn.md) | bevy_pbr 0.20.1 | bug fix | 10 | not sent |
 | [bevy-mesh-removal-channel.md](bevy-mesh-removal-channel.md) | bevy_pbr 0.20.1 | bug fix | 37 | not sent |
 | [bevy-directional-shadow-factor-per-light.md](bevy-directional-shadow-factor-per-light.md) | bevy_pbr 0.20.1 | API gap | 0 | not sent |
@@ -36,7 +37,7 @@ a public seam and has no crate patch to retire.
 | [avian-ccd-sensors-swept-and-counted.md](avian-ccd-sensors-swept-and-counted.md) | avian3d 0.8.0 | bug fix | 7 | not sent; query ships, observer/thickness proposal compile-only |
 | [avian-ccd-decide-per-collider.md](avian-ccd-decide-per-collider.md) | avian3d 0.8.0 | bug fix | 15 | not sent; includes the small lazy-shape patch |
 
-MEASURED index census: 21 current draft rows, 15 targeting Avian.
+MEASURED index census: 22 current draft rows, 16 targeting Avian.
 
 Historical mechanism pointers beside these drafts keep current source citations usable. Their
 investigations live under `.agents/scratch/fork-moves-history-2026-11-16/`; they are outside this

@@ -2,9 +2,10 @@
 
 Found in a game using avian3d. Local draft; not filed.
 
-**Crate:** avian3d 0.8.0 (crates.io). **Status:** not sent. Source audit: not run against upstream
-`main`; the diff is against the published crate (MEASURED: `patch --dry-run` applies it to a fresh
-extraction of the cached archive).
+**Crate:** avian3d 0.8.0 (crates.io). **Status:** not sent. Kind: optimisation, same contacts.
+Source audit: not run against upstream `main`; the diff is against the published crate (MEASURED:
+`patch --dry-run` applies it to a fresh extraction of the cached archive). The library compile
+check against the published crate was not run; the same change compiles in the game's fork.
 
 ## Defect
 
@@ -16,11 +17,12 @@ tight AABBs that no longer meet: the query runs, allocates its manifold list and
 
 ## Minimal repro
 
-Two unit spheres, one static and one dynamic, 0.1 apart with no relative motion budget left to
-recycle (or `recycle_distance: 0.0`): the pair stays in the contact graph and queries every step.
-In a game's collapsing buildings, 20 to 22 % of the geometry queries were of such pairs (MEASURED,
-found in a game using avian3d: 2.3 to 3.5 of 11.7 to 15.7 queries per awake body per step, four
-runs, recycling off).
+A dynamic sphere passing a static one at a gap inside its enlarged AABB margin and outside the
+contact tolerance: the pair is in the contact graph, never touches, and runs the geometry query
+every step it moves. In a game's collapsing buildings, 20 to 22 % of the geometry queries were of
+such pairs (MEASURED: 2.3 to 3.5 of 11.7 to 15.7 queries per awake body per step, four runs,
+`recycle_distance: 0.0`). The saving at the default `recycle_distance` is unmeasured: a recycled
+pair returns before the query either way.
 
 ## Fix
 
@@ -92,9 +94,15 @@ empty result beyond its prediction distance, and the else arm leaves the list as
 does. The growth reads the reach from the variable the query is given, so a margin a body lends
 its colliders and a requested speculative distance are inside it though no AABB holds them.
 
-Two things it relies on: a `CollisionMargin` is never negative, and each `ColliderAabb` holds the
-current tolerance. A `contact_tolerance` changed at run time reaches a collider's AABB when its
-pose or shape next changes; the broad phase pairs colliders under the same lag.
+Three things it relies on. A `CollisionMargin` is never negative. Each `ColliderAabb` holds the
+current tolerance: a `contact_tolerance` changed at run time reaches a collider's AABB when its
+pose or shape next changes, and the broad phase pairs colliders under the same lag. And each
+`ColliderAabb` is at its collider's pose, which stock 0.8.0 breaks for a body that leaves the
+solver in the step that moved it (`avian-bounds-of-a-body-leaving-the-solver.md`) and for a
+collider enabled again after its pose changed; the lag there is one step of motion below the
+sleep thresholds, inside the spare tolerance for a body within about 7.5 length units of its
+centre of mass at the defaults (DERIVED: dt (0.15 + 0.15 r) against 0.02 at 64 Hz), and unbounded
+for a body made static mid-step.
 
 Check, in the game: with the query still run for every pair, 0 of 4,550,540 pairs the test would
 have skipped kept a contact after pruning (MEASURED, three runs of collapsing buildings).

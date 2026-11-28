@@ -248,6 +248,7 @@ fn prepare_solver_bodies(
         Has<CustomPositionIntegration>,
     )>,
 ) {
+    solver_bodies.forget_left(); // OVERMATCH PATCH
     let access = solver_bodies.access();
 
     #[allow(unused_variables)]

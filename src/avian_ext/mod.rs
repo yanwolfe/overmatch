@@ -27,6 +27,7 @@ pub fn plugin(app: &mut App) {
     }
     required_state::plugin(app);
     app.add_observer(attachment::refuse_unposed_attachment);
+    app.add_observer(child_poses::refresh_reenabled_bounds);
     app.insert_resource(RestTest(rest_test::at_rest));
     app.insert_resource(avian3d::collision::narrow_phase::ContactMatcher(
         contact_match::match_pair,

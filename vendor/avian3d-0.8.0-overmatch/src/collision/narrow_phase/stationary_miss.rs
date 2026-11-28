@@ -13,8 +13,8 @@
 //!
 //! Only the built-in collider ([`Collider`]) is cached: a custom backend's `Context` may feed its
 //! query state the key does not hold. The key is never serialized; a new or deserialized pair has
-//! none, and pair removal drops it. Bounds, layers and constraint eligibility are decided before the
-//! key is compared, every step.
+//! none, and pair removal drops it. Enlarged bounds, layers and constraint eligibility are decided
+//! before the key is compared, every step.
 //!
 //! Counts, same-input comparison and reproduction: the game's `upstream/avian-still-pairs.md`.
 

@@ -27,7 +27,10 @@ pub(crate) fn plugin(app: &mut App) {
 }
 
 /// Shared offline/network policy and the game-owned Avian seams.
-/// Recycling must stay off: reuse returns before the belt's band filter and wake hook.
+/// Recycling stays off: `OVERMATCH_PATCH.md`, Contact recycling.
+/// The narrow-phase settings are written here, before play, and by nothing after: the fork's
+/// bounds test before the geometry query relies on every collider's bounds holding the contact
+/// tolerance the query runs with.
 pub(crate) fn extensions(app: &mut App) {
     app.insert_resource(avian3d::prelude::NarrowPhaseConfig {
         recycle_distance: 0.0,
