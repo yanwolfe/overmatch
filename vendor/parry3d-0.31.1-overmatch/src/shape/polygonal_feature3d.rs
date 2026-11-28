@@ -9,11 +9,8 @@ use crate::{
     utils::WBasis,
 };
 
-// OVERMATCH PATCH.
-/// One value per corner of a feature. Resolution: eight inline, where the published crate held
-/// four; a face of more corners is kept whole on the heap. Eight holds 99.0 % of the faces of
-/// the game's shipped hulls without allocating (MEASURED: 804 of 77 960 have more, the most 65;
-/// `OVERMATCH_PATCH.md`).
+/// OVERMATCH PATCH: one value per corner of a feature. `Resolution`: eight inline; reason and
+/// counts in `OVERMATCH_PATCH.md`.
 pub type Corners<T> = SmallVec<[T; 8]>;
 
 /// A polygonal feature representing the local polygonal approximation of
@@ -22,7 +19,7 @@ pub type Corners<T> = SmallVec<[T; 8]>;
 pub struct PolygonalFeature {
     // OVERMATCH PATCH: a face keeps every corner. Invariant: `vertices`, `vids` and `eids` each
     // have `len() >= num_vertices`, and only their first `num_vertices` entries are the
-    // feature's (a segment or a triangle from the fixed shapes fills four slots).
+    // feature's (the fixed shapes assign each list whole, padded beyond that).
     /// The vertices forming this polygonal feature.
     pub vertices: Corners<Vector>,
     /// The feature IDs of this polygon's vertices.
@@ -358,8 +355,9 @@ impl PolygonalFeature {
 }
 
 // OVERMATCH PATCH: a face's plane is the mean plane of all its corners, a point of it and its
-// normal scaled by twice the face's area (Newell's sum, about the corners' mean). Upstream read
-// the plane off the first three corners, which on a face of many corners are near a line.
+// normal scaled by twice the face's area (Newell's sum, about the corners' mean): zero for a
+// face of no area; the callers' `denom` guard then skips the pass. Upstream read the plane off
+// the first three corners, which on a face of many corners are near a line.
 #[cfg(feature = "alloc")]
 fn mean_plane(corners: &[Vector]) -> (Vector, Vector) {
     let origin = corners.iter().copied().sum::<Vector>() / corners.len() as Real;

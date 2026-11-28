@@ -5,11 +5,11 @@ Subject: rigid-body contact generation in a video game's server physics; game st
 **Target:** published parry3d 0.31.1, `contact_manifold_pfm_pfm` in
 `src/query/contact_manifolds/contact_manifolds_pfm_pfm.rs`. **Status:** LOCAL DRAFT, not filed.
 Upstream `master` still tests `&& local_n1 == dir` at this site (checked 2026-11-23 by reading
-upstream head). The fork (`vendor/parry3d-0.31.1-overmatch`, its `OVERMATCH_PATCH.md`) applies the overlap clause
-alone: it clips every corner of a face ([its draft](parry-support-face-first-four-corners.md)),
-and under that clip no test tells the rounding clause from the bit test. The tables below were
-measured on the published crate's four-corner clip.
-The first witness table below was measured with the lesser form of the fix.
+upstream head). The fork (`vendor/parry3d-0.31.1-overmatch`, its `OVERMATCH_PATCH.md`) applies
+the overlap clause alone and clips every corner of a face
+([draft](parry-support-face-first-four-corners.md)); what the rounding clause's absence changes
+is in the fork's note. The tables below were measured on the published crate's four-corner clip,
+the first witness table with the lesser form of the fix.
 
 ## Mechanism
 
@@ -35,12 +35,14 @@ nothing geometrically:
 
 The witness is the deepest point of the pair. In the published crate feature clipping does not
 always reach it: `ConvexPolyhedron::local_support_feature` clips a face by its first four corners
-(its own TODO; [its own draft](parry-support-face-first-four-corners.md)), so on a face of five or
-more the lowest corner can be one of the others. The manifold then carries only the clipped
+(its own TODO; [draft](parry-support-face-first-four-corners.md)), so on a face of five or
+more the lowest corner can be one of the others, and the face most aligned with the normal need
+not hold the lowest vertex at all (DERIVED). The manifold then carries only the clipped
 points, at or above zero depth where the hull crosses the triangle's plane, while the body's lowest
 vertex is centimetres under it. A solver holds the body at those points and it turns through the
-surface about them. With every corner clipped no hull was found whose clip lacks its deepest
-point, so this case belongs to that draft and the gate's part is the turned direction below.
+surface about them. With every corner clipped the first cause is gone and the second stays: for
+such a hull, within one triangle, the overlap clause below is still what keeps the deepest point.
+No test witnesses it; prisms and boxes cannot be such a hull.
 
 Where the projection does turn the direction, the gate loses the only point there is. A thin body
 tilted over a triangle's edge has its lowest corner under triangle A, which it passes beneath

@@ -139,8 +139,14 @@ const PREFIX: &str = "server_stats";
 pub(super) fn install(app: &mut App) -> Result<(), LeverError> {
     let period = period_from(env_text(LEVER)?.as_deref())?;
     super::ram::install(app, period.is_some())?;
+    arm(app, period);
+    Ok(())
+}
+
+/// The stats recorder for the lever's parsed `period`; none when the lever is unset.
+fn arm(app: &mut App, period: Option<Duration>) {
     let Some(period) = period else {
-        return Ok(());
+        return;
     };
     info!(
         "server: stats line every {:.1} s on stdout ({LEVER})",
@@ -219,7 +225,6 @@ pub(super) fn install(app: &mut App) -> Result<(), LeverError> {
     );
     install_iteration_clock(app);
     app.add_systems(IterationClock::Close, emit_line.after(close_iteration));
-    Ok(())
 }
 
 /// Schedules outside the measured iteration contain only the recorder. The frame bracket
@@ -1179,6 +1184,49 @@ mod tests {
         );
     }
 
+    /// Operators rely on the shipped installer: with the lever unset no recorder exists; armed,
+    /// one `FixedMain` leaves one tick sample and closes the collector bracket. A mutant that
+    /// arms an unset lever, or drops `record_tick` from the schedule, turns this red.
+    #[test]
+    fn the_installer_records_each_tick_only_when_armed() {
+        use avian3d::prelude::*;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        arm(&mut app, None);
+        app.world_mut().run_schedule(FixedMain);
+        assert!(!app.world().contains_resource::<ServerStats>());
+
+        app.add_plugins((
+            bevy::transform::TransformPlugin,
+            AssetPlugin::default(),
+            crate::offline_physics(),
+        ))
+        .init_asset::<Mesh>()
+        .init_resource::<crate::contact_transfer::ContactTransfers>()
+        .init_resource::<crate::construction::breakage::bounded::BoundAccount>()
+        .init_resource::<lightyear::prelude::LocalTimeline>()
+        .insert_resource(Gravity(Vec3::ZERO));
+        // Fixture: a period long enough that this test prints no line.
+        arm(&mut app, Some(Duration::from_secs(3600)));
+        app.finish();
+        app.cleanup();
+        // The step's clock, as `RunFixedMainLoop` leaves it for one tick.
+        let fixed = app.world_mut().resource_mut::<Time<Fixed>>().into_inner();
+        let dt = fixed.timestep();
+        fixed.advance_by(dt);
+        let time = fixed.as_generic();
+        app.insert_resource(time);
+        app.world_mut().run_schedule(FixedMain);
+        assert_eq!(app.world().resource::<ServerStats>().ticks.0.len(), 1);
+        assert!(
+            app.world()
+                .resource::<PhaseStarts>()
+                .collect_start
+                .is_none()
+        );
+    }
+
     /// The lever's two readings: unset is off, a positive period is that period. A mutant that
     /// turns an unset lever on prints a line from every server; one that reads a word or a zero as
     /// off or as a default runs a host its operator configured otherwise, unseen.
@@ -1274,7 +1322,6 @@ mod tests {
                 max: 16_000.0,
                 overruns: 1,
             }),
-            // Fixture: per-tick piece counts, independent of the duration windows.
             physics: Some(TickSummary {
                 ticks: 640,
                 p50: 301.04,

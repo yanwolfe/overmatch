@@ -1,28 +1,13 @@
 //! What the vendored parry3d's patches (`vendor/parry3d-0.31.1-overmatch/OVERMATCH_PATCH.md`)
-//! hold for a convex body. The solver holds every loose body (a rubble cell, a hull) at the points
-//! it is given, so a manifold that lacks a point where the bodies meet lets the body through the
-//! surface, one with a point nearer than the ground stops the body in the air, and one point
-//! under a whole face lets the body turn about it.
-//!
-//! On the terrain, in the body-first order Avian's broad phase produces:
-//! * over triangle edges, an overlap that a triangle reports from its front stays an overlapping
-//!   point with the ground's normal once the triangle's cone has corrected the normal. Upstream's
-//!   bit-equality gate turns it red;
-//! * beside a crease, every reported point lies on the ground: its gap along its normal ends on
-//!   the surface. Keeping the closest-point pair whatever the cone did turns it red.
-//!
-//! A triangle overlapped only towards its back is outside both: the patch note's "Not covered".
-//!
-//! Between two hulls, face on face, the query reports every corner of either face inside the
-//! other, each at the pair's depth, and no two points of a manifold share a feature id pair
-//! (Avian carries a point's impulse to the next step by that pair). Clipping a face by its first
-//! four corners or its first eight, and writing one id or none for every corner, each turn it
-//! red. The narrow phase then keeps four of the points: `avian_contact_pruning` owns that.
-//!
-//! A hull's face is one plane to the clip: its triangles lie within the merge tolerance of one
-//! normal (merging every two neighbours within it turns that red), and a corner over a face of
-//! many corners is held at its depth under the face (the plane of the face's first three corners
-//! turns that red).
+//! hold for a convex body; each test's doc names its invariant, who relies on it and the mutant
+//! that turns it red.
+//! * The closest-point pair on the terrain, in the body-first order Avian's broad phase produces:
+//!   `an_overlap_a_triangle_reports_from_its_front_survives_the_normal_correction`,
+//!   `beside_a_crease_every_reported_point_lies_on_the_ground`. A triangle overlapped only
+//!   towards its back is outside both: the patch note's "Not covered".
+//! * A hull's support face: `two_hulls_face_on_face_report_every_corner_inside_the_other_face`,
+//!   `a_corner_over_a_face_of_many_corners_is_held_at_its_depth_under_the_face`,
+//!   `a_hulls_face_bends_by_no_more_than_the_merge_tolerance`.
 
 use avian3d::collision::collider::contact_query::contact_manifolds;
 use avian3d::parry::shape::{HeightFieldFlags, SharedShape};
@@ -140,19 +125,20 @@ const ARC_WIDTH_M: f32 = 0.4;
 /// Fixture: a drum's radius and height, m, the corners of its rim, and the bend of its roof from
 /// rim to rim, radians: under parry's merge tolerance, so the roof is one face, and every three
 /// neighbouring corners of that face are near a line and off the roof's plane.
-const DRUM_M: (f32, f32) = (0.3, 0.3);
+const DRUM_M: (f32, f32) = (1.5, 0.3);
 const DRUM_CORNERS: usize = 48;
 const ROOF_BEND: f32 = 0.016;
-/// Resolution: agreement between a reported depth and the bent roof, m: the roof's sag (1.2 mm,
-/// DERIVED: bend x diameter / 8), which no plane is nearer to all of it than; far under the 5 mm
-/// and more by which a plane through three neighbouring corners misses the far rim (DERIVED:
-/// their plane is the roof's tangent at the rim, bend / 2 off the mean over a diameter).
-const ROOF_AGREE_M: f32 = 1.5e-3;
-/// Fixture: the box on the roof: its side, m, where its axis stands along the bend, m, and its
-/// yaw, radians: every lower corner over the roof, off the drum's axes.
-const BOX_ON_ROOF_M: f32 = 0.12;
-const ROOF_PLACES_M: [f32; 3] = [-0.15, 0.0, 0.15];
-const ROOF_YAW: f32 = 0.3;
+/// The roof's fall from its middle to its rim, m (6 mm, DERIVED: bend x radius / 4).
+const ROOF_SAG_M: f32 = ROOF_BEND * DRUM_M.0 / 4.0;
+/// Resolution: agreement between a reported depth and the bent roof, m: half the sag, the
+/// furthest the roof's mean plane lies from the roof (DERIVED: the rim's mean height is half the
+/// sag under the middle), plus `AGREE_M`; 4 mm, under the 6.0 mm by which the plane through any
+/// three neighbouring rim corners misses the roof at one of the box's corners (DERIVED: the
+/// least over the 48 starts of the largest miss at the four corners).
+const ROOF_AGREE_M: f32 = 0.5 * ROOF_SAG_M + AGREE_M;
+/// Fixture: the side of the box on the roof, m: centred on the drum, its lower corners over the
+/// roof at (+-1, +-1), off both of the bend's axes.
+const BOX_ON_ROOF_M: f32 = 2.0;
 
 /// Ground of `spacing` m between samples, its height a function of the sample's column and x.
 fn ground_of(spacing: f32, height: impl Fn(usize, f32) -> f32) -> HeightGrid {
@@ -236,6 +222,11 @@ fn uncorrected(field: &Collider) -> Collider {
     Collider::from(SharedShape::new(alone))
 }
 
+/// A thin loose piece tilted over a triangle's edge relies on this: an overlap that a triangle
+/// reports from its front stays an overlapping point with the ground's normal once the
+/// triangle's cone has corrected the normal; without it the solver lets the piece through the
+/// surface. Upstream's bit-equality gate, which drops the pair wherever the cone turned the
+/// direction, turns this red.
 #[test]
 fn an_overlap_a_triangle_reports_from_its_front_survives_the_normal_correction() {
     let body = Collider::convex_hull(&SPLINTER).expect("the fixture is a solid");
@@ -376,7 +367,9 @@ fn inside(face: &[Vec3], point: Vec3) -> bool {
 /// turns the piece about it, and the pile never rests. The query reports every such corner, on
 /// faces of any corner count; the narrow phase then keeps four (`avian_contact_pruning.rs`).
 /// Avian carries each point's impulse to the next step by its pair of feature ids, so every
-/// expected corner has both ids and no two points of a manifold share a pair.
+/// expected corner has both ids and no two points of a manifold share a pair. Clipping a face by
+/// its first four corners or its first eight, and writing one vertex id or none for every
+/// corner, each turn this red.
 #[test]
 fn two_hulls_face_on_face_report_every_corner_inside_the_other_face() {
     for corners in FACE_CORNERS {
@@ -462,7 +455,8 @@ fn a_hulls_face_bends_by_no_more_than_the_merge_tolerance() {
         .collect();
     let collider = Collider::convex_hull(&points).expect("the fixture is a solid");
     let hull = (collider.shape_scaled().as_convex_polyhedron()).expect("a hull is a polyhedron");
-    // Parry's tolerance as an angle: two unit normals are one where their dot is over this.
+    // Parry's tolerance as an angle, its formula copied from `from_convex_mesh`
+    // (`convex_polyhedron.rs`, `eps`): two unit normals are one where their dot is over this.
     let tolerance = (1.0 - avian3d::parry::math::DEFAULT_EPSILON.sqrt()).acos();
     assert!(step < tolerance && sweep > 10.0 * tolerance, "the fixture");
     for face in hull.faces() {
@@ -489,13 +483,13 @@ fn a_hulls_face_bends_by_no_more_than_the_merge_tolerance() {
 
 /// A piece lying on a face of many corners relies on this: each of its corners over the face is
 /// held at its own depth under the face. Fixture: a drum whose roof bends within the merge
-/// tolerance and a box set into it. Reading the face's plane off its first three corners turns
-/// this red.
+/// tolerance and a box set into it. Reading the face's plane off three neighbouring corners,
+/// whichever the face's stored order starts with, turns this red.
 #[test]
 fn a_corner_over_a_face_of_many_corners_is_held_at_its_depth_under_the_face() {
     let (radius, height) = DRUM_M;
-    // The roof's height at `x`: a parabola bending `ROOF_BEND` from rim to rim.
-    let roof = |x: f32| 0.5 * height - 0.25 * ROOF_BEND / radius * x * x;
+    // The roof's height at `x`: a parabola falling `ROOF_SAG_M` from the middle to the rim.
+    let roof = |x: f32| 0.5 * height - ROOF_SAG_M * (x / radius).powi(2);
     let drum: Vec<Vec3> = (0..DRUM_CORNERS)
         .flat_map(|k| {
             let angle = PRISM_PHASE + std::f32::consts::TAU * k as f32 / DRUM_CORNERS as f32;
@@ -514,32 +508,28 @@ fn a_corner_over_a_face_of_many_corners_is_held_at_its_depth_under_the_face() {
         })
         .collect();
     let body = Collider::convex_hull(&corners).expect("the fixture is a solid");
-    let turn = Quat::from_rotation_y(ROOF_YAW);
-    for place in ROOF_PLACES_M {
-        let at = Vec3::new(place, roof(place) + side - DEPTH_M, 0.0);
-        let mut manifolds = Vec::new();
-        contact_manifolds(
-            &drum,
-            Vec3::ZERO,
-            Quat::IDENTITY,
-            &body,
-            at,
-            turn,
-            0.0,
-            &mut manifolds,
+    let at = Vec3::Y * (roof(side) + side - DEPTH_M);
+    let mut manifolds = Vec::new();
+    contact_manifolds(
+        &drum,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        &body,
+        at,
+        Quat::IDENTITY,
+        0.0,
+        &mut manifolds,
+    );
+    for corner in corners.iter().filter(|corner| corner.y < 0.0) {
+        let corner = at + *corner;
+        let depth = roof(corner.x) - corner.y;
+        let held = manifolds.iter().flat_map(|m| &m.points).any(|point| {
+            Vec2::new(point.point.x - corner.x, point.point.z - corner.z).length() < AGREE_M
+                && (point.penetration - depth).abs() < ROOF_AGREE_M
+        });
+        assert!(
+            held,
+            "no point {depth} m deep at the box's corner {corner:?}: {manifolds:?}"
         );
-        for corner in corners.iter().filter(|corner| corner.y < 0.0) {
-            let corner = at + turn * *corner;
-            let depth = roof(corner.x) - corner.y;
-            let held = manifolds.iter().flat_map(|m| &m.points).any(|point| {
-                Vec2::new(point.point.x - corner.x, point.point.z - corner.z).length() < AGREE_M
-                    && (point.penetration - depth).abs() < ROOF_AGREE_M
-            });
-            assert!(
-                held,
-                "the box at {place} m along the bend: no point {depth} m deep at its corner \
-                 {corner:?}: {manifolds:?}"
-            );
-        }
     }
 }

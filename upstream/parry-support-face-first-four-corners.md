@@ -57,8 +57,11 @@ The clip between two faces of n and m corners then returns the overlap polygon's
 most n + m, plus the closest-point pair, where it returned at most 8 and the pair; a caller that
 keeps four prunes more. Cost (DERIVED): 2·n·m side tests and n·m edge pairs where the published
 crate capped both at 4·4, and for a face over eight corners three allocations for the feature and
-one or two in the clip. MEASURED in the game's shipped hulls: 804 of 77 960 faces have more than
-eight corners (1.0 %), the most 65. The narrow phase's cost under it is not measured.
+one or two in the clip (first or second shape), so nine where both faces are; plus one pass
+over each face's corners for its plane per clip, with no allocation (the next section). MEASURED
+in the game's shipped hulls: 804 of 77 960 faces have more than eight corners (1.0 %), the most
+65; that is a share of faces, and the share of queries that spill is unmeasured, as is the narrow
+phase's cost under the clip.
 
 ## The face's plane
 
@@ -89,7 +92,9 @@ corner over such a face is held at the wrong depth.
 The fix merges a triangle into the face of the first triangle it lies within the tolerance of
 (a flood from each unclaimed triangle), so every triangle of a face is within the tolerance of
 one normal. After it the furthest corner of any shipped face from its mean plane is 0.23 mm
-(MEASURED). Witness: `a_hulls_face_bends_by_no_more_than_the_merge_tolerance`.
+(MEASURED). The flood is one pass over the hull's triangles and runs where a hull is built only
+(DERIVED from the game's callers: at load and at a tank's spawn). Witness:
+`a_hulls_face_bends_by_no_more_than_the_merge_tolerance`.
 
 ## Not covered
 

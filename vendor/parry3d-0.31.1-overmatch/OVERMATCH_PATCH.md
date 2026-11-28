@@ -18,8 +18,8 @@ Avian is the only dependent (`cargo tree -i parry3d`). The lock's `parry2d`, `pa
 
 Each patched file tags its changes `OVERMATCH PATCH` where they begin; the `Corners::from_slice`
 sites that follow from the field types carry no tag of their own. Fork lines by
-`diff --minimal -ruN` of `src/` against the published crate: 242 (MEASURED), 8 of them the first
-change and 34 the face merge.
+`diff --minimal -ruN` of `src/` against the published crate: 239 (MEASURED), 8 of them the first
+change and 32 the face merge.
 
 ## The closest-point pair under normal constraints (`src/query/contact_manifolds/contact_manifolds_pfm_pfm.rs`): kept where it overlaps
 
@@ -33,9 +33,15 @@ A turned pair with a gap stays dropped, as upstream has it: kept, a sliding body
 creases.
 
 What it covers with every corner clipped (below): an overlap that a triangle reports from its
-front, once the triangle's cone has turned the normal. A body within one triangle is no longer its
-case: the whole-face clip reports the deepest point of every hull tried, and upstream's gate
-passes that test.
+front, once the triangle's cone has turned the normal; and, within one triangle, a hull whose
+face most aligned with the normal does not hold its lowest vertex (DERIVED; an irregular fracture
+cell can be so), whose deepest point only this clause keeps. No test witnesses the second: the
+prisms and boxes of the guard cannot be such a hull.
+
+The fork once also kept a pair whose direction was unchanged within rounding. Without it, a pair
+with a gap is kept only where the direction is bit-equal, so speculative contact on the terrain
+comes from the face clip alone, and for such a hull contact appears one step later, as an overlap
+of at most one step's closing travel.
 
 Guard: `src/tests/parry_manifold_witness.rs`. Mechanism and measurements:
 [local upstream draft](../../upstream/parry-normal-constraints-drop-deepest-contact.md).
@@ -49,19 +55,16 @@ thin body over an edge meets that at overlaps under its own thickness: the draft
 Upstream cuts a hull's support face to its first four corners, so two hulls face on face can clip
 to nothing and rest on one moving point:
 [local upstream draft](../../upstream/parry-support-face-first-four-corners.md), which owns the
-mechanism, the two faults below it and the measurements. Fork-specific:
+mechanism, the two faults below it, the measurements and the cost. Its plane and merge fixes are
+applied at `mean_plane` and `ConvexPolyhedron::from_convex_mesh`. Fork-specific:
 
 - **`Corners<T>`**, a `SmallVec` of eight inline, holds a feature's `vertices`, `vids` and `eids`.
   `Resolution`: the inline size alone; a face of more corners is kept whole on the heap.
-- **The fixed shapes** (`cuboid.rs`, `polygonal_feature_map.rs`) assign the same four slots as
-  before, whole, so `len() >= num_vertices` holds for every feature.
+- **The fixed shapes** (`cuboid.rs`, `polygonal_feature_map.rs`) assign each list whole, so
+  `len() >= num_vertices` holds for every feature; padding beyond `num_vertices` is not the
+  feature's.
 - **`smallvec` is behind parry's `alloc` feature**, which Avian enables; the fork does not build
   without it.
-- **A face's plane is the mean plane of its corners** (`mean_plane`), where upstream read it off
-  the first three.
-- **A face is flat within the merge tolerance** (`ConvexPolyhedron::from_convex_mesh`): triangles
-  join the face of the first one they lie within the tolerance of, where upstream joined every
-  two neighbours within it.
 
 Every shipped hull (MEASURED, one boot of the shipped map with its ten constructions: 10 610
 hulls, 77 960 faces):
@@ -75,17 +78,17 @@ hulls, 77 960 faces):
 | track soft runs | 152 | 8 | 36 |
 | tank primitives | 66 | 4 | 16 |
 
-The furthest any corner lies from its face's mean plane is 0.23 mm (a side plate). Under
-upstream's merge it was 110 mm (side-plate faces of 26 to 28 corners bent along the 10-chord
-arcs), and from the plane of a face's first three corners 725 mm (a track stop, the three near a
-line).
+The inline size stays eight: the faces over it are 1.0 % of all faces (the share of queries that
+spill is unmeasured), and on the tracks they are the wheel-side caps, which face sideways, not
+the rim faces that meet the ground each tick (DERIVED from the colliders' build). The hosted
+narrow phase's cost under the clip is not measured.
 
-Cost (DERIVED): a query whose support face has more than eight corners allocates three times for
-the feature and once or twice in the clip (first or second shape), so nine times where both faces
-do; faces of n and m corners cost 2·n·m side tests and n·m edge pairs, where the published crate
-capped both at 4·4. The hosted narrow phase's cost under it is not measured. The inline size
-stays eight: the faces over it are 1.0 % of all, and on the tracks they are the wheel-side caps,
-which face sideways, not the rim faces that meet the ground each tick.
+What else the merge moved: a hull's faces are what `to_trimesh` fans, which parry's hull mass
+properties read (a rubble chunk's mass, `src/construction/breakage.rs`), and the track's belt
+support on rubble (`src/track/rubble.rs`) and Avian's trimesh builder with them. Where an old
+face bent, its fan triangles were chords inside the hull, so mass and support surface were
+slightly under the true hull and now match it (DERIVED). How many rubble hulls changed their
+face grouping, and by how much mass, is unmeasured.
 
 Guards, in `src/tests/parry_manifold_witness.rs`:
 `two_hulls_face_on_face_report_every_corner_inside_the_other_face`,

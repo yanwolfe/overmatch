@@ -468,8 +468,7 @@ impl ConvexPolyhedron {
 
         // OVERMATCH PATCH: a face is the triangles reached from its first one across edges whose
         // normals lie within `eps` of that first one's, so no face bends by more than the
-        // tolerance. Upstream merged every two neighbours within it, and a row of them, each a
-        // little off the last, became one face bent without bound.
+        // tolerance (upstream merged every two neighbours within it).
         let mut first_of = alloc::vec![usize::MAX; triangles.len()];
         for first in 0..triangles.len() {
             if first_of[first] != usize::MAX {

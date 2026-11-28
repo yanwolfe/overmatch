@@ -321,8 +321,8 @@ Known differences between the channels, none tuned:
 - **The law within a step.** A contact's shares and the points that bear are read once, at the
   narrow phase, so its stiffness is exact for a common compression of its links, not for one piece
   retreating alone. The points split the force by `overlap + rest`, so the centre of pressure and
-  the rotational stiffness are those of the at most four points Avian's narrow phase keeps of a
-  manifold, and Avian's midpoint point sits
+  the rotational stiffness are those of the at most four points Avian keeps per manifold, and its
+  midpoint point sits
   half the overlap inside the run, so a foot near a corner can land one link over.
 - **The secant it replaced** was a damping error, not a feel defect: within a step a secant `k_sec`
   in place of the tangent `K` acts as a damper of `(k_sec − K)·dt/2`, about `0.084·(k_sec/K − 1)` of
