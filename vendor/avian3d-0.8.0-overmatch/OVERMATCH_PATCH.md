@@ -289,6 +289,32 @@ manifolds unregenerated while it rests, and skips the belt's `WorldContacts::mod
 (`src/track/stop_contacts.rs`), which must run every step for every candidate belt-face pair: those
 pairs at least would have to stay exempt.
 
+Exempting them is not enough. The recycle test reads the two bodies' relative pose and nothing
+else of what the query reads, and a recycled contact keeps the last query's anchors, world point
+and normal speed. A trial at Avian's default (2026-11-28: pairs under `modify_contacts` exempt,
+the world point and normal speed recomputed for a recycled point) left these:
+
+- A collider moved on its body is not seen: a tank's turret proxy turns on a hull at rest and its
+  pairs stay recycled (DERIVED from the test, which reads `body.position` and `body.rotation`
+  only). Neither is a collider reshaped in place: `a_sleeping_island_that_meets_a_frozen_one_waits_for_its_thaw`
+  (`src/debris/freeze.rs`) fails at "the grown collider touches the sleeping piece" (MEASURED).
+- The solver takes a recycled point's anchors as the last query left them, so the game's contact
+  reading no longer reproduces the solver's effective mass from the point
+  (`the_reading_is_the_momentum_the_solver_moved` and its finite-surface twin in
+  `src/contact_transfer.rs` fail, MEASURED), and the work-budget seam charges a held body work
+  (`a_body_pushed_out_held_or_resting_does_no_work`, 0.0057 J where none is done, MEASURED).
+- A touching pair of two bodies under the reduction pass loses its cache every step
+  (`avian_ext::contact_reduction`), so among loose pieces recycling holds 0.6 to 0.9 of 2.6 to
+  3.2 touching pairs per awake piece per tick (MEASURED); what it spares is misses.
+- A recycled miss never reaches the stationary-miss cache: 0.00 returns per awake piece per tick
+  against 0.4 to 1.9 with recycling off (MEASURED).
+
+What the trial counted, per awake piece per tick on local passes through the map's house and
+hall, bounds test live in both arms (MEASURED, two or three gate-valid passes an arm and workload): 4.7 to
+6.9 geometry queries with recycling against 9.4 to 12.2 without. A recycler the game could run
+keys on every input the stationary-miss key holds, within a motion budget; that is one design
+with that cache, not a setting.
+
 ## Minimum speculative margin: dropped
 
 The 0.7 fork floored the speculative margin shared by the geometry query and point pruning at the
