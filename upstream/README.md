@@ -34,6 +34,8 @@ a public seam and has no crate patch to retire.
 | [lightyear-avian-child-collider-pose-churn.md](lightyear-avian-child-collider-pose-churn.md) | lightyear_avian3d 0.31.0 | bug fix | 0 | not sent |
 | [avian-ccd-sensors-swept-and-counted.md](avian-ccd-sensors-swept-and-counted.md) | avian3d 0.8.0 | bug fix | 7 | not sent; query ships, observer/thickness proposal compile-only |
 | [avian-ccd-decide-per-collider.md](avian-ccd-decide-per-collider.md) | avian3d 0.8.0 | bug fix | 15 | not sent; includes the small lazy-shape patch |
+| [parry-normal-constraints-drop-deepest-contact.md](parry-normal-constraints-drop-deepest-contact.md) | parry3d 0.31.1 | bug fix | 8 | not sent; the fork applies its overlap clause alone |
+| [parry-support-face-first-four-corners.md](parry-support-face-first-four-corners.md) | parry3d 0.31.1 | bug fix | 234 | not sent; the field types change, a breaking change upstream |
 
 MEASURED index census: 20 current draft rows, 14 targeting Avian.
 

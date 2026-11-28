@@ -113,15 +113,12 @@ pub fn contact_manifold_pfm_pfm<'a, ManifoldData, ContactData, S1, S2>(
             );
 
             // OVERMATCH PATCH: upstream keeps the closest-point pair only where the constraints
-            // left the direction bit-equal. Kept here: a direction unchanged within rounding,
-            // and a turned pair that overlaps (`dist`, the pair's own signed distance; touching,
-            // `dist == 0.0`, counts as a gap). A turned pair with a gap stays dropped: read
-            // along the corrected normal its gap shrinks by the cosine of the turn.
-            // `dir` and `local_n1` are finite unit vectors, so their dot is that cosine.
-            // Resolution: 1.0e-6, over the 1e-7 by which an f32 unit vector rotated into
-            // another frame and back differs from itself.
+            // left the direction bit-equal. Kept here as well: a turned pair that overlaps
+            // (`dist`, the pair's own signed distance; touching, `dist == 0.0`, counts as a
+            // gap). A turned pair with a gap stays dropped: read along the corrected normal its
+            // gap shrinks by the cosine of the turn.
             if (cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty())
-                && (local_n1.dot(dir) >= 1.0 - 1.0e-6 || dist < 0.0)
+                && (local_n1 == dir || dist < 0.0)
             {
                 let contact = TrackedContact::new(
                     p1,

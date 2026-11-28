@@ -1,4 +1,7 @@
 use crate::math::Vector;
+// OVERMATCH PATCH: a feature's vertices and ids are `Corners`, assigned whole.
+#[cfg(feature = "dim3")]
+use super::polygonal_feature3d::Corners;
 #[cfg(feature = "dim3")]
 use crate::shape::{Cone, Cylinder, PackedFeatureId};
 use crate::shape::{Cuboid, PolygonalFeature, Segment, SupportMap, Triangle};
@@ -107,35 +110,38 @@ impl Cylinder {
         //   segment endpoints.
         if dir.y.abs() < 0.5 {
             // We return a segment lying on the cylinder's curved part.
-            out_features.vertices[0] = Vector::new(
-                dir2.x * self.radius,
-                -self.half_height,
-                dir2.y * self.radius,
-            );
-            out_features.vertices[1] =
-                Vector::new(dir2.x * self.radius, self.half_height, dir2.y * self.radius);
-            out_features.eids = PackedFeatureId::edges([0, 0, 0, 0]);
+            out_features.vertices = Corners::from_slice(&[
+                Vector::new(
+                    dir2.x * self.radius,
+                    -self.half_height,
+                    dir2.y * self.radius,
+                ),
+                Vector::new(dir2.x * self.radius, self.half_height, dir2.y * self.radius),
+            ]);
+            out_features.eids = Corners::from_slice(&PackedFeatureId::edges([0, 0, 0, 0]));
             out_features.fid = PackedFeatureId::face(0);
             out_features.num_vertices = 2;
-            out_features.vids = PackedFeatureId::vertices([1, 11, 11, 11]);
+            out_features.vids = Corners::from_slice(&PackedFeatureId::vertices([1, 11, 11, 11]));
         } else {
             // We return a square approximation of the cylinder cap.
             let y = dir.y.copy_sign_to(self.half_height);
-            out_features.vertices[0] = Vector::new(dir2.x * self.radius, y, dir2.y * self.radius);
-            out_features.vertices[1] = Vector::new(-dir2.y * self.radius, y, dir2.x * self.radius);
-            out_features.vertices[2] = Vector::new(-dir2.x * self.radius, y, -dir2.y * self.radius);
-            out_features.vertices[3] = Vector::new(dir2.y * self.radius, y, -dir2.x * self.radius);
+            out_features.vertices = Corners::from_slice(&[
+                Vector::new(dir2.x * self.radius, y, dir2.y * self.radius),
+                Vector::new(-dir2.y * self.radius, y, dir2.x * self.radius),
+                Vector::new(-dir2.x * self.radius, y, -dir2.y * self.radius),
+                Vector::new(dir2.y * self.radius, y, -dir2.x * self.radius),
+            ]);
 
             if dir.y < 0.0 {
-                out_features.eids = PackedFeatureId::edges([2, 4, 6, 8]);
+                out_features.eids = Corners::from_slice(&PackedFeatureId::edges([2, 4, 6, 8]));
                 out_features.fid = PackedFeatureId::face(9);
                 out_features.num_vertices = 4;
-                out_features.vids = PackedFeatureId::vertices([1, 3, 5, 7]);
+                out_features.vids = Corners::from_slice(&PackedFeatureId::vertices([1, 3, 5, 7]));
             } else {
-                out_features.eids = PackedFeatureId::edges([12, 14, 16, 18]);
+                out_features.eids = Corners::from_slice(&PackedFeatureId::edges([12, 14, 16, 18]));
                 out_features.fid = PackedFeatureId::face(19);
                 out_features.num_vertices = 4;
-                out_features.vids = PackedFeatureId::vertices([11, 13, 15, 17]);
+                out_features.vids = Corners::from_slice(&PackedFeatureId::vertices([11, 13, 15, 17]));
             }
         }
     }
@@ -180,28 +186,32 @@ impl Cone {
         //   segment endpoints.
         if dir.y > 0.0 {
             // We return a segment lying on the cone's curved part.
-            out_features.vertices[0] = Vector::new(
-                dir2.x * self.radius,
-                -self.half_height,
-                dir2.y * self.radius,
-            );
-            out_features.vertices[1] = Vector::new(0.0, self.half_height, 0.0);
-            out_features.eids = PackedFeatureId::edges([0, 0, 0, 0]);
+            out_features.vertices = Corners::from_slice(&[
+                Vector::new(
+                    dir2.x * self.radius,
+                    -self.half_height,
+                    dir2.y * self.radius,
+                ),
+                Vector::new(0.0, self.half_height, 0.0),
+            ]);
+            out_features.eids = Corners::from_slice(&PackedFeatureId::edges([0, 0, 0, 0]));
             out_features.fid = PackedFeatureId::face(0);
             out_features.num_vertices = 2;
-            out_features.vids = PackedFeatureId::vertices([1, 11, 11, 11]);
+            out_features.vids = Corners::from_slice(&PackedFeatureId::vertices([1, 11, 11, 11]));
         } else {
             // We return a square approximation of the cone cap.
             let y = -self.half_height;
-            out_features.vertices[0] = Vector::new(dir2.x * self.radius, y, dir2.y * self.radius);
-            out_features.vertices[1] = Vector::new(-dir2.y * self.radius, y, dir2.x * self.radius);
-            out_features.vertices[2] = Vector::new(-dir2.x * self.radius, y, -dir2.y * self.radius);
-            out_features.vertices[3] = Vector::new(dir2.y * self.radius, y, -dir2.x * self.radius);
+            out_features.vertices = Corners::from_slice(&[
+                Vector::new(dir2.x * self.radius, y, dir2.y * self.radius),
+                Vector::new(-dir2.y * self.radius, y, dir2.x * self.radius),
+                Vector::new(-dir2.x * self.radius, y, -dir2.y * self.radius),
+                Vector::new(dir2.y * self.radius, y, -dir2.x * self.radius),
+            ]);
 
-            out_features.eids = PackedFeatureId::edges([2, 4, 6, 8]);
+            out_features.eids = Corners::from_slice(&PackedFeatureId::edges([2, 4, 6, 8]));
             out_features.fid = PackedFeatureId::face(9);
             out_features.num_vertices = 4;
-            out_features.vids = PackedFeatureId::vertices([1, 3, 5, 7]);
+            out_features.vids = Corners::from_slice(&PackedFeatureId::vertices([1, 3, 5, 7]));
         }
     }
 }

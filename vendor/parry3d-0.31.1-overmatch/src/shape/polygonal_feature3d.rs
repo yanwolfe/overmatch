@@ -1,5 +1,6 @@
 use crate::math::{Pose, Vector};
 use crate::shape::{PackedFeatureId, Segment, Triangle};
+use smallvec::SmallVec;
 #[cfg(feature = "alloc")]
 use crate::{
     math::{Real, Vector2},
@@ -8,28 +9,38 @@ use crate::{
     utils::WBasis,
 };
 
+// OVERMATCH PATCH.
+/// One value per corner of a feature. Resolution: eight inline, where the published crate held
+/// four; a face of more corners is kept whole on the heap. Eight holds 99.0 % of the faces of
+/// the game's shipped hulls without allocating (MEASURED: 804 of 77 960 have more, the most 65;
+/// `OVERMATCH_PATCH.md`).
+pub type Corners<T> = SmallVec<[T; 8]>;
+
 /// A polygonal feature representing the local polygonal approximation of
 /// a vertex, face, or edge of a convex shape.
 #[derive(Debug, Clone)]
 pub struct PolygonalFeature {
-    /// Up to four vertices forming this polygonal feature.
-    pub vertices: [Vector; 4],
+    // OVERMATCH PATCH: a face keeps every corner. Invariant: `vertices`, `vids` and `eids` each
+    // have `len() >= num_vertices`, and only their first `num_vertices` entries are the
+    // feature's (a segment or a triangle from the fixed shapes fills four slots).
+    /// The vertices forming this polygonal feature.
+    pub vertices: Corners<Vector>,
     /// The feature IDs of this polygon's vertices.
-    pub vids: [PackedFeatureId; 4],
+    pub vids: Corners<PackedFeatureId>,
     /// The feature IDs of this polygon's edges.
-    pub eids: [PackedFeatureId; 4],
+    pub eids: Corners<PackedFeatureId>,
     /// The feature ID of this polygonal feature.
     pub fid: PackedFeatureId,
-    /// The number of vertices on this polygon (must be <= 4).
+    /// The number of vertices on this polygon.
     pub num_vertices: usize,
 }
 
 impl Default for PolygonalFeature {
     fn default() -> Self {
         Self {
-            vertices: [Vector::ZERO; 4],
-            vids: [PackedFeatureId::UNKNOWN; 4],
-            eids: [PackedFeatureId::UNKNOWN; 4],
+            vertices: Corners::from_slice(&[Vector::ZERO; 4]),
+            vids: Corners::from_slice(&[PackedFeatureId::UNKNOWN; 4]),
+            eids: Corners::from_slice(&[PackedFeatureId::UNKNOWN; 4]),
             fid: PackedFeatureId::UNKNOWN,
             num_vertices: 0,
         }
@@ -39,9 +50,9 @@ impl Default for PolygonalFeature {
 impl From<Triangle> for PolygonalFeature {
     fn from(tri: Triangle) -> Self {
         Self {
-            vertices: [tri.a, tri.b, tri.c, tri.c],
-            vids: PackedFeatureId::vertices([0, 1, 2, 2]),
-            eids: PackedFeatureId::edges([0, 1, 2, 2]),
+            vertices: Corners::from_slice(&[tri.a, tri.b, tri.c, tri.c]),
+            vids: Corners::from_slice(&PackedFeatureId::vertices([0, 1, 2, 2])),
+            eids: Corners::from_slice(&PackedFeatureId::edges([0, 1, 2, 2])),
             fid: PackedFeatureId::face(0),
             num_vertices: 3,
         }
@@ -51,9 +62,9 @@ impl From<Triangle> for PolygonalFeature {
 impl From<Segment> for PolygonalFeature {
     fn from(seg: Segment) -> Self {
         Self {
-            vertices: [seg.a, seg.b, seg.b, seg.b],
-            vids: PackedFeatureId::vertices([0, 1, 1, 1]),
-            eids: PackedFeatureId::edges([0, 0, 0, 0]),
+            vertices: Corners::from_slice(&[seg.a, seg.b, seg.b, seg.b]),
+            vids: Corners::from_slice(&PackedFeatureId::vertices([0, 1, 1, 1])),
+            eids: Corners::from_slice(&PackedFeatureId::edges([0, 0, 0, 0])),
             fid: PackedFeatureId::face(0),
             num_vertices: 2,
         }
@@ -209,42 +220,21 @@ impl PolygonalFeature {
         // and contains the origin (this is numerically OK because
         // we are not working in world-space here).
         let basis = sep_axis1.orthonormal_basis();
-        let projected_face1 = [
-            Vector2::new(
-                face1.vertices[0].dot(basis[0]),
-                face1.vertices[0].dot(basis[1]),
-            ),
-            Vector2::new(
-                face1.vertices[1].dot(basis[0]),
-                face1.vertices[1].dot(basis[1]),
-            ),
-            Vector2::new(
-                face1.vertices[2].dot(basis[0]),
-                face1.vertices[2].dot(basis[1]),
-            ),
-            Vector2::new(
-                face1.vertices[3].dot(basis[0]),
-                face1.vertices[3].dot(basis[1]),
-            ),
-        ];
-
-        let vertices2_1 = [
-            pos12 * face2.vertices[0],
-            pos12 * face2.vertices[1],
-            pos12 * face2.vertices[2],
-            pos12 * face2.vertices[3],
-        ];
-        let projected_face2 = [
-            Vector2::new(vertices2_1[0].dot(basis[0]), vertices2_1[0].dot(basis[1])),
-            Vector2::new(vertices2_1[1].dot(basis[0]), vertices2_1[1].dot(basis[1])),
-            Vector2::new(vertices2_1[2].dot(basis[0]), vertices2_1[2].dot(basis[1])),
-            Vector2::new(vertices2_1[3].dot(basis[0]), vertices2_1[3].dot(basis[1])),
-        ];
+        // OVERMATCH PATCH: a face keeps every corner.
+        let project = |p: &Vector| Vector2::new(p.dot(basis[0]), p.dot(basis[1]));
+        let projected_face1: Corners<Vector2> = face1.vertices[..face1.num_vertices]
+            .iter()
+            .map(project)
+            .collect();
+        let vertices2_1: Corners<Vector> = face2.vertices[..face2.num_vertices]
+            .iter()
+            .map(|p| pos12 * *p)
+            .collect();
+        let projected_face2: Corners<Vector2> = vertices2_1.iter().map(project).collect();
 
         // Also find all the vertices located inside of the other projected face.
         if face2.num_vertices > 2 {
-            let normal2_1 =
-                (vertices2_1[2] - vertices2_1[1]).cross(vertices2_1[0] - vertices2_1[1]);
+            let (origin2_1, normal2_1) = mean_plane(&vertices2_1);
             let denom = normal2_1.dot(sep_axis1);
 
             if !relative_eq!(denom, 0.0) {
@@ -270,7 +260,7 @@ impl PolygonalFeature {
 
                     // All the perp had the same sign: the point is inside of the other shapes projection.
                     // Output the contact.
-                    let dist = (vertices2_1[0] - face1.vertices[i]).dot(normal2_1) / denom;
+                    let dist = (origin2_1 - face1.vertices[i]).dot(normal2_1) / denom;
                     let local_p1 = face1.vertices[i];
                     let local_p2_1 = face1.vertices[i] + dist * sep_axis1;
 
@@ -287,8 +277,7 @@ impl PolygonalFeature {
         }
 
         if face1.num_vertices > 2 {
-            let normal1 = (face1.vertices[2] - face1.vertices[1])
-                .cross(face1.vertices[0] - face1.vertices[1]);
+            let (origin1, normal1) = mean_plane(&face1.vertices[..face1.num_vertices]);
 
             let denom = -normal1.dot(sep_axis1);
             if !relative_eq!(denom, 0.0) {
@@ -312,7 +301,7 @@ impl PolygonalFeature {
 
                     // All the perp had the same sign: the point is inside of the other shapes projection.
                     // Output the contact.
-                    let dist = (face1.vertices[0] - vertices2_1[i]).dot(normal1) / denom;
+                    let dist = (origin1 - vertices2_1[i]).dot(normal1) / denom;
                     let local_p2_1 = vertices2_1[i];
                     let local_p1 = vertices2_1[i] - dist * sep_axis1;
 
@@ -366,6 +355,18 @@ impl PolygonalFeature {
             }
         }
     }
+}
+
+// OVERMATCH PATCH: a face's plane is the mean plane of all its corners, a point of it and its
+// normal scaled by twice the face's area (Newell's sum, about the corners' mean). Upstream read
+// the plane off the first three corners, which on a face of many corners are near a line.
+#[cfg(feature = "alloc")]
+fn mean_plane(corners: &[Vector]) -> (Vector, Vector) {
+    let origin = corners.iter().copied().sum::<Vector>() / corners.len() as Real;
+    let normal = (0..corners.len())
+        .map(|i| (corners[i] - origin).cross(corners[(i + 1) % corners.len()] - origin))
+        .sum();
+    (origin, normal)
 }
 
 /// Compute the barycentric coordinates of the intersection between the two given lines.

@@ -466,10 +466,33 @@ impl ConvexPolyhedron {
 
         // Find edges that must be deleted.
 
+        // OVERMATCH PATCH: a face is the triangles reached from its first one across edges whose
+        // normals lie within `eps` of that first one's, so no face bends by more than the
+        // tolerance. Upstream merged every two neighbours within it, and a row of them, each a
+        // little off the last, became one face bent without bound.
+        let mut first_of = alloc::vec![usize::MAX; triangles.len()];
+        for first in 0..triangles.len() {
+            if first_of[first] != usize::MAX {
+                continue;
+            }
+            first_of[first] = first;
+            let mut open = alloc::vec![first];
+            while let Some(reached) = open.pop() {
+                for e in triangles[reached].edges {
+                    let [a, b] = edges[e as usize].faces;
+                    let next = if a as usize == reached { b } else { a } as usize;
+                    let normal = triangles.get(next)?.normal;
+                    if first_of[next] == usize::MAX
+                        && triangles[first].normal.dot(normal) > 1.0 - eps
+                    {
+                        first_of[next] = first;
+                        open.push(next);
+                    }
+                }
+            }
+        }
         for e in &mut edges {
-            let tri1 = triangles.get(e.faces[0] as usize)?;
-            let tri2 = triangles.get(e.faces[1] as usize)?;
-            if tri1.normal.dot(tri2.normal) > 1.0 - eps {
+            if first_of[e.faces[0] as usize] == first_of[e.faces[1] as usize] {
                 e.deleted = true;
             }
         }
@@ -957,19 +980,19 @@ impl PolygonalFeatureMap for ConvexPolyhedron {
 
         let face = &self.faces[best_fid];
         let i1 = face.first_vertex_or_edge;
-        // TODO: if there are more than 4 vertices, we need to select four vertices that maximize the area.
-        let num_vertices = face.num_vertices_or_edges.min(4);
-        let i2 = i1 + num_vertices;
+        // OVERMATCH PATCH: a face keeps every corner. Each list is filled from a slice of known
+        // length, so one over the inline size allocates once.
+        let num_vertices = face.num_vertices_or_edges;
+        let corners = i1 as usize..(i1 + num_vertices) as usize;
+        let vids = &self.vertices_adj_to_face[corners.clone()];
+        let eids = &self.edges_adj_to_face[corners];
 
-        for (i, (vid, eid)) in self.vertices_adj_to_face[i1 as usize..i2 as usize]
-            .iter()
-            .zip(self.edges_adj_to_face[i1 as usize..i2 as usize].iter())
-            .enumerate()
-        {
-            out_feature.vertices[i] = self.points[*vid as usize];
-            out_feature.vids[i] = PackedFeatureId::vertex(*vid);
-            out_feature.eids[i] = PackedFeatureId::edge(*eid);
-        }
+        out_feature.vertices.clear();
+        out_feature.vids.clear();
+        out_feature.eids.clear();
+        (out_feature.vertices).extend(vids.iter().map(|vid| self.points[*vid as usize]));
+        (out_feature.vids).extend(vids.iter().map(|vid| PackedFeatureId::vertex(*vid)));
+        (out_feature.eids).extend(eids.iter().map(|eid| PackedFeatureId::edge(*eid)));
 
         out_feature.fid = PackedFeatureId::face(best_fid as u32);
         out_feature.num_vertices = num_vertices as usize;
