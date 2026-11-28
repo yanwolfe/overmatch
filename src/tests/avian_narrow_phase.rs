@@ -9,7 +9,7 @@ use avian3d::collision::collider::EnlargedAabb;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use super::avian_child_pose_churn::physics_app;
+use super::avian_child_pose_churn::{physics_app, tolerance};
 
 /// Fixture: separated spheres with overlapping AABBs, at a scale whose gap exceeds the configured
 /// contact tolerance. Sensors keep contact tests independent of solver response. One fixed step per
@@ -413,63 +413,61 @@ fn stationary_miss_follows_child_motion_and_rehoming() {
     assert_eq!(miss_work(&app), (1, 1));
 }
 
-fn tolerance(app: &App) -> f32 {
-    app.world()
-        .resource::<NarrowPhaseConfig>()
-        .contact_tolerance
-        * app.world().resource::<PhysicsLengthUnit>().0
+/// Fixture: unit spheres, each a child of its body, whose gap is past both bounds' tolerance; the
+/// body on side `lender` lends its child a margin half a tolerance short of the gap, so the contact
+/// sits at the edge of the query's reach. Asserts the pair touches.
+fn a_contact_at_the_edge_of_a_lent_margin_is_found(lender: usize) {
+    let mut app = physics_app();
+    crate::headless_test::start_fixed_clock(&mut app);
+    app.insert_resource(Gravity::ZERO);
+    let tolerance = tolerance(&app);
+    let gap = 3.5 * tolerance;
+    let margin = gap - 0.5 * tolerance;
+    let sides = [(RigidBody::Static, 0.0), (RigidBody::Dynamic, 2.0 + gap)].map(|(kind, x)| {
+        let body = app
+            .world_mut()
+            .spawn((kind, Transform::from_xyz(x, 0.0, 0.0)))
+            .id();
+        let child = app
+            .world_mut()
+            .spawn((
+                ChildOf(body),
+                Transform::IDENTITY,
+                Collider::sphere(1.0),
+                Sensor,
+            ))
+            .id();
+        (body, child)
+    });
+    app.world_mut()
+        .entity_mut(sides[lender].0)
+        .insert(CollisionMargin(margin));
+    for _ in 0..3 {
+        app.update();
+    }
+    let [fixed, child] = sides.map(|(_, child)| child);
+    let bounds = |entity| *app.world().get::<ColliderAabb>(entity).unwrap();
+    assert!(
+        !bounds(fixed).intersects(&bounds(child)),
+        "fixture: the stored bounds are apart"
+    );
+    let graph = app.world().resource::<ContactGraph>();
+    assert!(graph.get(fixed, child).unwrap().1.is_touching());
 }
 
 /// Every contact relies on the bounds test before the geometry query reaching as far as the query
 /// does. The two part where the reach holds what no collider's bounds do: here a margin a body
-/// lends its child collider, from each side of the pair in turn. A test that reaches less than
-/// the query, by the stored bounds alone or by any shortfall past the half tolerance left here,
-/// drops this contact. (The reach's speculative term has no witness: `backlog.md`.)
-/// Fixture: unit spheres whose gap is past both bounds' tolerance, and a margin half a tolerance
-/// short of the gap, so the contact sits at the edge of the reach.
+/// lends its child collider. A test that reaches less than the query, by the stored bounds alone
+/// or by any shortfall past the half tolerance the fixture leaves, drops this contact.
 #[test]
-fn a_contact_inside_the_querys_reach_is_found_past_the_colliders_bounds() {
-    for lender in 0..2 {
-        let mut app = physics_app();
-        crate::headless_test::start_fixed_clock(&mut app);
-        app.insert_resource(Gravity::ZERO);
-        let tolerance = tolerance(&app);
-        let gap = 3.5 * tolerance;
-        let margin = gap - 0.5 * tolerance;
-        let sides = [(RigidBody::Static, 0.0), (RigidBody::Dynamic, 2.0 + gap)].map(|(kind, x)| {
-            let body = app
-                .world_mut()
-                .spawn((kind, Transform::from_xyz(x, 0.0, 0.0)))
-                .id();
-            let child = app
-                .world_mut()
-                .spawn((
-                    ChildOf(body),
-                    Transform::IDENTITY,
-                    Collider::sphere(1.0),
-                    Sensor,
-                ))
-                .id();
-            (body, child)
-        });
-        app.world_mut()
-            .entity_mut(sides[lender].0)
-            .insert(CollisionMargin(margin));
-        for _ in 0..3 {
-            app.update();
-        }
-        let [fixed, child] = sides.map(|(_, child)| child);
-        let bounds = |entity| *app.world().get::<ColliderAabb>(entity).unwrap();
-        assert!(
-            !bounds(fixed).intersects(&bounds(child)),
-            "fixture: the stored bounds are apart"
-        );
-        let graph = app.world().resource::<ContactGraph>();
-        assert!(
-            graph.get(fixed, child).unwrap().1.is_touching(),
-            "side {lender} lends the margin"
-        );
-    }
+fn a_contact_inside_a_margin_the_static_body_lends_is_found_past_the_bounds() {
+    a_contact_at_the_edge_of_a_lent_margin_is_found(0);
+}
+
+/// The same with the margin lent from the pair's other side.
+#[test]
+fn a_contact_inside_a_margin_the_dynamic_body_lends_is_found_past_the_bounds() {
+    a_contact_at_the_edge_of_a_lent_margin_is_found(1);
 }
 
 /// The solver and every contact reader rely on a pair the bounds test skips ending the step as

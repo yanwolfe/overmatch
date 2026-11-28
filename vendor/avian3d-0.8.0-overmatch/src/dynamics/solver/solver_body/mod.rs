@@ -611,8 +611,6 @@ pub struct SolverBodies {
     entities: Vec<Entity>,
     bodies: Vec<SolverBody>,
     inertias: Vec<SolverBodyInertia>,
-    // OVERMATCH PATCH: the bodies removed since the solver last prepared, for `left`.
-    left: Vec<Entity>,
     // OVERMATCH PATCH: bumped by every push, removal and clear.
     membership_changes: u64,
 }
@@ -625,22 +623,8 @@ impl SolverBodies {
             entities: Vec::new(),
             bodies: Vec::new(),
             inertias: Vec::new(),
-            left: Vec::new(), // OVERMATCH PATCH
             membership_changes: 0,
         }
-    }
-
-    /// OVERMATCH PATCH: the bodies that left since the solver last prepared, repeats included.
-    /// One of them the solver moved this step is absent from every later per-solver-body pass.
-    #[inline]
-    pub(crate) fn left(&self) -> &[Entity] {
-        &self.left
-    }
-
-    /// OVERMATCH PATCH: starts a step's record of the bodies that leave.
-    #[inline]
-    pub(crate) fn forget_left(&mut self) {
-        self.left.clear();
     }
 
     /// OVERMATCH PATCH: how many times the membership has changed. Two equal readings bound a
@@ -766,8 +750,7 @@ impl SolverBodies {
     /// Panics if the index is out of bounds.
     #[inline]
     pub fn swap_remove(&mut self, index: SolverBodyIndex) -> Option<Entity> {
-        let left = self.entities.swap_remove(index.0 as usize);
-        self.left.push(left); // OVERMATCH PATCH
+        self.entities.swap_remove(index.0 as usize);
         self.bodies.swap_remove(index.0 as usize);
         self.inertias.swap_remove(index.0 as usize);
         self.membership_changes += 1; // OVERMATCH PATCH

@@ -23,7 +23,7 @@ Each patch takes one form, named in its section:
 - **dropped**: upstream 0.8.0 does it; the old witness runs against unpatched code.
 
 Patched sites in upstream files are tagged `OVERMATCH PATCH`. Fork lines are counted by `diff --minimal -ruN`
-of `src/` against the published crate: 1175 in all (MEASURED), 1097 in upstream files and 78 in the
+of `src/` against the published crate: 1103 in all (MEASURED), 1025 in upstream files and 78 in the
 fork-only `src/collision/narrow_phase/stationary_miss.rs`.
 
 Guards run as the game's own tests, each named in its patch's section.
@@ -505,12 +505,10 @@ Same contacts: the comment beside the test states the invariant, and
 `upstream/avian-bounds-test-before-query.md` holds the argument and the counts. Each thing it
 relies on has its gate:
 
-- Bounds at the collider's pose: "Bounds of a body leaving the solver" below, and for a collider
-  enabled again the game's `avian_ext::child_poses::refresh_reenabled_bounds`.
+- Bounds at the collider's pose: "Bounds at the collider's pose" below.
 - Valid bounds: `assert_posed_bounds` at each of the three writes in `collider_tree/update.rs`,
-  in every build. A NaN or inverted bound answers "apart" to every comparison, which the test
-  would read as a miss. The assert is six comparisons beside a shape's bounds computation; it
-  also refuses a half-space, whose bounds are unbounded and which the game does not use.
+  in every build: six finiteness tests and three ordered compares per write, about one write per
+  awake collider per tick. Its cost in tick time is unmeasured.
 - A margin is never negative: a `const` assert beside the game's one authored margin
   (`src/world/boundary.rs`).
 - Each bounds holds the tolerance the query runs with: the game writes the narrow-phase settings
@@ -523,42 +521,40 @@ Kept: the test sits beside the query inside the private per-pair closure. 34 for
 test (MEASURED), 20 of them the query call re-indented under it; 14 for the asserts.
 
 Guards, in `src/tests/avian_narrow_phase.rs`:
-`a_contact_inside_the_querys_reach_is_found_past_the_colliders_bounds` (the margin term of the
-reach, lent from each side; its speculative term has no witness, backlog `destruction-30`) and
-`a_pair_the_bounds_test_skips_holds_no_contact`. The game's required-state gate
-(`avian_ext::required_state`) refuses a posed enabled collider without its `ColliderAabb`, which
-the bounds test reads.
+`a_contact_inside_a_margin_the_static_body_lends_is_found_past_the_bounds` and its dynamic-body
+twin witness the margin term of the reach (both red with the growth two tolerances short, in a
+build of that mutant alone, MEASURED); its speculative term has no witness, backlog
+`destruction-30`. `a_pair_the_bounds_test_skips_holds_no_contact` and the gate's per-component
+refusals went red under their mutants applied together in one build (MEASURED). The game's
+required-state gate (`avian_ext::required_state`) refuses a posed enabled collider without its
+`ColliderAabb`, which the bounds test reads.
 
-## Bounds of a body leaving the solver (`src/collider_tree/update.rs`, `src/dynamics/solver/solver_body/`): kept bug fix
+## Bounds at the collider's pose (`src/collider_tree/update.rs`): kept bug fix
 
 Subject: the game's server physics, collider bounds, game state only.
 
-Upstream refreshes the bounds of awake solver bodies after each step (`update_solver_body_aabbs`,
-`With<SolverBodyIndex>`) and of colliders whose pose changed since the last step
-(`update_moved_collider_aabbs`). A body the solver moved and that then left the solver in the
-same step (its island slept, a system in the physics schedule disabled it or made it static) is
-in neither: its index is gone before the first runs, and the solver's pose write is older than
-the tick the second compares against. Its `ColliderAabb` and tree proxy stay where the previous
-step put them until something else moves it: MEASURED 1.17 mm behind on a sphere asleep at half
-the default rest speed, a whole step's travel on a body made static.
+Stock Avian leaves a collider's `ColliderAabb` and tree proxy behind its pose in two cases; the
+defects, a repro and the measured lag are in the Record. The patch is two changes, each told
+beside its code:
 
-The patch records each body `SolverBodies::swap_remove` drops, from the solver's prepare to the
-next, and `update_solver_body_aabbs` runs its per-body pass over those too. A body that left as
-static is in the static tree, so the pass sizes all four trees' bit vectors, applies them all,
-and gives a static collider the tolerance-only enlargement `update_moved_collider_aabbs` gives
-it.
+- `update_solver_body_aabbs` runs last in the solver's set, not after
+  `PhysicsStepSystems::Finalize`, so a body that leaves the solver later in the step (its island
+  sleeps, a system disables it or makes it static) had its bounds refreshed while it still had
+  its index.
+- `update_moved_collider_aabbs` also examines a collider that joined a tree since the last
+  step, which covers one enabled again (`ColliderDisabled` or Bevy's `Disabled`) after its pose
+  changed while no pass visited it.
 
-A bug fix upstream would adopt: bounds that lag the pose are wrong for the broad phase and
-spatial queries on stock Avian too. 94 fork lines (MEASURED).
+The boundary that remains: a pose written inside the physics schedule after the solver's set, by
+anything but the solver, is seen when it next changes. Upstream has that boundary for static
+bodies already; the game has no such writer.
 
-A collider that carried `ColliderDisabled` while its pose changed is a second case, fixed
-game-side: its bounds stand still while it is disabled and no change tick moves when the marker
-leaves. `avian_ext::child_poses::refresh_reenabled_bounds` marks the pose changed on the removal,
-so `update_moved_collider_aabbs` recomputes the bounds before the next broad phase; on a body's
-own collider the mark also wakes the island.
+20 fork lines (MEASURED). A list in `SolverBodies` of the bodies that left, with a second pass
+over them in all four trees, did the first job in 94 lines and lost to moving the pass.
 
-Guards: `src/tests/avian_bounds_at_pose.rs`, one test per case (asleep, made static, enabled
-again), each red without its fix (MEASURED). Record:
+Guards: `src/tests/avian_bounds_at_pose.rs` (asleep, made static, disabled; a collider and an
+entity enabled again). The first three are red with the pass back after `Finalize` and the last
+two red without the joined-a-tree check, each mutant in its own build (MEASURED). Record:
 `upstream/avian-bounds-of-a-body-leaving-the-solver.md`.
 
 ## Resting misses stay active (`src/collision/contact_types/contact_graph.rs`, `src/dynamics/solver/islands/sleeping.rs`): hook

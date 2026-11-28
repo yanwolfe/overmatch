@@ -98,11 +98,11 @@ Three things it relies on. A `CollisionMargin` is never negative. Each `Collider
 current tolerance: a `contact_tolerance` changed at run time reaches a collider's AABB when its
 pose or shape next changes, and the broad phase pairs colliders under the same lag. And each
 `ColliderAabb` is at its collider's pose, which stock 0.8.0 breaks for a body that leaves the
-solver in the step that moved it (`avian-bounds-of-a-body-leaving-the-solver.md`) and for a
-collider enabled again after its pose changed; the lag there is one step of motion below the
-sleep thresholds, inside the spare tolerance for a body within about 7.5 length units of its
-centre of mass at the defaults (DERIVED: dt (0.15 + 0.15 r) against 0.02 at 64 Hz), and unbounded
-for a body made static mid-step.
+solver in the step that moved it and for a collider enabled again after its pose changed
+(`avian-bounds-of-a-body-leaving-the-solver.md`). For a sleeping island the lag is one step of
+motion below the sleep thresholds, inside the spare tolerance for a body within about 7.5 length
+units of its centre of mass at the defaults (DERIVED: dt (0.15 + 0.15 r) against 0.02 at 64 Hz);
+for the other cases it has no bound.
 
 Check, in the game: with the query still run for every pair, 0 of 4,550,540 pairs the test would
 have skipped kept a contact after pruning (MEASURED, three runs of collapsing buildings).
