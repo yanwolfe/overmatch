@@ -97,7 +97,9 @@ fn leave(mut commands: Commands, leaves: Res<Leaves>) {
     };
 }
 
-/// The collider a straight-down ray over `at` meets, found through the collider trees.
+/// The collider a straight-down ray over `at` meets, found through the collider trees. A tripwire
+/// on upstream's transfer of a proxy between trees, for the broad phase, which relies on it; it
+/// kills no mutant of the fork's patch on its own.
 fn hit_below(app: &mut App, at: Vec3) -> Option<Entity> {
     app.world_mut()
         .run_system_once(move |query: SpatialQuery| {
@@ -151,7 +153,8 @@ fn a_body_made_static_in_the_step_that_moved_it_has_bounds_at_its_pose() {
     );
 }
 
-/// The same for a body disabled after the solver moved it.
+/// The same for a body disabled after the solver moved it. The ray cast relies on a
+/// `RigidBodyDisabled` body's proxy staying in its tree.
 #[test]
 fn a_body_disabled_in_the_step_that_moved_it_has_bounds_at_its_pose() {
     let (app, body) = leaves_after_a_step_clear_of_its_bounds(Leaves::Disabled);

@@ -23,7 +23,7 @@ Each patch takes one form, named in its section:
 - **dropped**: upstream 0.8.0 does it; the old witness runs against unpatched code.
 
 Patched sites in upstream files are tagged `OVERMATCH PATCH`. Fork lines are counted by `diff --minimal -ruN`
-of `src/` against the published crate: 1103 in all (MEASURED), 1025 in upstream files and 78 in the
+of `src/` against the published crate: 1117 in all (MEASURED), 1039 in upstream files and 78 in the
 fork-only `src/collision/narrow_phase/stationary_miss.rs`.
 
 Guards run as the game's own tests, each named in its patch's section.
@@ -254,9 +254,11 @@ every enabled collider's pose, shape, bounds and proxy key, then skips those who
 thousands of standing static colliders fetched every step for nothing.
 
 The patch adds a third query to the system's `ParamSet`, the same data filtered
-`Or<(Changed<Position>, Changed<Rotation>, Changed<C>)>`, so a collider whose ticks did not move
-since the system's previous run costs the filter's three tick reads. Upstream's per-collider body,
-its `LastPhysicsTick` check included, is unchanged and runs for every collider the filter passes.
+`Or<(Changed<Position>, Changed<Rotation>, Changed<C>, Changed<ColliderTreeProxyKey>)>`, so a
+collider whose ticks did not move since the system's previous run costs the filter's four tick
+reads; the key's read, once per enabled collider per step, is unmeasured. Upstream's
+per-collider body, its `LastPhysicsTick` check with the joined-a-tree term ("Bounds at the
+collider's pose") included, runs for every collider the filter passes.
 That is exact while `LastPhysicsTick` is newer than the system's previous run: every tick newer
 than `LastPhysicsTick` is then newer than that run, so the filter passes every collider the check
 accepts. `update_last_physics_tick` runs after this system in every step, so inside the physics
@@ -545,12 +547,22 @@ beside its code:
   step, which covers one enabled again (`ColliderDisabled` or Bevy's `Disabled`) after its pose
   changed while no pass visited it.
 
-The boundary that remains: a pose written inside the physics schedule after the solver's set, by
-anything but the solver, is seen when it next changes. Upstream has that boundary for static
-bodies already; the game has no such writer.
+The window that remains: `update_moved_collider_aabbs` accepts only ticks newer than
+`LastPhysicsTick`, which is set after `PhysicsStepSystems::Last`. So inside the physics schedule
+from `ColliderTreeSystems::UpdateAabbs` to the end of the step, a pose, shape or tree-key write
+reaches the bounds only as the pose of an awake solver body written before the solver-body
+pass. For any collider that pass skips (static, sleeping, on a disabled body, standalone) the
+window is the whole of that span; a collider enabled inside it keeps its old bounds; each waits
+until its pose next changes. No game system writes there (checked by reading every game writer
+of `Position`, `Rotation`, `ColliderDisabled`, `Disabled` and `RigidBody`: child placement in
+`First` and `AfterFixedMainLoop`, the launched turret's pose in `FixedUpdate`, construction
+release and freeze in `FixedPostUpdate`, the rehome toggle outside the schedule). A form that
+closes the window is backlog `destruction-31`.
 
-20 fork lines (MEASURED). A list in `SolverBodies` of the bodies that left, with a second pass
-over them in all four trees, did the first job in 94 lines and lost to moving the pass.
+34 fork lines (MEASURED: `update.rs`'s count less the 64 it held before and the asserts' 14, so
+the prune's reworded comment is inside it). Rejected: a list in `SolverBodies` of the bodies that left,
+with a second pass over them in all four trees, did the first change's job in 94 fork lines
+(MEASURED; 92 as a draft diff, against 17 for both changes here) and lost to moving the pass.
 
 Guards: `src/tests/avian_bounds_at_pose.rs` (asleep, made static, disabled; a collider and an
 entity enabled again). The first three are red with the pass back after `Finalize` and the last

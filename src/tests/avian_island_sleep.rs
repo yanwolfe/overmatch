@@ -571,7 +571,6 @@ fn solved(app: &App, contact: ContactId) -> usize {
         .len()
 }
 
-/// The configured contact tolerance (m).
 /// Solver users need a miss that a body's last awake step closed to within the contact tolerance
 /// met at the resting poses, which links the two sleeping islands the step after. A mutant whose
 /// misses sleep with the island (avian #1032's transfer) holds the pair with the update from

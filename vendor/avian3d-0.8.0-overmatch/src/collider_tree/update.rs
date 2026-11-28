@@ -60,8 +60,18 @@ impl<C: AnyCollider> Plugin for ColliderTreeUpdatePlugin<C> {
         // OVERMATCH PATCH: last in the solver's set, while every body it moved still has its
         // `SolverBodyIndex`. Upstream ran this after `PhysicsStepSystems::Finalize`, by when a
         // body whose island slept in this step has lost its index, and its bounds stayed one
-        // step behind its pose. A pose written later in this schedule by anything but the
-        // solver is not seen until it changes again, as for a static body upstream.
+        // step behind its pose. Inside the set after `StoreContactImpulses`, not merely after
+        // the set: there a system ordered after the set made the schedule refuse to build on
+        // an ambiguity. The pass shares no data with `store_contact_impulses`; running the two
+        // at once is unmeasured.
+        //
+        // The window this leaves: `update_moved_collider_aabbs` accepts only ticks newer than
+        // `LastPhysicsTick`, set after `PhysicsStepSystems::Last`. So from
+        // `ColliderTreeSystems::UpdateAabbs` to the end of the step, a pose, shape or tree-key
+        // write reaches the bounds only as the pose of an awake solver body written before
+        // this pass. Any other (to a static, sleeping or standalone collider, one on a
+        // disabled body, a collider enabled in the window, anything after this pass) waits
+        // until that collider's pose next changes.
         app.add_systems(
             PhysicsSchedule,
             (clear_moved_proxies, update_solver_body_aabbs::<C>)
@@ -698,7 +708,7 @@ fn assert_posed_bounds(aabb: &ColliderAabb, collider: Entity) {
 }
 
 /// Updates the AABBs of the colliders of each [`SolverBody`] (awake dynamic and kinematic bodies)
-/// after the physics step.
+/// after the solver (OVERMATCH PATCH: upstream, after the physics step).
 ///
 /// [`SolverBody`]: crate::dynamics::solver::solver_body::SolverBody
 // TODO: Once dynamic an kinematic bodies have their own marker components,
@@ -942,9 +952,10 @@ pub fn update_moved_collider_aabbs<C: AnyCollider>(
 
     // TODO: This doesn't do velocity-based enlargement like the dynamic/kinematic AABB update.
     //       We should overall rework CCD to not rely on velocity-based AABB enlargement for all bodies.
-    // OVERMATCH PATCH: examine only the colliders whose pose or shape changed since this system's
-    // previous run, pruned by the query's change filter, so a standing collider costs its three
-    // tick reads. Exact while `LastPhysicsTick` is newer than that run, as
+    // OVERMATCH PATCH: examine only the colliders whose pose, shape or tree key changed since
+    // this system's previous run, pruned by the query's change filter, so a standing collider
+    // costs its four tick reads (the key's, once per enabled collider per step, is unmeasured).
+    // Exact while `LastPhysicsTick` is newer than that run, as
     // `update_last_physics_tick`, running after this system in every step, makes it: every collider
     // the tick check below accepts then passes the filter. Any other run examines every collider.
     let examined = ThreadLocal::<core::cell::Cell<u32>>::new();
@@ -962,14 +973,15 @@ pub fn update_moved_collider_aabbs<C: AnyCollider>(
             collision_margin,
             proxy_key,
         ) = item;
-        // OVERMATCH PATCH: upstream's per-collider body, unchanged.
+        // OVERMATCH PATCH: upstream's per-collider body, with the joined-a-tree check.
         {
             // Skip if the collider's AABB can't have changed since the last physics tick.
             let collider_changed = collider.last_changed().is_newer_than(last_tick.0, this_run);
             // OVERMATCH PATCH: a collider that joined a tree since the last tick is examined
             // too. No bounds pass visits a collider while it is disabled, and enabling it again
             // moves no pose or shape tick, so upstream kept the bounds it was disabled with
-            // wherever it stood now; joining a tree writes its key.
+            // wherever it stood now; joining a tree writes its key. A collider enabled inside
+            // the window named at this plugin's schedule is not covered.
             if !pos.last_changed().is_newer_than(last_tick.0, this_run)
                 && !rot.last_changed().is_newer_than(last_tick.0, this_run)
                 && !collider_changed

@@ -853,12 +853,12 @@ impl<C: AnyCollider> NarrowPhase<'_, '_, C> {
                 let context =
                     ColliderPairContext::new(collider1.entity, collider2.entity, collider_context);
                 // OVERMATCH PATCH: bounds farther apart than the query reaches are its miss.
-                // Each `ColliderAabb` holds its shape at the collider's pose, grown by the
-                // contact tolerance and the collider's own margin (a thickness, never negative),
-                // so with one of them grown by the rest of the reach, disjoint bounds put the
-                // shapes more than `max_contact_distance + contact_tolerance` apart: the spare
-                // tolerance covers the rounding of the bounds and of the query. The bounds are
-                // at the pose (kept by `collider_tree::update`). A tolerance changed mid-run
+                // Each `ColliderAabb` holds its shape at the collider's pose (kept by
+                // `collider_tree::update`), grown by the contact tolerance and the collider's
+                // own margin (a thickness, never negative), so with one of them grown by the
+                // rest of the reach, disjoint bounds put the shapes more than
+                // `max_contact_distance + contact_tolerance` apart: the spare tolerance covers
+                // the rounding of the bounds and of the query. A tolerance changed mid-run
                 // reaches a collider's bounds when its pose or shape next changes; the broad
                 // phase pairs colliders under the same lag.
                 let within_reach = collider1.aabb.intersects(

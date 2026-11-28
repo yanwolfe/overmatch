@@ -102,7 +102,11 @@ solver in the step that moved it and for a collider enabled again after its pose
 (`avian-bounds-of-a-body-leaving-the-solver.md`). For a sleeping island the lag is one step of
 motion below the sleep thresholds, inside the spare tolerance for a body within about 7.5 length
 units of its centre of mass at the defaults (DERIVED: dt (0.15 + 0.15 r) against 0.02 at 64 Hz);
-for the other cases it has no bound.
+for the other cases it has no bound. With both fixed, one window remains: a pose, shape or
+tree-key write inside the physics schedule between `ColliderTreeSystems::UpdateAabbs` and the end
+of the step reaches the AABB only as the pose of an awake solver body written before
+`update_solver_body_aabbs`; any other waits until that collider's pose next changes, and this
+test reads the old AABB until then.
 
 Check, in the game: with the query still run for every pair, 0 of 4,550,540 pairs the test would
 have skipped kept a contact after pruning (MEASURED, three runs of collapsing buildings).
