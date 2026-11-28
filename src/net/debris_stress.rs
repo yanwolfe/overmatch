@@ -157,7 +157,7 @@ impl DebrisCensus<'_, '_> {
     /// its cumulative counts since the server started: `breaches` and lever pieces `released`.
     pub(super) fn json(&self) -> Value {
         let mut census = json!({
-            "live": self.live.iter().count(),
+            "live": self.live.count(),
             "sleeping": self.sleeping.iter().count(),
             "frozen": self.frozen.iter().count(),
         });
