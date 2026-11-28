@@ -136,13 +136,12 @@ pub(crate) struct Rationed {
     pub crossing: bool,
 }
 
-/// The matter one push moves: the pressed cells and every cell behind them along it.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Plug {
-    /// Ordered.
-    pub cells: Vec<usize>,
+/// The matter one push moves.
+enum Plug {
+    /// The pressed cells and every cell behind them along the push, ordered.
+    Free(Vec<usize>),
     /// The push runs into the ground or buried matter: nothing leaves that way.
-    pub grounded: bool,
+    Grounded,
 }
 
 /// One structure as the law reads it: its graph and live state, its chunk shapes, its gravity
@@ -197,10 +196,9 @@ impl Standing<'_> {
 
     /// The matter a push `along` on `pressed` moves: joints between cells pressed together carry
     /// nothing, so the cells behind go with them, up to a free face.
-    pub(crate) fn plug(&self, pressed: &[usize], along: DVec3) -> Plug {
+    fn plug(&self, pressed: &[usize], along: DVec3) -> Plug {
         let topology = &self.state.topology;
         let mut inside = vec![false; self.structure.chunks.len()];
-        let mut grounded = false;
         let mut open: Vec<usize> = pressed.to_vec();
         for &c in pressed {
             assert!(
@@ -216,28 +214,29 @@ impl Standing<'_> {
                     continue;
                 }
                 match across(joint, c) {
-                    Some(d) if self.structure.chunks[d].buried => grounded = true,
+                    Some(d) if self.structure.chunks[d].buried => return Plug::Grounded,
                     Some(d) if !inside[d] => {
                         inside[d] = true;
                         open.push(d);
                     }
                     Some(_) => {}
-                    None => grounded = true,
+                    None => return Plug::Grounded,
                 }
             }
         }
-        Plug {
-            cells: (0..inside.len()).filter(|&c| inside[c]).collect(),
-            grounded,
-        }
+        Plug::Free((0..inside.len()).filter(|&c| inside[c]).collect())
     }
 
-    /// What `plug` holds against leaving `along`, summed over the joints on its boundary: each
-    /// opens at its tensile strength and slides at its cohesion plus the friction of its gravity
-    /// preload (`bondsolve::JointStrength`), and spends its fracture energy. `None` when the push
-    /// runs into the ground.
-    pub(crate) fn shear_out(&self, plug: &Plug, along: DVec3) -> Option<Price> {
-        (!plug.grounded).then(|| self.boundary(&plug.cells, along, None).0)
+    /// What the plug behind `pressed` holds against leaving `along`, summed over the joints on
+    /// its boundary: each opens at its tensile strength and slides at its cohesion plus the
+    /// friction of its gravity preload (`bondsolve::JointStrength`), and spends its fracture
+    /// energy. Returned with the plug's cells (ordered), which leave. `None` when the push runs
+    /// into the ground or buried matter.
+    pub(crate) fn shear_out(&self, pressed: &[usize], along: DVec3) -> Option<(Price, Vec<usize>)> {
+        match self.plug(pressed, along) {
+            Plug::Free(cells) => Some((self.boundary(&cells, along, None).0, cells)),
+            Plug::Grounded => None,
+        }
     }
 
     /// What `cells` (ordered) hold against leaving along `slide`, summed over the joints on
@@ -320,11 +319,11 @@ impl Standing<'_> {
         }
         let mut least: Option<(Price, Vec<usize>)> = None;
         for side in sides {
-            let plug = self.plug(pressed, side);
-            if plug.grounded {
-                continue;
-            }
-            let (mut price, closed, rough) = self.boundary(&plug.cells, side, Some(along));
+            let cells = match self.plug(pressed, side) {
+                Plug::Free(cells) => cells,
+                Plug::Grounded => continue,
+            };
+            let (mut price, closed, rough) = self.boundary(&cells, side, Some(along));
             if closed > 0.0 {
                 let friction = rough / closed;
                 // StandIn for the sideways share of a push, the missing law (how much of a push
@@ -340,7 +339,7 @@ impl Standing<'_> {
                 .as_ref()
                 .is_none_or(|(least, _)| price.force < least.force)
             {
-                least = Some((price, plug.cells));
+                least = Some((price, cells));
             }
         }
         least
@@ -350,18 +349,18 @@ impl Standing<'_> {
     /// push leans no part of a normal impulse its way ([`Push::lean`]).
     fn ways(&self, pressed: &[usize], push: Push) -> impl Iterator<Item = Yield> {
         let open = (push.lean > 0.0).then(|| {
-            let plug = self.plug(pressed, push.along);
-            let out =
-                (self.shear_out(&plug, push.along)).map(|price| (Way::ShearOut, price, plug.cells));
-            let aside =
-                (self.shed(pressed, push.along)).map(|(price, leaves)| (Way::Shed, price, leaves));
-            [out, aside]
+            [
+                (Way::ShearOut, self.shear_out(pressed, push.along)),
+                (Way::Shed, self.shed(pressed, push.along)),
+            ]
         });
-        (open.into_iter().flatten().flatten()).map(move |(way, price, leaves)| Yield {
-            way,
-            push,
-            price,
-            leaves,
+        (open.into_iter().flatten()).filter_map(move |(way, parting)| {
+            parting.map(|(price, leaves)| Yield {
+                way,
+                push,
+                price,
+                leaves,
+            })
         })
     }
 
