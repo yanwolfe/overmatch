@@ -6,7 +6,7 @@
 //! hook, which `avian_ext::plugin` installs.
 //!
 //! Who relies on it: the game's scenery and debris rest (`OVERMATCH_PATCH.md`, "Rest energy"), and
-//! the game's own rest census, which compares with Avian's verdict.
+//! `net::contact_census`, which reads a body's rest by the same test.
 
 use avian3d::dynamics::solver::islands::velocity_rest;
 use avian3d::dynamics::solver::solver_body::SolverBody;
@@ -40,7 +40,7 @@ pub fn at_rest(
 /// stops acceleration, while a prescribed velocity still moves the body. Zero and infinite mass and
 /// inertia follow the computed properties' zero-reciprocal convention, so they contribute no
 /// rotational term.
-pub fn kinetic_speed_squared(
+pub(crate) fn kinetic_speed_squared(
     body: &SolverBody,
     mass: ComputedMass,
     angular_inertia: ComputedAngularInertia,

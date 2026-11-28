@@ -269,9 +269,8 @@ Known differences between the channels, none tuned:
   would eject by their lateral overlap the pieces the soft run leaves inside the solid; the nearest
   measurement is the belt segments' side plates below, the pivot's reversals in their table
   (related, not the same, since a piece there sat in two colliders at once). An inert cap would hand those pieces to the rigid
-  stop. Parry clips a face to its first four vertices (the TODO in
-  `ConvexPolyhedron::local_support_feature`, parry 0.31.1), so a cap contact, its face an N-gon, is
-  mostly the lone GJK witness point (DERIVED).
+  stop. A cap's face, an N-gon, is clipped whole
+  (`vendor/parry3d-0.31.1-overmatch/OVERMATCH_PATCH.md`); a cap's contact is not measured.
 - **The stop's side slices against standing matter**, a limit with two owners. A slice is a rigid
   collider one shoe thickness wide that reaches down to the rest belt's outer face. It bears only a
   contact leaving through its exposed face (`stop_contacts::Bearing`): its inner face is inside the
@@ -322,7 +321,8 @@ Known differences between the channels, none tuned:
 - **The law within a step.** A contact's shares and the points that bear are read once, at the
   narrow phase, so its stiffness is exact for a common compression of its links, not for one piece
   retreating alone. The points split the force by `overlap + rest`, so the centre of pressure and
-  the rotational stiffness are those of at most four parry points, and Avian's midpoint point sits
+  the rotational stiffness are those of the at most four points Avian keeps per manifold, and its
+  midpoint point sits
   half the overlap inside the run, so a foot near a corner can land one link over.
 - **The secant it replaced** was a damping error, not a feel defect: within a step a secant `k_sec`
   in place of the tangent `K` acts as a damper of `(k_sec − K)·dt/2`, about `0.084·(k_sec/K − 1)` of

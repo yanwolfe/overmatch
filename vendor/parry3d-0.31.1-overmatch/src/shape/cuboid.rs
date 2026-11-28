@@ -5,6 +5,9 @@ use crate::math::Real;
 use crate::math::{Vector, VectorExt};
 #[cfg(feature = "dim3")]
 use crate::shape::Segment;
+// OVERMATCH PATCH: a feature's vertices and ids are `Corners`.
+#[cfg(feature = "dim3")]
+use super::polygonal_feature3d::Corners;
 use crate::shape::{FeatureId, PackedFeatureId, PolygonalFeature, SupportMap};
 use crate::utils::WSign;
 
@@ -380,9 +383,9 @@ impl Cuboid {
         let fid = imax as u32 + sign_index * 3 + 10;
 
         PolygonalFeature {
-            vertices,
-            vids: PackedFeatureId::vertices(vids),
-            eids: PackedFeatureId::edges(eids),
+            vertices: Corners::from_slice(&vertices),
+            vids: Corners::from_slice(&PackedFeatureId::vertices(vids)),
+            eids: Corners::from_slice(&PackedFeatureId::edges(eids)),
             fid: PackedFeatureId::face(fid),
             num_vertices: 4,
         }
