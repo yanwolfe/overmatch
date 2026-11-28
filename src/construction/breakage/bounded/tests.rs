@@ -512,7 +512,7 @@ fn wall_and_belt(mass: f32) -> (App, crate::contact_transfer::StagedForce, [Part
     let dt = step(&app);
     let mut intact = Breakage::new(kind, 0);
     let standing = standing(&mut intact);
-    let through = (standing.shear_out(&standing.plug(&[pressed], DVec3::Z), DVec3::Z))
+    let through = (standing.shear_out(&[pressed], DVec3::Z))
         .expect("a single leaf gives through its far face");
     let shed = (standing.shed(&[pressed], DVec3::Z)).expect("a leaf sheds a cell");
     let world = app.world_mut();
@@ -538,7 +538,7 @@ fn wall_and_belt(mass: f32) -> (App, crate::contact_transfer::StagedForce, [Part
         point,
         force: Vec3::ZERO,
     };
-    (app, force, [(through, vec![pressed]), shed], dt)
+    (app, force, [through, shed], dt)
 }
 
 /// Invariant: a belt takes from standing matter no more than its bonds return, and a belt that

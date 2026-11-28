@@ -76,9 +76,9 @@ fn joints_between_cells_pressed_together_carry_nothing() {
             let pressed = wall.within(PATCH.0, PATCH.1);
             assert_eq!(pressed.len(), cells[0] / 4 * (cells[1] / 3));
             let standing = wall.standing();
-            let plug = standing.plug(&pressed, THROUGH);
-            assert_eq!(plug.cells, pressed, "a single leaf has nothing behind");
-            standing.shear_out(&plug, THROUGH).unwrap()
+            let (price, leaves) = standing.shear_out(&pressed, THROUGH).unwrap();
+            assert_eq!(leaves, pressed, "a single leaf has nothing behind");
+            price
         })
         .collect();
     assert!(
@@ -99,10 +99,9 @@ fn a_backed_block_leaves_through_the_free_face_behind_it() {
         // The face the push enters by: the layer at the low side of the thickness.
         let front = wall.within(PATCH.0, PATCH.1.with_z(0.5 / layers as f32 - 0.25));
         let standing = wall.standing();
-        let plug = standing.plug(&front, THROUGH);
-        assert!(!plug.grounded);
-        assert_eq!(plug.cells.len(), front.len() * layers);
-        standing.shear_out(&plug, THROUGH).unwrap()
+        let (price, leaves) = standing.shear_out(&front, THROUGH).unwrap();
+        assert_eq!(leaves.len(), front.len() * layers);
+        price
     };
     let (two, one) = (price(2), price(1));
     assert!(
@@ -166,13 +165,8 @@ fn a_leaf_pressed_along_its_length_sheds_the_pressed_cells_through_its_face() {
         );
         assert_eq!(pressed.len(), 4, "the end column's middle cells");
         let standing = wall.standing();
-        let plug = standing.plug(&pressed, end_on);
-        assert_eq!(
-            plug.cells.len(),
-            pressed.len() * cells,
-            "their courses back them"
-        );
-        let through = standing.shear_out(&plug, end_on).unwrap();
+        let (through, plug) = standing.shear_out(&pressed, end_on).unwrap();
+        assert_eq!(plug.len(), pressed.len() * cells, "their courses back them");
         let (price, leaves) = standing.shed(&pressed, end_on).unwrap();
         assert_eq!(leaves, pressed);
         assert!(price.force < through.force, "{price:?} against {through:?}");
@@ -209,9 +203,7 @@ fn a_push_into_the_ground_sheds_sideways_against_its_own_friction() {
     assert!(friction < 1.0, "fixture: the pair slides");
     let standing = wall.standing();
     let given = {
-        let plug = standing.plug(&top, down.along);
-        assert!(plug.grounded && plug.cells.len() == top.len() * 12);
-        assert_eq!(standing.shear_out(&plug, down.along), None);
+        assert_eq!(standing.shear_out(&top, down.along), None);
         let along_the_face = Push {
             along: DVec3::X,
             closing: 5.0,
