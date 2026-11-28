@@ -140,8 +140,7 @@ pub(crate) struct Rationed {
 enum Plug {
     /// The pressed cells and every cell behind them along the push, ordered.
     Free(Vec<usize>),
-    /// The push runs into the ground or buried matter: nothing leaves that way, and no cells
-    /// are named.
+    /// The push runs into the ground or buried matter: nothing leaves that way.
     Grounded,
 }
 
@@ -196,8 +195,7 @@ impl Standing<'_> {
     }
 
     /// The matter a push `along` on `pressed` moves: joints between cells pressed together carry
-    /// nothing, so the cells behind go with them, up to a free face. The walk ends where it
-    /// meets the ground.
+    /// nothing, so the cells behind go with them, up to a free face.
     fn plug(&self, pressed: &[usize], along: DVec3) -> Plug {
         let topology = &self.state.topology;
         let mut inside = vec![false; self.structure.chunks.len()];
@@ -229,10 +227,11 @@ impl Standing<'_> {
         Plug::Free((0..inside.len()).filter(|&c| inside[c]).collect())
     }
 
-    /// What the plug behind `pressed` holds against leaving `along`, and its cells, which leave:
-    /// summed over the joints on its boundary, each opens at its tensile strength and slides at
-    /// its cohesion plus the friction of its gravity preload (`bondsolve::JointStrength`), and
-    /// spends its fracture energy. `None` when the push runs into the ground.
+    /// What the plug behind `pressed` holds against leaving `along`, summed over the joints on
+    /// its boundary: each opens at its tensile strength and slides at its cohesion plus the
+    /// friction of its gravity preload (`bondsolve::JointStrength`), and spends its fracture
+    /// energy. Returned with the plug's cells (ordered), which leave. `None` when the push runs
+    /// into the ground or buried matter.
     pub(crate) fn shear_out(&self, pressed: &[usize], along: DVec3) -> Option<(Price, Vec<usize>)> {
         match self.plug(pressed, along) {
             Plug::Free(cells) => Some((self.boundary(&cells, along, None).0, cells)),
@@ -320,8 +319,9 @@ impl Standing<'_> {
         }
         let mut least: Option<(Price, Vec<usize>)> = None;
         for side in sides {
-            let Plug::Free(cells) = self.plug(pressed, side) else {
-                continue; // Its matter cannot move this way.
+            let cells = match self.plug(pressed, side) {
+                Plug::Free(cells) => cells,
+                Plug::Grounded => continue,
             };
             let (mut price, closed, rough) = self.boundary(&cells, side, Some(along));
             if closed > 0.0 {
