@@ -51,7 +51,11 @@ fn refuse_incomplete_state(
             With<ColliderMarker>,
             Posed,
             Without<ColliderDisabled>,
-            Or<(Without<CollisionLayers>, Without<EnlargedAabb>)>,
+            Or<(
+                Without<CollisionLayers>,
+                Without<ColliderAabb>,
+                Without<EnlargedAabb>,
+            )>,
         ),
     >,
     bodies: Query<
@@ -93,7 +97,7 @@ fn refuse_incomplete_state(
     // checks invalid archetype populations rather than walking every healthy entity each tick.
     assert!(
         colliders.is_empty(),
-        "a posed enabled collider retains CollisionLayers and EnlargedAabb for the narrow phase; invalid entity: {:?}",
+        "a posed enabled collider retains CollisionLayers, ColliderAabb and EnlargedAabb for the narrow phase; invalid entity: {:?}",
         colliders.iter().next()
     );
     assert!(

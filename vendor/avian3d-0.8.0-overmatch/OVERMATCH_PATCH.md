@@ -23,7 +23,7 @@ Each patch takes one form, named in its section:
 - **dropped**: upstream 0.8.0 does it; the old witness runs against unpatched code.
 
 Patched sites in upstream files are tagged `OVERMATCH PATCH`. Fork lines are counted by `diff --minimal -ruN`
-of `src/` against the published crate: 1032 in all (MEASURED), 954 in upstream files and 78 in the
+of `src/` against the published crate: 1066 in all (MEASURED), 988 in upstream files and 78 in the
 fork-only `src/collision/narrow_phase/stationary_miss.rs`.
 
 Guards run as the game's own tests, each named in its patch's section.
@@ -464,6 +464,44 @@ kept through a hook rejection fails the hook test (MEASURED). The wake test also
 side's miss to stay active, which Avian 0.8.0's island sleep breaks (it moves every pair whose
 other body rests to the sleeping set); see "Resting misses stay active", which keeps it. Count evidence and
 reproduction: `upstream/avian-still-pairs.md`.
+
+## Bounds test before the geometry query (`src/collision/narrow_phase/system_param.rs`): kept
+
+Subject: the game's server physics, contacts between bodies, game state only.
+
+A pair lives while its enlarged bounds overlap, and upstream runs the geometry query for every
+such pair it does not recycle. The patch tests the two colliders' own bounds first: with one
+`ColliderAabb` grown by `max_contact_distance - contact_tolerance`, disjoint bounds are the
+query's miss. The query is skipped, the manifold list is cleared as the query clears it, and the
+rest of the per-pair update (pruning, the stationary key, matching, the status flags) runs as
+after any miss.
+
+Same contacts. A `ColliderAabb` is its shape's bounds grown by the contact tolerance and the
+collider's own `CollisionMargin` (`collider_tree/update.rs`); the query reaches
+`max_contact_distance`: both margins, a body's included, plus the speculative distance, which is
+at least the tolerance. Two shapes within the reach have bounds within it on every axis, so bounds
+still disjoint after the growth put the shapes more than the reach plus one tolerance apart, and
+the spare tolerance covers the rounding of the bounds and of the query. The growth reads the
+query's own reach, so what no bounds hold (a margin a body lends its colliders, a requested
+speculative distance) is inside it. Two things it relies on: a margin is never negative, and each
+bounds holds the current tolerance: a tolerance changed mid-run reaches a collider's bounds when
+its pose or shape next changes, a lag the broad phase already pairs colliders under.
+
+MEASURED 2026-11-28, local passes of two tanks through the map's house and hall: with the query
+still run for every pair, 0 of 4,550,540 pairs the test would have skipped kept a contact after
+pruning (three gate-valid passes); with the test live and recycling off it spares 2.3 to 3.5 of
+11.7 to 15.7 queries per awake piece per tick (20 to 22 %, four passes). Growing by the whole
+reach instead, which relies on neither bounds holding the tolerance, spares 2.05 of the 2.70 in
+the one pass that counted both.
+
+Kept: the test sits beside the query inside the private per-pair closure. 34 fork lines
+(MEASURED), 20 of them the query call re-indented under the test.
+
+Guard: `a_contact_inside_the_querys_reach_is_found_past_the_colliders_bounds` in
+`src/tests/avian_narrow_phase.rs` (red with the reach left out of the growth, MEASURED). The
+game's required-state gate (`avian_ext::required_state`) refuses a posed enabled collider without
+its `ColliderAabb`, which the narrow phase now reads. Record:
+`upstream/avian-bounds-test-before-query.md`.
 
 ## Resting misses stay active (`src/collision/contact_types/contact_graph.rs`, `src/dynamics/solver/islands/sleeping.rs`): hook
 
